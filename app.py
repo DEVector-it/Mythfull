@@ -39,9 +39,9 @@ SITE_CONFIG = {
     "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions",
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
-    "STRIPE_PRO_PRICE_ID": os.environ.get('STRIPE_PRO_PRICE_ID'),
-    "STRIPE_ULTRA_PRICE_ID": os.environ.get('STRIPE_ULTRA_PRICE_ID'),
-    "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
+    "STRIPE_PRO_PRICE_ID": "price_1Ou3jXBSm9qhr9Evw6G6jLd5",  # Example ID, replace with yours
+    "STRIPE_ULTRA_PRICE_ID": "price_1Ou4b1BSm9qhr9Ev7bK7f6iF",  # Example ID, replace with yours
+    "STRIPE_STUDENT_PRICE_ID": "price_1Ou4cCBSm9qhr9Ev9K7m3O8R",  # Example ID, replace with yours
     "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
     "SECRET_REGISTRATION_KEY": os.environ.get('SECRET_REGISTRATION_KEY'),
     "SECRET_STUDENT_KEY": os.environ.get('SECRET_STUDENT_KEY'),
@@ -503,7 +503,7 @@ HTML_CONTENT = """
                             <div class="absolute left-3 top-1/2 -translate-y-1/2 flex items-center">
                                 <button id="upload-btn" title="Upload Image" class="p-2 rounded-full hover:bg-gray-600/50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15c.7-1.2 1-2.5.7-3.9-.6-2.4-2.4-4.2-4.8-4.8-1.4-.3-2.7 0-3.9.7L12 8l-1.2-1.1c-1.2-.7-2.5-1-3.9-.7-2.4.6-4.2 2.4-4.8 4.8-.3 1.4 0 2.7.7 3.9L4 16.1M12 13l2 3h-4l2-3z"/><circle cx="12" cy="12" r="10"/></svg></button>
                                 <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg, image/webp">
-                            </div>
+                    </div>
                             <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
                                 <button id="send-btn" class="p-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 transition-opacity disabled:from-gray-500 disabled:to-gray-600 disabled:cursor-not-allowed"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M2 22l20-10L2 2z"/></svg></button>
                             </div>
@@ -697,7 +697,7 @@ HTML_CONTENT = """
             </div>
 
             <div class="glassmorphism rounded-lg p-6 mt-8">
-                <h2 class="text-xl font-bold text-white mb-4">Student Activity</h2>
+                <h2 class="text-xl font-semibold mb-4 text-white">Student Activity</h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left">
                         <thead class="border-b border-gray-600">
@@ -708,17 +708,9 @@ HTML_CONTENT = """
                                 <th class="p-2">Streak</th>
                                 <th class="p-2">Last Active</th>
                                 <th class="p-2">Actions</th>
-                            </tr>
                         </thead>
                         <tbody id="teacher-student-list"></tbody>
                     </table>
-                </div>
-            </div>
-            
-            <div class="glassmorphism rounded-lg p-6 mt-8">
-                <h2 class="text-xl font-bold text-white mb-4">Student Chats</h2>
-                <div id="teacher-student-chats" class="space-y-4">
-                    <p class="text-gray-400">Select a student to view their chats.</p>
                 </div>
             </div>
         </div>
@@ -1457,7 +1449,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 <button class="tts-btn p-1 rounded-full text-gray-400 hover:text-white transition-colors" title="Listen to response">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
                 </button>
-            `;
         }
 
         wrapper.innerHTML = `
@@ -1924,7 +1915,6 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 leaderboardHTML += `<p class="text-sm text-gray-400">No students have a streak yet.</p>`;
             }
-            leaderboardContainer.innerHTML = leaderboardHTML;
         } else {
             leaderboardContainer.classList.add('hidden');
         }
@@ -2129,5 +2119,34 @@ document.addEventListener('DOMContentLoaded', () => {
 def check_and_reset_daily_limit(user):
     """Resets a user's daily message count if the day has changed."""
     today_str = datetime.now().strftime("%Y-%m-%d")
-    if user.last_message_date != today_str
+    if user.last_message_date != today_str:
+        user.last_message_date = today_str
+        user.daily_messages = 0
+        
+        if user.account_type == 'student':
+            last_streak_date = datetime.strptime(user.last_streak_date, "%Y-%m-%d")
+            if (datetime.now() - last_streak_date).days > 1:
+                user.streak = 0
+            
+        save_database()
+
+def get_user_data_for_frontend(user):
+    """Prepares user data for sending to the frontend."""
+    if not user: return {}
+    check_and_reset_daily_limit(user)
+    plan_details = PLAN_CONFIG.get(user.plan, PLAN_CONFIG['free'])
+    
+    data = {
+        "id": user.id, "username": user.username, "role": user.role, "plan": user.plan,
+        "account_type": user.account_type, "daily_messages": user.daily_messages,
+        "message_limit": plan_details["message_limit"], "can_upload": plan_details["can_upload"],
+        "is_student_in_class": user.account_type == 'student' and user.classroom_code is not None,
+        "streak": user.streak,
+        "available_models": plan_details.get("available_models", ["deepseek-chat"])
+    }
+    return data
+
+def get_all_user_chats(user_id):
+    """Retrieves all chats belonging to a specific user."""
+    return {chat_id: chat_data for chat_id, chat_data in DB['chats'].items() if ch
 

@@ -2128,8 +2128,3 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-```
-
-***
-
-The video provides a helpful overview of how to build a Flask web application from scratch with DeepSeek, which is relevant to the changes I made to transition the project to this new A

@@ -1320,7 +1320,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- CHAT LOGIC ---
+    # --- CHAT LOGIC ---
     async function handleSendMessage() {
         const userInput = document.getElementById('user-input');
         if (!userInput) return;
@@ -1376,7 +1376,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (!response.ok) {
                     const errorData = await response.json();
-                    if (response.status === 401 && !errorData.logged_in) handleLogout(false);
+                    if (response.status === 401) handleLogout(false);
                     throw new Error(errorData.error || `Server error: ${response.status}`);
                 }
 
@@ -1472,19 +1472,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         return wrapper;
     }
-    
-    async function handleTTS(text, button) {
-        if (appState.audio && !appState.audio.paused) {
-            appState.audio.pause();
-            appState.audio = null;
-            button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
-            return;
-        }
 
-        button.innerHTML = `<svg class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>`;
-
-        // The TTS API from Gemini is a different model and is not available via DeepSeek.
-        // For a full implementation, you would need a separate TTS service.
+    function handleTTS(text, button) {
         showToast("TTS is not yet implemented for the DeepSeek API.", "error");
         button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
     }
@@ -2072,7 +2061,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- ADMIN ROUTES ---
+    # --- ADMIN ROUTES ---
     async function handleSetAnnouncement(e) {
         e.preventDefault();
         const text = document.getElementById('announcement-input').value;
@@ -2128,3 +2117,755 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+"""
+
+# --- 7. Backend Helper Functions ---
+def check_and_reset_daily_limit(user):
+    """Resets a user's daily message count if the day has changed."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if user.last_message_date != today_str:
+        user.last_message_date = today_str
+        user.daily_messages = 0
+        
+        if user.account_type == 'student':
+            last_streak_date = datetime.strptime(user.last_streak_date, "%Y-%m-%d")
+            if (datetime.now() - last_streak_date).days > 1:
+                user.streak = 0
+            
+        save_database()
+
+def get_user_data_for_frontend(user):
+    """Prepares user data for sending to the frontend."""
+    if not user: return {}
+    check_and_reset_daily_limit(user)
+    plan_details = PLAN_CONFIG.get(user.plan, PLAN_CONFIG['free'])
+    
+    data = {
+        "id": user.id, "username": user.username, "role": user.role, "plan": user.plan,
+        "account_type": user.account_type, "daily_messages": user.daily_messages,
+        "message_limit": plan_details["message_limit"], "can_upload": plan_details["can_upload"],
+        "is_student_in_class": user.account_type == 'student' and user.classroom_code is not None,
+        "streak": user.streak,
+        "available_models": plan_details.get("available_models", ["deepseek-chat"])
+    }
+    return data
+
+def get_all_user_chats(user_id):
+    """Retrieves all chats belonging to a specific user."""
+    return {chat_id: chat_data for chat_id, chat_data in DB['chats'].items() if chat_data.get('user_id') == user_id}
+
+def generate_unique_classroom_code():
+    while True:
+        code = secrets.token_hex(4).upper()
+        if code not in DB['classrooms']:
+            return code
+
+
+# --- 8. Core API Routes (Auth, Status) ---
+@app.route('/')
+def index():
+    return Response(HTML_CONTENT, mimetype='text/html')
+
+@app.route('/api/config')
+def get_config():
+    return jsonify({"stripe_public_key": SITE_CONFIG["STRIPE_PUBLIC_KEY"]})
+
+@app.route('/api/signup', methods=['POST'])
+@rate_limited()
+def signup():
+    data = request.get_json()
+    if not data: return jsonify({"error": "Invalid request format."}), 400
+    
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    account_type = 'general'
+
+    if not all([username, password]) or len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username (min 3 chars) and password (min 6 chars) are required."}), 400
+    if User.get_by_username(username):
+        return jsonify({"error": "Username already exists."}), 409
+    
+    try:
+        new_user = User(id=username, username=username, password_hash=generate_password_hash(password), account_type=account_type)
+        DB['users'][new_user.id] = new_user
+        save_database()
+        login_user(new_user, remember=True)
+        return jsonify({
+            "success": True, "user": get_user_data_for_frontend(new_user),
+            "chats": {}, "settings": DB['site_settings']
+        })
+    except Exception as e:
+        logging.error(f"Error during signup for {username}: {e}")
+        return jsonify({"error": "An internal server error occurred during signup."}), 500
+
+@app.route('/api/student_signup', methods=['POST'])
+@rate_limited()
+def student_signup():
+    data = request.get_json()
+    if not data: return jsonify({"error": "Invalid request format."}), 400
+    
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    classroom_code = data.get('classroom_code', '').strip().upper()
+
+    if not all([username, password, classroom_code]) or len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username, password, and classroom code are required."}), 400
+    if User.get_by_username(username):
+        return jsonify({"error": "Username already exists."}), 409
+    
+    if classroom_code not in DB['classrooms']:
+        return jsonify({"error": "Invalid classroom code."}), 403
+
+    try:
+        new_user = User(id=username, username=username, password_hash=generate_password_hash(password), account_type='student', plan='student', classroom_code=classroom_code)
+        DB['users'][new_user.id] = new_user
+        DB['classrooms'][classroom_code]['students'].append(new_user.id)
+        save_database()
+        login_user(new_user, remember=True)
+        return jsonify({
+            "success": True, "user": get_user_data_for_frontend(new_user),
+            "chats": {}, "settings": DB['site_settings']
+        })
+    except Exception as e:
+        logging.error(f"Error during student signup for {username}: {e}")
+        return jsonify({"error": "An internal server error occurred during signup."}), 500
+
+@app.route('/api/teacher_signup', methods=['POST'])
+@rate_limited()
+def teacher_signup():
+    data = request.get_json()
+    if not data: return jsonify({"error": "Invalid request format."}), 400
+    
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    secret_key = data.get('secret_key')
+
+    if secret_key != SITE_CONFIG["SECRET_TEACHER_KEY"]:
+        return jsonify({"error": "Invalid teacher access key."}), 403
+    if not all([username, password]) or len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username (min 3 chars) and password (min 6 chars) are required."}), 400
+    if User.get_by_username(username):
+        return jsonify({"error": "Username already exists."}), 409
+    
+    try:
+        new_user = User(id=username, username=username, password_hash=generate_password_hash(password), account_type='teacher', plan='pro')
+        DB['users'][new_user.id] = new_user
+        save_database()
+        login_user(new_user, remember=True)
+        return jsonify({
+            "success": True, "user": get_user_data_for_frontend(new_user),
+            "chats": {}, "settings": DB['site_settings']
+        })
+    except Exception as e:
+        logging.error(f"Error during teacher signup for {username}: {e}")
+        return jsonify({"error": "An internal server error occurred during signup."}), 500
+
+@app.route('/api/login', methods=['POST'])
+@rate_limited()
+def login():
+    data = request.get_json()
+    if not data: return jsonify({"error": "Invalid request format."}), 400
+
+    username, password = data.get('username'), data.get('password')
+    user = User.get_by_username(username)
+    if user and check_password_hash(user.password_hash, password):
+        login_user(user, remember=True)
+        return jsonify({
+            "success": True, "user": get_user_data_for_frontend(user),
+            "chats": get_all_user_chats(user.id) if user.role not in ['admin', 'teacher'] else {},
+            "settings": DB['site_settings']
+        })
+    return jsonify({"error": "Invalid username or password."}), 401
+
+@app.route('/api/logout')
+def logout():
+    if 'impersonator_id' in session:
+        impersonator = User.get(session['impersonator_id'])
+        if impersonator:
+            logout_user()
+            login_user(impersonator)
+            session.pop('impersonator_id', None)
+        return redirect(url_for('index'))
+
+    logout_user()
+    return jsonify({"success": True})
+
+@app.route('/api/status')
+def status():
+    if current_user.is_authenticated:
+        return jsonify({
+            "logged_in": True, "user": get_user_data_for_frontend(current_user),
+            "chats": get_all_user_chats(current_user.id) if current_user.role not in ['admin', 'teacher'] else {},
+            "settings": DB['site_settings']
+        })
+    return jsonify({"logged_in": False})
+
+@app.route('/api/special_signup', methods=['POST'])
+@rate_limited()
+def special_signup():
+    data = request.get_json()
+    if not data: return jsonify({"error": "Invalid request format."}), 400
+    
+    username, password, secret_key = data.get('username'), data.get('password'), data.get('secret_key')
+
+    if secret_key != SITE_CONFIG["SECRET_REGISTRATION_KEY"]:
+        return jsonify({"error": "Invalid secret key."}), 403
+    
+    if not all([username, password]):
+        return jsonify({"error": "Username and password are required."}), 400
+    if User.get_by_username(username):
+        return jsonify({"error": "Username already exists."}), 409
+
+    new_user = User(id=username, username=username, password_hash=generate_password_hash(password), role='admin', plan='ultra')
+    DB['users'][new_user.id] = new_user
+    save_database()
+    login_user(new_user, remember=True)
+    return jsonify({"success": True, "user": get_user_data_for_frontend(new_user)})
+
+
+# --- 9. Chat API Routes ---
+@app.route('/api/chat', methods=['POST'])
+@login_required
+@rate_limited(max_attempts=20)
+def chat_api():
+    if not SITE_CONFIG.get("DEEPSEEK_API_KEY"):
+        return jsonify({"error": "AI services are currently unavailable."}), 503
+
+    chat_id = None
+    try:
+        data = request.form
+        chat_id = data.get('chat_id')
+        prompt = data.get('prompt', '').strip()
+        is_study_mode = data.get('is_study_mode') == 'true'
+        model_name = data.get('model_name')
+        
+        if not chat_id:
+            return jsonify({"error": "Missing chat identifier."}), 400
+
+        chat = DB['chats'].get(chat_id)
+        if not chat or chat.get('user_id') != current_user.id:
+            return jsonify({"error": "Chat not found or access denied."}), 404
+
+        check_and_reset_daily_limit(current_user)
+        plan_details = PLAN_CONFIG.get(current_user.plan, PLAN_CONFIG['free'])
+        if current_user.daily_messages >= plan_details["message_limit"]:
+            return jsonify({"error": f"Daily message limit of {plan_details['message_limit']} reached."}), 429
+        
+        # Validate that the selected model is allowed for the user's plan
+        if model_name not in plan_details['available_models']:
+            model_name = plan_details['model']  # Fallback to the default model
+
+        current_time = datetime.now().strftime('%A, %B %d, %Y at %I:%M %p')
+        base_system_instruction = f"The current date and time is {current_time}. The user is located in Yorkton, Saskatchewan, Canada. Your developer is devector."
+        
+        if is_study_mode and current_user.account_type == 'student':
+            persona_instruction = "You are Study Buddy, a friendly, patient, and knowledgeable tutor. Your goal is to be an engaging and trustworthy partner in learning. Guide the user to the answer by asking thoughtful questions, providing simple and clear explanations, and helping them develop critical thinking skills. Never give away the answer directly. Use a warm, encouraging, and slightly informal tone to make learning fun and accessible."
+        else:
+            persona_instruction = "You are Myth AI, a powerful, general-purpose assistant for creative tasks, coding, and complex questions."
+            
+        final_system_instruction = f"{base_system_instruction}\n\n{persona_instruction}"
+
+        # Build the message history for the DeepSeek API
+        messages = [{"role": "system", "content": final_system_instruction}]
+        messages.extend([
+            {"role": "user" if msg['sender'] == 'user' else 'assistant', "content": msg['content']}
+            for msg in chat['messages'][-10:] if msg.get('content')
+        ])
+
+        # Handle image uploads if available
+        uploaded_file = request.files.get('file')
+        if uploaded_file:
+            if not plan_details['can_upload']:
+                return jsonify({"error": "Your plan does not support file uploads."}), 403
+            # NOTE: DeepSeek's current API (v1) does not support multi-modal input.
+            # For this reason, we will simply append a message about the image.
+            prompt += f"\n\n[User uploaded an image for context, but I cannot see it as I am a text-only model. Please proceed with the text-based prompt.]"
+            messages.append({"role": "user", "content": prompt})
+        else:
+            messages.append({"role": "user", "content": prompt})
+
+        if not prompt.strip() and not uploaded_file:
+            return jsonify({"error": "A prompt or file is required."}), 400
+
+        user_message_content = {'sender': 'user', 'content': prompt}
+        chat['messages'].append(user_message_content)
+        current_user.daily_messages += 1
+        
+        if is_study_mode and current_user.account_type == 'student':
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if current_user.last_streak_date != today_str:
+                current_user.streak += 1
+                current_user.last_streak_date = today_str
+        
+        save_database()
+
+        def generate_chunks():
+            full_response_text = ""
+            try:
+                headers = {
+                    "Authorization": f"Bearer {SITE_CONFIG['DEEPSEEK_API_KEY']}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": model_name,
+                    "messages": messages,
+                    "stream": True
+                }
+
+                response = requests.post(SITE_CONFIG['DEEPSEEK_API_URL'], headers=headers, json=payload, stream=True)
+                response.raise_for_status()
+
+                for line in response.iter_lines(decode_unicode=True):
+                    if line.startswith('data:'):
+                        data = line.lstrip('data:').strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            json_data = json.loads(data)
+                            delta_content = json_data['choices'][0]['delta'].get('content', '')
+                            full_response_text += delta_content
+                            yield delta_content
+                        except json.JSONDecodeError:
+                            continue
+            
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Error during DeepSeek API stream for chat {chat_id}: {e}")
+                yield f"An error occurred with the AI model: {str(e)}"
+                return
+
+            # After the streaming is complete, append the full response to the chat history
+            chat['messages'].append({'sender': 'model', 'content': full_response_text})
+            
+            # Generate title for new chats
+            if len(chat['messages']) <= 2:
+                try:
+                    title_prompt = f"Summarize the following conversation with a short, descriptive title (4 words max, be concise).\n\nUser: \"{prompt}\"\nAssistant: \"{full_response_text[:200]}\""
+                    title_response = requests.post(
+                        SITE_CONFIG['DEEPSEEK_API_URL'],
+                        headers=headers,
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [{"role": "user", "content": title_prompt}]
+                        }
+                    ).json()
+                    title_text = title_response['choices'][0]['message']['content'].strip().replace('"', '')
+                    chat['title'] = title_text if title_text else (prompt[:40] + '...')
+                except Exception as title_e:
+                    logging.error(f"Could not generate title for chat {chat_id}: {title_e}")
+                    chat['title'] = prompt[:40] + '...' if len(prompt) > 40 else "Chat"
+            
+            save_database()
+
+        return Response(stream_with_context(generate_chunks()), mimetype='text/plain')
+
+    except Exception as e:
+        logging.error(f"Fatal error in /api/chat setup for chat {chat_id}: {str(e)}")
+        return jsonify({"error": f"An internal server error occurred."}), 500
+
+@app.route('/api/chat/new', methods=['POST'])
+@login_required
+def new_chat():
+    try:
+        chat_id = f"chat_{current_user.id}_{datetime.now().timestamp()}"
+        new_chat_data = {
+            "id": chat_id, "user_id": current_user.id, "title": "New Chat",
+            "messages": [], "created_at": datetime.now().isoformat(), "is_public": False
+        }
+        DB['chats'][chat_id] = new_chat_data
+        save_database()
+        return jsonify({"success": True, "chat": new_chat_data})
+    except Exception as e:
+        logging.error(f"Error creating new chat for user {current_user.id}: {e}")
+        return jsonify({"error": "Could not create a new chat."}), 500
+
+@app.route('/api/chat/rename', methods=['POST'])
+@login_required
+def rename_chat():
+    data = request.get_json()
+    chat_id = data.get('chat_id')
+    new_title = data.get('title', '').strip()
+    if not all([chat_id, new_title]):
+        return jsonify({"error": "Chat ID and new title are required."}), 400
+
+    chat = DB['chats'].get(chat_id)
+    if chat and chat.get('user_id') == current_user.id:
+        chat['title'] = new_title
+        save_database()
+        return jsonify({"success": True, "message": "Chat renamed."})
+    return jsonify({"error": "Chat not found or access denied."}), 404
+
+@app.route('/api/chat/delete', methods=['POST'])
+@login_required
+def delete_chat():
+    chat_id = request.json.get('chat_id')
+    chat = DB['chats'].get(chat_id)
+    if chat and chat.get('user_id') == current_user.id:
+        del DB['chats'][chat_id]
+        save_database()
+        return jsonify({"success": True, "message": "Chat deleted."})
+    return jsonify({"error": "Chat not found or access denied."}), 404
+
+@app.route('/api/chat/share', methods=['POST'])
+@login_required
+def share_chat():
+    chat_id = request.json.get('chat_id')
+    chat = DB['chats'].get(chat_id)
+    if chat and chat.get('user_id') == current_user.id:
+        chat['is_public'] = True
+        save_database()
+        return jsonify({"success": True, "share_id": chat_id})
+    return jsonify({"error": "Chat not found or access denied."}), 404
+
+@app.route('/api/tts', methods=['POST'])
+@login_required
+def tts_api():
+    if not (current_user.plan == 'pro' or current_user.plan == 'ultra'):
+        return jsonify({"error": "Voice chat is a premium feature."}), 403
+
+    # NOTE: DeepSeek's API does not currently have a direct TTS endpoint.
+    return jsonify({"error": "TTS is not yet implemented for the DeepSeek API."}), 501
+
+# --- 10. Public Share and Payment Routes ---
+@app.route('/share/<chat_id>')
+def view_shared_chat(chat_id):
+    chat = DB['chats'].get(chat_id)
+    if not chat or not chat.get('is_public'):
+        return "Chat not found or is not public.", 404
+    
+    chat_html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Shared Chat: {chat['title']}</title>
+        <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+        <style>
+            body {{ background-color: #1f2937; color: #f9fafb; font-family: sans-serif; }}
+            .chat-container {{ max-width: 800px; margin: auto; padding: 2rem; }}
+            .message-user {{ background-color: #3b82f6; color: white; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; }}
+            .message-ai {{ background-color: #4b5563; color: white; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; }}
+            .message-content img {{ max-width: 100%; height: auto; border-radius: 0.5rem; margin-top: 1rem; }}
+        </style>
+    </head>
+    <body>
+        <div class="chat-container">
+            <h1 class="text-3xl font-bold text-center mb-6">{chat['title']}</h1>
+            <p class="text-sm text-gray-400 text-center mb-6">This is a shared conversation from Myth AI.</p>
+    """
+    for msg in chat['messages']:
+        sender_class = 'message-user' if msg['sender'] == 'user' else 'message-ai'
+        sender_name = 'You' if msg['sender'] == 'user' else 'Myth AI'
+        content = msg.get('content', '').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
+        
+        chat_html += f"""
+            <div class="{sender_class}">
+                <strong>{sender_name}:</strong>
+                <div class="message-content">{content}</div>
+            </div>
+        """
+    chat_html += """
+        </div>
+    </body>
+    </html>
+    """
+    return chat_html
+
+@app.route('/api/plans')
+@login_required
+def get_plans():
+    plans_for_frontend = {
+        plan_id: {
+            "name": details["name"],
+            "price_string": details["price_string"],
+            "features": details["features"],
+            "color": details["color"]
+        } for plan_id, details in PLAN_CONFIG.items()
+    }
+    return jsonify({
+        "success": True, "plans": plans_for_frontend, "user_plan": current_user.plan,
+    })
+
+@app.route('/api/create-checkout-session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    if not stripe.api_key:
+        return jsonify(error={'message': 'Payment services are currently unavailable.'}), 500
+    
+    plan_id = request.json.get('plan_id')
+    price_map = {
+        "pro": {"id": SITE_CONFIG["STRIPE_PRO_PRICE_ID"], "mode": "subscription"},
+        "ultra": {"id": SITE_CONFIG["STRIPE_ULTRA_PRICE_ID"], "mode": "payment"},
+        "student": {"id": SITE_CONFIG["STRIPE_STUDENT_PRICE_ID"], "mode": "subscription"}
+    }
+    if plan_id not in price_map:
+        return jsonify(error={'message': 'Invalid plan selected.'}), 400
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[{'price': price_map[plan_id]['id'], 'quantity': 1}],
+            mode=price_map[plan_id]['mode'],
+            success_url=SITE_CONFIG["YOUR_DOMAIN"] + f'/?payment=success',
+            cancel_url=SITE_CONFIG["YOUR_DOMAIN"] + '/?payment=cancel',
+            client_reference_id=current_user.id
+        )
+        return jsonify({'id': checkout_session.id})
+    except Exception as e:
+        logging.error(f"Stripe session creation failed for user {current_user.id}: {e}")
+        return jsonify(error={'message': "Could not create payment session."}), 500
+
+@app.route('/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
+    if not all([payload, sig_header, endpoint_secret]):
+        return 'Missing data for webhook', 400
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except ValueError as e:
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e:
+        return 'Invalid signature', 400
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        client_reference_id = session.get('client_reference_id')
+        user = User.get(client_reference_id)
+
+        if user:
+            line_item = session.list_line_items(session.id, limit=1).data[0]
+            price_id = line_item.price.id
+            
+            new_plan = None
+            if price_id == SITE_CONFIG["STRIPE_PRO_PRICE_ID"]:
+                new_plan = 'pro'
+            elif price_id == SITE_CONFIG["STRIPE_ULTRA_PRICE_ID"]:
+                new_plan = 'ultra'
+            elif price_id == SITE_CONFIG["STRIPE_STUDENT_PRICE_ID"]:
+                new_plan = 'student'
+
+            if new_plan:
+                user.plan = new_plan
+                save_database()
+                logging.info(f"User {user.id} successfully upgraded to {new_plan} plan via webhook.")
+
+    return 'Success', 200
+
+
+# --- 11. Admin Routes ---
+@app.route('/api/admin_data')
+@admin_required
+def admin_data():
+    all_users_data = []
+    stats = {"total_users": 0, "pro_users": 0, "ultra_users": 0}
+    for user in DB["users"].values():
+        if user.role != 'admin':
+            stats['total_users'] += 1
+            if user.plan == 'pro': stats['pro_users'] += 1
+            elif user.plan == 'ultra': stats['ultra_users'] += 1
+            
+            all_users_data.append({
+                "id": user.id, "username": user.username, "plan": user.plan,
+                "role": user.role, "account_type": user.account_type,
+                "daily_messages": user.daily_messages,
+                "message_limit": PLAN_CONFIG.get(user.plan, PLAN_CONFIG['free'])["message_limit"]
+            })
+    return jsonify({
+        "success": True, "stats": stats,
+        "users": sorted(all_users_data, key=lambda x: x['username']),
+        "announcement": DB['site_settings']['announcement']
+    })
+
+@app.route('/api/admin/update_user_plan', methods=['POST'])
+@admin_required
+def admin_update_user_plan():
+    data = request.json
+    user_id = data.get('user_id')
+    new_plan = data.get('plan')
+    user = User.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+    if new_plan not in PLAN_CONFIG:
+        return jsonify({"error": "Invalid plan provided."}), 400
+    
+    user.plan = new_plan
+    save_database()
+    return jsonify({"success": True, "message": f"User {user.username}'s plan updated to {new_plan}."})
+
+@app.route('/api/admin/reset_user_messages', methods=['POST'])
+@admin_required
+def admin_reset_user_messages():
+    user_id = request.json.get('user_id')
+    user = User.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+    
+    user.daily_messages = 0
+    user.last_message_date = datetime.now().strftime("%Y-%m-%d")
+    save_database()
+    return jsonify({"success": True, "message": f"User {user.username}'s daily message count has been reset."})
+
+@app.route('/api/admin/delete_user', methods=['POST'])
+@admin_required
+def admin_delete_user():
+    user_id_to_delete = request.json.get('user_id')
+    
+    if user_id_to_delete == current_user.id:
+        return jsonify({"error": "Cannot delete your own account."}), 400
+
+    user_to_delete = User.get(user_id_to_delete)
+    if not user_to_delete:
+        return jsonify({"error": "User not found."}), 404
+
+    admin_users = [u for u in DB['users'].values() if u.role == 'admin']
+    if user_to_delete.role == 'admin' and len(admin_users) <= 1:
+        return jsonify({"error": "Cannot delete the last admin account."}), 403
+
+    del DB['users'][user_id_to_delete]
+    chats_to_delete = [cid for cid, c in DB['chats'].items() if c.get('user_id') == user_id_to_delete]
+    for cid in chats_to_delete: del DB['chats'][cid]
+    save_database()
+    return jsonify({"success": True, "message": f"User {user_id_to_delete} and their chats deleted."})
+
+
+@app.route('/api/admin/announcement', methods=['POST'])
+@admin_required
+def set_announcement():
+    text = request.json.get('text', '').strip()
+    DB['site_settings']['announcement'] = text
+    save_database()
+    return jsonify({"success": True, "message": "Announcement updated."})
+
+@app.route('/api/admin/impersonate', methods=['POST'])
+@admin_required
+def impersonate_user():
+    username = request.json.get('username')
+    user_to_impersonate = User.get_by_username(username)
+    if not user_to_impersonate:
+        return jsonify({"error": "User not found."}), 404
+    if user_to_impersonate.role == 'admin':
+        return jsonify({"error": "Cannot impersonate another admin."}), 403
+    
+    session['impersonator_id'] = current_user.id
+    logout_user()
+    login_user(user_to_impersonate, remember=True)
+    return jsonify({"success": True, "message": f"Now impersonating {username}"})
+
+
+# --- 12. Teacher Routes ---
+@app.route('/api/teacher/dashboard_data', methods=['GET'])
+@teacher_required
+def teacher_dashboard_data():
+    teacher_id = current_user.id
+    classroom_code = next((code for code, data in DB['classrooms'].items() if data.get('teacher_id') == teacher_id), None)
+    
+    if not classroom_code:
+        return jsonify({"success": True, "classroom": {"code": None}, "students": []})
+        
+    classroom_students_ids = DB['classrooms'][classroom_code]['students']
+    students_data = []
+    for student_id in classroom_students_ids:
+        student = User.get(student_id)
+        if student:
+            students_data.append(get_user_data_for_frontend(student))
+            
+    return jsonify({
+        "success": True,
+        "classroom": {
+            "code": classroom_code,
+        },
+        "students": sorted(students_data, key=lambda x: x['streak'], reverse=True)
+    })
+
+@app.route('/api/teacher/generate_classroom_code', methods=['POST'])
+@teacher_required
+def generate_classroom_code_api():
+    teacher_id = current_user.id
+    
+    existing_classroom_code = next((code for code, data in DB['classrooms'].items() if data['teacher_id'] == teacher_id), None)
+    if existing_classroom_code:
+        return jsonify({"error": "You already have a classroom. You can only have one."}), 409
+        
+    new_code = generate_unique_classroom_code()
+    DB['classrooms'][new_code] = {
+        "teacher_id": teacher_id,
+        "students": [],
+        "created_at": datetime.now().isoformat()
+    }
+    save_database()
+    return jsonify({"success": True, "code": new_code, "message": "New classroom code generated."})
+
+@app.route('/api/teacher/kick_student', methods=['POST'])
+@teacher_required
+def kick_student():
+    student_id = request.json.get('student_id')
+    student = User.get(student_id)
+    
+    if not student or student.account_type != 'student':
+        return jsonify({"error": "Student not found."}), 404
+        
+    if student.classroom_code is None or DB['classrooms'].get(student.classroom_code, {}).get('teacher_id') != current_user.id:
+        return jsonify({"error": "Unauthorized to kick this student."}), 403
+        
+    DB['classrooms'][student.classroom_code]['students'].remove(student.id)
+    student.classroom_code = None
+    student.streak = 0
+    save_database()
+    
+    return jsonify({"success": True, "message": f"Student {student.username} has been kicked."})
+
+@app.route('/api/teacher/student_chats/<student_id>', methods=['GET'])
+@teacher_required
+def get_student_chats(student_id):
+    student = User.get(student_id)
+    
+    if not student or student.account_type != 'student':
+        return jsonify({"error": "Student not found."}), 404
+        
+    if student.classroom_code is None or DB['classrooms'].get(student.classroom_code, {}).get('teacher_id') != current_user.id:
+        return jsonify({"error": "Unauthorized to view this student's chats."}), 403
+        
+    student_chats = list(get_all_user_chats(student_id).values())
+    
+    sanitized_chats = []
+    for chat in student_chats:
+        sanitized_messages = []
+        for msg in chat['messages']:
+            sanitized_messages.append({
+                "sender": msg['sender'],
+                "content": msg['content']
+            })
+        sanitized_chats.append({
+            "title": chat['title'],
+            "messages": sanitized_messages,
+        })
+        
+    return jsonify({"success": True, "chats": sanitized_chats})
+    
+@app.route('/api/student/leaderboard', methods=['GET'])
+@login_required
+def student_leaderboard_data():
+    if current_user.account_type != 'student' or not current_user.classroom_code:
+        return jsonify({"success": False, "error": "Leaderboard is only for students in a classroom."}), 403
+
+    classroom_students_ids = DB['classrooms'][current_user.classroom_code]['students']
+    students_data = []
+    for student_id in classroom_students_ids:
+        student = User.get(student_id)
+        if student and student.account_type == 'student':
+            students_data.append(get_user_data_for_frontend(student))
+            
+    # Sort students by streak in descending order
+    leaderboard = sorted(students_data, key=lambda x: x['streak'], reverse=True)
+    
+    return jsonify({"success": True, "leaderboard": leaderboard})
+
+# --- Main Execution ---
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+

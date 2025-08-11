@@ -1,0 +1,11 @@
+Flask
+Flask-Login
+Flask-Talisman
+werkzeug
+google-generativeai
+python-dotenv
+stripe
+Pillow
+authlib
+itsdangerous
+gunicorn

@@ -5,13 +5,13 @@ import base64
 import time
 import uuid
 import secrets
+import requests
 from io import BytesIO
 from flask import Flask, Response, request, stream_with_context, session, jsonify, redirect, url_for
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
-import google.generativeai as genai
 from dotenv import load_dotenv
 import stripe
 from PIL import Image
@@ -21,7 +21,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Security Check for Essential Keys ---
-REQUIRED_KEYS = ['SECRET_KEY', 'GEMINI_API_KEY', 'SECRET_REGISTRATION_KEY', 'SECRET_STUDENT_KEY', 'SECRET_TEACHER_KEY', 'STRIPE_WEBHOOK_SECRET']
+REQUIRED_KEYS = ['SECRET_KEY', 'DEEPSEEK_API_KEY', 'SECRET_REGISTRATION_KEY', 'SECRET_STUDENT_KEY', 'SECRET_TEACHER_KEY', 'STRIPE_WEBHOOK_SECRET']
 for key in REQUIRED_KEYS:
     if not os.environ.get(key):
         logging.critical(f"CRITICAL ERROR: Environment variable '{key}' is not set. Application cannot start securely.")
@@ -34,7 +34,8 @@ DATABASE_FILE = 'database.json'
 
 # --- Site & API Configuration ---
 SITE_CONFIG = {
-    "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY"),
+    "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
+    "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions",
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_PRO_PRICE_ID": os.environ.get('STRIPE_PRO_PRICE_ID'),
@@ -46,14 +47,6 @@ SITE_CONFIG = {
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET')
 }
-
-# --- API Initialization ---
-GEMINI_API_CONFIGURED = False
-try:
-    genai.configure(api_key=SITE_CONFIG["GEMINI_API_KEY"])
-    GEMINI_API_CONFIGURED = True
-except Exception as e:
-    logging.critical(f"Could not configure Gemini API. Details: {e}")
 
 stripe.api_key = SITE_CONFIG["STRIPE_SECRET_KEY"]
 if not stripe.api_key:
@@ -182,10 +175,10 @@ with app.app_context():
 
 # --- 4. Plan & Rate Limiting Configuration ---
 PLAN_CONFIG = {
-    "free": {"name": "Free", "price_string": "Free", "features": ["15 Daily Messages", "Standard Model Access", "No Image Uploads"], "color": "text-gray-300", "message_limit": 15, "can_upload": False, "model": "gemini-1.5-flash-latest", "can_tts": False},
-    "pro": {"name": "Pro", "price_string": "$9.99 / month", "features": ["50 Daily Messages", "Image Uploads", "Priority Support", "Voice Chat"], "color": "text-indigo-400", "message_limit": 50, "can_upload": True, "model": "gemini-1.5-pro-latest", "can_tts": True},
-    "ultra": {"name": "Ultra", "price_string": "$100 one-time", "features": ["Unlimited Messages", "Image Uploads", "Access to All Models", "Voice Chat"], "color": "text-purple-400", "message_limit": 10000, "can_upload": True, "model": "gemini-1.5-pro-latest", "can_tts": True},
-    "student": {"name": "Student", "price_string": "$4.99 / month", "features": ["100 Daily Messages", "Image Uploads", "Study Buddy Persona", "Streak & Leaderboard"], "color": "text-green-400", "message_limit": 100, "can_upload": True, "model": "gemini-1.5-flash-latest", "can_tts": False}
+    "free": {"name": "Free", "price_string": "Free", "features": ["15 Daily Messages", "Standard Model Access", "No Image Uploads"], "color": "text-gray-300", "message_limit": 15, "can_upload": False, "model": "deepseek-chat", "can_tts": False, "available_models": ["deepseek-chat"]},
+    "pro": {"name": "Pro", "price_string": "$9.99 / month", "features": ["50 Daily Messages", "Image Uploads", "Priority Support", "Voice Chat"], "color": "text-indigo-400", "message_limit": 50, "can_upload": True, "model": "deepseek-chat", "can_tts": True, "available_models": ["deepseek-chat", "deepseek-reasoner"]},
+    "ultra": {"name": "Ultra", "price_string": "$100 one-time", "features": ["Unlimited Messages", "Image Uploads", "Access to All Models", "Voice Chat"], "color": "text-purple-400", "message_limit": 10000, "can_upload": True, "model": "deepseek-reasoner", "can_tts": True, "available_models": ["deepseek-chat", "deepseek-reasoner"]},
+    "student": {"name": "Student", "price_string": "$4.99 / month", "features": ["100 Daily Messages", "Image Uploads", "Study Buddy Persona", "Streak & Leaderboard"], "color": "text-green-400", "message_limit": 100, "can_upload": True, "model": "deepseek-chat", "can_tts": False, "available_models": ["deepseek-chat"]}
 }
 
 # Simple in-memory rate limiting
@@ -465,8 +458,9 @@ HTML_CONTENT = """
                 <div id="chat-history-list" class="flex-grow overflow-y-auto my-4 space-y-1 pr-1"></div>
                 
                 <div class="flex-shrink-0 border-t border-gray-700 pt-2 space-y-1">
+                    <button id="profile-page-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-gray-700/50 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Profile</button>
                     <div id="user-info" class="p-3 text-sm"></div>
-                    <button id="upgrade-plan-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-indigo-500/20 text-indigo-400 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v12m-6-6h12"/></svg> Upgrade Plan</button>
+                    <button id="upgrade-plan-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-indigo-500/20 text-indigo-400 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14m-6-6h12"/></svg> Upgrade Plan</button>
                     <button id="logout-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-red-500/20 text-red-400 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></svg> Logout</button>
                 </div>
             </aside>
@@ -480,6 +474,7 @@ HTML_CONTENT = """
                         <h2 id="chat-title" class="text-xl font-semibold truncate">New Chat</h2>
                     </div>
                     <div class="flex items-center gap-4">
+                        <div id="model-selection-container" class="hidden"></div>
                         <button id="share-chat-btn" title="Share Chat" class="p-2 rounded-lg hover:bg-gray-700/50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg></button>
                         <button id="rename-chat-btn" title="Rename Chat" class="p-2 rounded-lg hover:bg-gray-700/50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
                         <button id="delete-chat-btn" title="Delete Chat" class="p-2 rounded-lg hover:bg-red-500/20 text-red-400 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg></button>
@@ -508,6 +503,31 @@ HTML_CONTENT = """
                     </div>
                 </div>
             </main>
+        </div>
+    </template>
+
+    <template id="template-profile-page">
+        <div class="w-full h-full bg-gray-900 p-4 sm:p-6 md:p-8 overflow-y-auto">
+            <header class="flex justify-between items-center mb-8">
+                <h1 class="text-3xl font-bold brand-gradient">My Profile</h1>
+                <button id="back-to-chat-btn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">Back to Chat</button>
+            </header>
+            <div class="max-w-3xl mx-auto space-y-8">
+                <div class="glassmorphism rounded-lg p-6 flex items-center gap-6">
+                    <div id="profile-avatar-container" class="flex-shrink-0 w-24 h-24 rounded-full flex items-center justify-center font-bold text-white text-4xl"></div>
+                    <div>
+                        <h2 id="profile-username" class="text-2xl font-bold text-white"></h2>
+                        <p class="text-gray-400">Account Type: <span id="profile-account-type" class="font-semibold"></span></p>
+                        <p class="text-gray-400">Plan: <span id="profile-plan" class="font-semibold"></span></p>
+                        <p class="text-gray-400">Daily Messages: <span id="profile-daily-messages" class="font-semibold"></span></p>
+                    </div>
+                </div>
+                <div id="profile-plan-details" class="glassmorphism rounded-lg p-6">
+                    <h3 class="text-xl font-bold text-white mb-4">Plan Details</h3>
+                    <div id="plan-features" class="space-y-2 text-gray-300"></div>
+                    <button id="profile-upgrade-btn" class="mt-6 w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white font-bold py-3 px-4 rounded-lg">Upgrade Your Plan</button>
+                </div>
+            </div>
         </div>
     </template>
 
@@ -559,6 +579,7 @@ HTML_CONTENT = """
                                 <th class="p-2">Role</th>
                                 <th class="p-2">Plan</th>
                                 <th class="p-2">Account Type</th>
+                                <th class="p-2">Daily Messages</th>
                                 <th class="p-2">Actions</th>
                             </tr>
                         </thead>
@@ -585,6 +606,12 @@ HTML_CONTENT = """
             <div class="w-24 h-24 mb-6" id="welcome-logo-container"></div>
             <h2 id="welcome-title" class="text-3xl md:text-4xl font-bold mb-4">Welcome to Myth AI</h2>
             <p id="welcome-subtitle" class="text-gray-400 max-w-md">Start a new conversation or select one from the sidebar. How can I help you today?</p>
+    
+            <div id="model-selection-wrapper" class="flex items-center gap-2 mt-4 hidden">
+                <label for="model-select" class="text-gray-400 text-sm">Model:</label>
+                <select id="model-select" class="bg-gray-700/50 text-white rounded-lg p-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </select>
+            </div>
         </div>
     </template>
     
@@ -617,6 +644,24 @@ HTML_CONTENT = """
         </div>
     </template>
     
+    <template id="template-admin-action-modal">
+        <div class="modal-backdrop fixed inset-0 bg-black/60 animate-fade-in"></div>
+        <div class="modal-content fixed inset-0 flex items-center justify-center p-4">
+            <div class="w-full max-w-sm glassmorphism rounded-2xl p-8 shadow-2xl animate-scale-up relative">
+                <button class="close-modal-btn absolute top-4 right-4 text-gray-400 hover:text-white text-3xl leading-none">&times;</button>
+                <h3 class="text-2xl font-bold text-center mb-4" id="admin-modal-title"></h3>
+                <form id="admin-action-form">
+                    <input type="hidden" id="admin-action-user-id" name="user_id">
+                    <div class="mb-4 hidden" id="admin-plan-select-container">
+                        <label for="admin-plan-select" class="block text-sm font-medium text-gray-300 mb-1">Change Plan</label>
+                        <select id="admin-plan-select" name="plan" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
+                    </div>
+                    <button type="submit" id="admin-modal-submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg">Update</button>
+                </form>
+            </div>
+        </div>
+    </template>
+
     <template id="template-teacher-dashboard">
         <div class="w-full h-full bg-gray-900 p-4 sm:p-6 md:p-8 overflow-y-auto">
             <header class="flex flex-wrap justify-between items-center gap-4 mb-8">
@@ -675,7 +720,7 @@ HTML_CONTENT = """
 
     <script>
 /****************************************************************************
- * JAVASCRIPT FRONTEND LOGIC (MYTH AI V9 - FINAL FIXES & FEATURES)
+ * JAVASCRIPT FRONTEND LOGIC (MYTH AI V3 - DeepSeek & Features)
  ****************************************************************************/
 document.addEventListener('DOMContentLoaded', () => {
     const appState = {
@@ -684,6 +729,7 @@ document.addEventListener('DOMContentLoaded', () => {
         isStudyMode: false, uploadedFile: null,
         teacherData: { classroom: null, students: [] },
         audio: null,
+        selectedModel: 'deepseek-chat',
     };
 
     const DOMElements = {
@@ -998,16 +1044,47 @@ document.addEventListener('DOMContentLoaded', () => {
             (appState.chats[b].created_at || '').localeCompare(appState.chats[a].created_at || '')
         );
         appState.activeChatId = sortedChatIds.length > 0 ? sortedChatIds[0] : null;
+        
+        // Initialize the selected model from user's plan default
+        const planDetails = { ...PLAN_CONFIG[appState.currentUser.plan] };
+        appState.selectedModel = planDetails.model;
 
         renderChatHistoryList();
         renderActiveChat();
         updateUserInfo();
         setupAppEventListeners();
         renderStudyModeToggle();
+        renderModelSelection();
         
         // Show streaks and leaderboard for students
         if (appState.currentUser.account_type === 'student') {
             fetchStudentLeaderboard();
+        }
+    }
+
+    function renderModelSelection() {
+        const modelSelectionContainer = document.getElementById('model-selection-container');
+        const planDetails = { ...PLAN_CONFIG[appState.currentUser.plan] };
+
+        if (!modelSelectionContainer) return;
+        
+        if (planDetails.available_models && planDetails.available_models.length > 1) {
+            modelSelectionContainer.classList.remove('hidden');
+            let selectHtml = `<label for="model-select" class="text-gray-400 text-sm">Model:</label><select id="model-select" class="bg-gray-700/50 text-white rounded-lg p-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">`;
+            planDetails.available_models.forEach(model => {
+                selectHtml += `<option value="${model}" ${model === appState.selectedModel ? 'selected' : ''}>${model}</option>`;
+            });
+            selectHtml += `</select>`;
+            modelSelectionContainer.innerHTML = selectHtml;
+
+            const modelSelect = document.getElementById('model-select');
+            if (modelSelect) {
+                modelSelect.addEventListener('change', (e) => {
+                    appState.selectedModel = e.target.value;
+                });
+            }
+        } else {
+            modelSelectionContainer.classList.add('hidden');
         }
     }
 
@@ -1047,6 +1124,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('welcome-title').textContent = "Welcome to Myth AI";
             document.getElementById('welcome-subtitle').textContent = "How can I help you today?";
         }
+        renderModelSelection();
     }
 
     function renderChatHistoryList() {
@@ -1285,6 +1363,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('chat_id', appState.activeChatId);
                 formData.append('prompt', prompt);
                 formData.append('is_study_mode', appState.isStudyMode);
+                formData.append('model_name', appState.selectedModel);
                 if (fileToSend) {
                     formData.append('file', fileToSend);
                 }
@@ -1404,47 +1483,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         button.innerHTML = `<svg class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>`;
 
-        const result = await apiCall('/api/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: text })
-        });
-
-        if (result.success && result.audio_data) {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const audioData = Uint8Array.from(atob(result.audio_data), c => c.charCodeAt(0)).buffer;
-            
-            // This assumes the API returns signed 16-bit PCM data at a specific sample rate
-            const sampleRate = 16000;
-            const pcm16 = new Int16Array(audioData);
-            const float32 = new Float32Array(pcm16.length);
-            for (let i = 0; i < pcm16.length; i++) {
-                float32[i] = pcm16[i] / 32768; // Normalize to -1 to 1
-            }
-
-            const audioBuffer = audioContext.createBuffer(1, float32.length, sampleRate);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContext.destination);
-            source.start();
-
-            appState.audio = {
-                pause: () => source.stop(),
-                paused: false,
-            };
-            
-            source.onended = () => {
-                button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
-                appState.audio = null;
-            };
-
-            button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`;
-        } else {
-            button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
-            showToast(result.error || "Could not play audio.", "error");
-        }
+        // The TTS API from Gemini is a different model and is not available via DeepSeek.
+        // For a full implementation, you would need a separate TTS service.
+        showToast("TTS is not yet implemented for the DeepSeek API.", "error");
+        button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
     }
     
     async function createNewChat(shouldRender = true) {
@@ -1513,6 +1555,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     case 'share-chat-btn': handleShareChat(); break;
                     case 'download-chat-btn': handleDownloadChat(); break;
                     case 'upgrade-plan-btn': renderUpgradePage(); break;
+                    case 'profile-page-btn': renderProfilePage(); break;
                     case 'back-to-chat-btn': renderAppUI(); break;
                     case 'upload-btn': document.getElementById('file-input')?.click(); break;
                     case 'menu-toggle-btn': 
@@ -1528,6 +1571,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (target.classList.contains('delete-user-btn')) {
                     handleAdminDeleteUser(e);
+                }
+                if (target.classList.contains('admin-edit-user-btn')) {
+                    const userId = target.dataset.userid;
+                    const username = target.dataset.username;
+                    const plan = target.dataset.plan;
+                    openAdminEditModal(userId, username, plan);
+                }
+                if (target.classList.contains('admin-reset-messages-btn')) {
+                    const userId = target.dataset.userid;
+                    handleAdminResetMessages(userId);
                 }
                 if (target.classList.contains('purchase-btn') && !target.disabled) {
                     handlePurchase(target.dataset.planid);
@@ -1744,6 +1797,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- PROFILE PAGE LOGIC ---
+    function renderProfilePage() {
+        const template = document.getElementById('template-profile-page');
+        DOMElements.appContainer.innerHTML = '';
+        DOMElements.appContainer.appendChild(template.content.cloneNode(true));
+        setupAppEventListeners();
+
+        const user = appState.currentUser;
+        const planDetails = PLAN_CONFIG[user.plan] || PLAN_CONFIG['free'];
+        
+        document.getElementById('profile-username').textContent = user.username;
+        document.getElementById('profile-account-type').textContent = user.account_type.charAt(0).toUpperCase() + user.account_type.slice(1);
+        document.getElementById('profile-plan').textContent = planDetails.name;
+        document.getElementById('profile-daily-messages').textContent = `${user.daily_messages} / ${planDetails.message_limit}`;
+
+        const avatarContainer = document.getElementById('profile-avatar-container');
+        const avatarChar = user.username[0].toUpperCase();
+        const avatarColor = `hsl(${user.username.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360}, 50%, 60%)`;
+        avatarContainer.textContent = avatarChar;
+        avatarContainer.style.background = avatarColor;
+
+        const featuresList = document.getElementById('plan-features');
+        featuresList.innerHTML = planDetails.features.map(f => `<li>✓ ${f}</li>`).join('');
+
+        const upgradeBtn = document.getElementById('profile-upgrade-btn');
+        if (user.plan === 'ultra') {
+            upgradeBtn.textContent = 'You have the Ultra plan!';
+            upgradeBtn.disabled = true;
+            upgradeBtn.classList.add('bg-gray-600', 'cursor-not-allowed');
+            upgradeBtn.classList.remove('from-blue-600', 'to-indigo-600', 'hover:opacity-90');
+        } else {
+            upgradeBtn.onclick = renderUpgradePage;
+        }
+    }
+
     // --- ADMIN & TEACHER LOGIC ---
     function renderAdminDashboard() {
         const template = document.getElementById('template-admin-dashboard');
@@ -1752,6 +1840,67 @@ document.addEventListener('DOMContentLoaded', () => {
         renderLogo('admin-logo-container');
         setupAppEventListeners();
         fetchAdminData();
+    }
+
+    async function openAdminEditModal(userId, username, currentPlan) {
+        const modalTemplate = document.getElementById('template-admin-action-modal');
+        const modalWrapper = document.createElement('div');
+        modalWrapper.id = 'admin-modal-instance';
+        modalWrapper.appendChild(modalTemplate.content.cloneNode(true));
+        DOMElements.modalContainer.appendChild(modalWrapper);
+        
+        modalWrapper.querySelector('#admin-modal-title').textContent = `Manage ${username}`;
+        modalWrapper.querySelector('#admin-action-user-id').value = userId;
+
+        const planSelectContainer = modalWrapper.querySelector('#admin-plan-select-container');
+        const planSelect = modalWrapper.querySelector('#admin-plan-select');
+        planSelectContainer.classList.remove('hidden');
+
+        // Populate plan options
+        planSelect.innerHTML = '';
+        const plans = ['free', 'pro', 'ultra', 'student'];
+        plans.forEach(planId => {
+            const option = document.createElement('option');
+            option.value = planId;
+            option.textContent = planId.charAt(0).toUpperCase() + planId.slice(1);
+            if (planId === currentPlan) option.selected = true;
+            planSelect.appendChild(option);
+        });
+
+        const form = modalWrapper.querySelector('#admin-action-form');
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const newPlan = planSelect.value;
+            const result = await apiCall('/api/admin/update_user_plan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, plan: newPlan }),
+            });
+            if (result.success) {
+                showToast(result.message, 'success');
+                fetchAdminData();
+                closeModal();
+            } else {
+                showToast(result.error, 'error');
+            }
+        };
+
+        modalWrapper.querySelector('.close-modal-btn').addEventListener('click', closeModal);
+        modalWrapper.querySelector('.modal-backdrop').addEventListener('click', closeModal);
+    }
+    
+    async function handleAdminResetMessages(userId) {
+        const result = await apiCall('/api/admin/reset_user_messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId }),
+        });
+        if (result.success) {
+            showToast(result.message, 'success');
+            fetchAdminData();
+        } else {
+            showToast(result.error, 'error');
+        }
     }
 
     async function renderTeacherDashboard() {
@@ -1805,7 +1954,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td class="p-2">${user.role}</td>
                 <td class="p-2">${user.plan}</td>
                 <td class="p-2">${user.account_type}</td>
+                <td class="p-2">${user.daily_messages}/${user.message_limit}</td>
                 <td class="p-2 flex gap-2">
+                    <button data-userid="${user.id}" data-username="${user.username}" data-plan="${user.plan}" class="admin-edit-user-btn text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">Edit</button>
+                    <button data-userid="${user.id}" class="admin-reset-messages-btn text-xs px-2 py-1 rounded bg-yellow-600 hover:bg-yellow-500 text-white">Reset Msgs</button>
                     <button data-userid="${user.id}" class="delete-user-btn text-xs px-2 py-1 rounded bg-red-600">Delete</button>
                 </td>`;
             userList.appendChild(tr);
@@ -1976,3 +2128,8 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+```
+
+***
+
+The video provides a helpful overview of how to build a Flask web application from scratch with DeepSeek, which is relevant to the changes I made to transition the project to this new A

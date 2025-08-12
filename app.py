@@ -68,7 +68,7 @@ DB = {
     "chats": {},
     "classrooms": {},
     "site_settings": {"announcement": "Welcome! Student and Teacher signups are now available."},
-    "reset_tokens": {} # New field for password reset tokens
+    "reset_tokens": {}
 }
 
 def save_database():
@@ -116,7 +116,7 @@ def unauthorized():
     return jsonify({"error": "Login required.", "logged_in": False}), 401
 
 class User(UserMixin):
-    def __init__(self, id, username, password_hash, role='user', plan='free', account_type='general', daily_messages=0, last_message_date=None, classrooms=None, streak=0, last_streak_date=None, email=None):
+    def __init__(self, id, username, password_hash, role='user', plan='free', account_type='general', daily_messages=0, last_message_date=None, classroom_code=None, streak=0, last_streak_date=None, email=None):
         self.id = id
         self.username = username
         self.password_hash = password_hash
@@ -125,7 +125,7 @@ class User(UserMixin):
         self.account_type = account_type
         self.daily_messages = daily_messages
         self.last_message_date = last_message_date or datetime.now().strftime("%Y-%m-%d")
-        self.classrooms = classrooms or []
+        self.classroom_code = classroom_code
         self.streak = streak
         self.last_streak_date = last_streak_date or datetime.now().strftime("%Y-%m-%d")
         self.email = email
@@ -157,7 +157,7 @@ def user_to_dict(user):
         'id': user.id, 'username': user.username, 'password_hash': user.password_hash,
         'role': user.role, 'plan': user.plan, 'account_type': user.account_type,
         'daily_messages': user.daily_messages, 'last_message_date': user.last_message_date,
-        'classrooms': user.classrooms, 'streak': user.streak,
+        'classroom_code': user.classroom_code, 'streak': user.streak,
         'last_streak_date': user.last_streak_date, 'email': user.email
     }
 
@@ -219,12 +219,9 @@ def rate_limited(max_attempts=5):
         def decorated_function(*args, **kwargs):
             ip = request.remote_addr
             now = time.time()
-            
             rate_limit_store[ip] = [t for t in rate_limit_store.get(ip, []) if now - t < RATE_LIMIT_WINDOW]
-            
             if len(rate_limit_store.get(ip, [])) >= max_attempts:
                 return jsonify({"error": "Too many requests. Please try again later."}), 429
-                
             rate_limit_store.setdefault(ip, []).append(now)
             return f(*args, **kwargs)
         return decorated_function
@@ -299,7 +296,6 @@ HTML_CONTENT = """
         .copy-code-btn { position: absolute; top: 0.5rem; right: 0.5rem; background-color: #374151; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; opacity: 0; transition: opacity 0.2s; font-size: 0.75rem; }
         pre:hover .copy-code-btn { opacity: 1; }
         #sidebar.hidden { transform: translateX(-100%); }
-        /* Study Buddy Theme - Updated for yellow to orange gradient */
         .study-buddy-mode { background-image: linear-gradient(to bottom right, #f59e0b, #ef4444); background-attachment: fixed; background-size: cover; color: #111827; }
         .study-buddy-mode #sidebar { background: rgba(251, 191, 36, 0.7); }
         .study-buddy-mode #chat-window { color: #1f2937; }
@@ -344,7 +340,7 @@ HTML_CONTENT = """
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl animate-scale-up">
                 <div class="flex justify-center mb-6" id="auth-logo-container"></div>
                 <h2 class="text-3xl font-bold text-center text-white mb-2" id="auth-title">Welcome Back</h2>
-                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in as student to continue to Myth AI.</p>
+                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in to continue to Myth AI.</p>
                 <form id="auth-form">
                     <div class="mb-4">
                         <label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
@@ -371,6 +367,7 @@ HTML_CONTENT = """
                 </div>
             </div>
             <div class="text-center mt-4 flex justify-center gap-4">
+                <button id="student-signup-link" class="text-xs text-gray-500 hover:text-gray-400">Student Sign Up</button>
                 <button id="teacher-signup-link" class="text-xs text-gray-500 hover:text-gray-400">Teacher Sign Up</button>
                 <button id="special-auth-link" class="text-xs text-gray-500 hover:text-gray-400">Admin Portal</button>
             </div>
@@ -382,7 +379,7 @@ HTML_CONTENT = """
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl animate-scale-up">
                 <div class="flex justify-center mb-6" id="student-signup-logo-container"></div>
                 <h2 class="text-3xl font-bold text-center text-white mb-2">Student Account Signup</h2>
-                <p class="text-gray-400 text-center mb-8">Create a student account. You can join classes later.</p>
+                <p class="text-gray-400 text-center mb-8">Create a student account to join a classroom.</p>
                 <form id="student-signup-form">
                     <div class="mb-4">
                         <label for="student-username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
@@ -393,8 +390,8 @@ HTML_CONTENT = """
                         <input type="password" id="student-password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" required>
                     </div>
                     <div class="mb-6">
-                        <label for="student-classroom-code" class="block text-sm font-medium text-gray-300 mb-1">Classroom Code (Optional)</label>
-                        <input type="text" id="student-classroom-code" name="classroom_code" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
+                        <label for="student-classroom-code" class="block text-sm font-medium text-gray-300 mb-1">Classroom Code</label>
+                        <input type="text" id="student-classroom-code" name="classroom_code" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" required>
                     </div>
                     <button type="submit" class="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:opacity-90 text-white font-bold py-3 px-4 rounded-lg">Create Student Account</button>
                     <p id="student-signup-error" class="text-red-400 text-sm text-center h-4 mt-3"></p>
@@ -490,9 +487,6 @@ HTML_CONTENT = """
                 
                 <div class="flex-shrink-0"><button id="new-chat-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-gray-700/50 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg> New Chat</button></div>
                 <div id="chat-history-list" class="flex-grow overflow-y-auto my-4 space-y-1 pr-1"></div>
-                <div id="my-classes-section" class="hidden flex-shrink-0 border-t border-gray-700 pt-2 space-y-1">
-                    <button id="my-classes-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-gray-700/50 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v8h10V2zM22 2h-8v8h8V2zM12 14H2v8h10v-8zM22 14h-8v8h8v-8z"/></svg> My Classes</button>
-                </div>
                 
                 <div class="flex-shrink-0 border-t border-gray-700 pt-2 space-y-1">
                     <button id="profile-page-btn" class="w-full text-left flex items-center gap-3 p-3 rounded-lg hover:bg-gray-700/50 transition-colors duration-200"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Profile</button>
@@ -529,7 +523,7 @@ HTML_CONTENT = """
                             <div id="preview-container" class="hidden p-2 border-b border-gray-600"></div>
                             <textarea id="user-input" placeholder="Message Myth AI..." class="w-full bg-transparent p-4 pl-14 pr-16 resize-none rounded-2xl focus:outline-none" rows="1"></textarea>
                             <div class="absolute left-3 top-1/2 -translate-y-1/2 flex items-center">
-                                <button id="upload-btn" title="Upload Image" class="p-2 rounded-full hover:bg-gray-600/50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15c.7-1.2 1-2.5 .7-3.9-.6-2.4-2.4-4.2-4.8-4.8-1.4-.3-2.7 0-3.9.7L12 8l-1.2-1.1c-1.2-.7-2.5-1-3.9-.7-2.4.6-4.2 2.4-4.8 4.8-.3 1.4 0 2.7.7 3.9L4 16.1M12 13l2 3h-4l2-3z"/><circle cx="12" cy="12" r="10"/></svg></button>
+                                <button id="upload-btn" title="Upload Image" class="p-2 rounded-full hover:bg-gray-600/50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15c.7-1.2 1-2.5.7-3.9-.6-2.4-2.4-4.2-4.8-4.8-1.4-.3-2.7 0-3.9.7L12 8l-1.2-1.1c-1.2-.7-2.5-1-3.9-.7-2.4.6-4.2 2.4-4.8 4.8-.3 1.4 0 2.7.7 3.9L4 16.1M12 13l2 3h-4l2-3z"/><circle cx="12" cy="12" r="10"/></svg></button>
                                 <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg, image/webp">
                             </div>
                             <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
@@ -704,16 +698,29 @@ HTML_CONTENT = """
             <header class="flex flex-wrap justify-between items-center gap-4 mb-8">
                 <h1 class="text-3xl font-bold brand-gradient">Teacher Dashboard</h1>
                 <div class="flex items-center gap-2">
-                    <button id="teacher-create-class-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Create New Class</button>
+                    <button id="teacher-gen-code-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Generate New Classroom Code</button>
                     <button id="teacher-logout-btn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button>
                 </div>
             </header>
-            <div class="glassmorphism rounded-lg p-6 mt-8">
-                <h2 class="text-xl font-bold text-white mb-4">My Classes</h2>
-                <div id="teacher-classes-list" class="space-y-4">
-                    <p class="text-gray-400">You have no classes yet. Create one above.</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="glassmorphism rounded-lg p-6">
+                    <h2 class="text-xl font-bold text-white mb-2">My Classroom</h2>
+                    <p class="text-gray-400 mb-4">Share this code with your students so they can join your class.</p>
+                    <p class="text-lg font-mono text-green-400 bg-gray-800 p-3 rounded-lg flex items-center justify-between">
+                        <span id="teacher-classroom-code">Loading...</span>
+                        <button id="copy-code-btn" class="text-gray-400 hover:text-white transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        </button>
+                    </p>
+                </div>
+                <div class="glassmorphism rounded-lg p-6">
+                    <h2 class="text-xl font-bold text-white mb-4">Class Leaderboard</h2>
+                    <div id="teacher-leaderboard" class="space-y-2">
+                        <p class="text-gray-400">No students in your class yet.</p>
+                    </div>
                 </div>
             </div>
+
             <div class="glassmorphism rounded-lg p-6 mt-8">
                 <h2 class="text-xl font-semibold mb-4 text-white">Student Activity</h2>
                 <div class="overflow-x-auto">
@@ -721,7 +728,6 @@ HTML_CONTENT = """
                         <thead class="border-b border-gray-600">
                             <tr>
                                 <th class="p-2">Student</th>
-                                <th class="p-2">Class</th>
                                 <th class="p-2">Plan</th>
                                 <th class="p-2">Daily Messages</th>
                                 <th class="p-2">Streak</th>
@@ -743,22 +749,6 @@ HTML_CONTENT = """
         </div>
     </template>
 
-    <template id="template-my-classes-page">
-        <div class="w-full h-full bg-gray-900 p-4 sm:p-6 md:p-8 overflow-y-auto">
-            <header class="flex justify-between items-center mb-8">
-                <h1 class="text-3xl font-bold brand-gradient">My Classes</h1>
-                <button id="back-to-chat-btn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">Back to Chat</button>
-            </header>
-            <div class="glassmorphism rounded-lg p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-bold text-white">Joined Classes</h2>
-                    <button id="add-class-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Add Class</button>
-                </div>
-                <div id="my-classes-list" class="space-y-4"></div>
-            </div>
-        </div>
-    </template>
-
     <script>
 /****************************************************************************
  * JAVASCRIPT FRONTEND LOGIC (MYTH AI V3 - DeepSeek & Features)
@@ -768,7 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chats: {}, activeChatId: null, isAITyping: false,
         abortController: null, currentUser: null,
         isStudyMode: false, uploadedFile: null,
-        teacherData: { classrooms: [], students: [] },
+        teacherData: { classroom: null, students: [] },
         audio: null,
         selectedModel: 'deepseek-chat',
     };
@@ -857,11 +847,12 @@ document.addEventListener('DOMContentLoaded', () => {
         renderLogo('auth-logo-container');
         
         document.getElementById('auth-title').textContent = isLogin ? 'Welcome Back' : 'Create Account';
-        document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in as student to continue to Myth AI.' : 'Create a new student account.';
+        document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue to Myth AI.' : 'Create a new general account.';
         document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up';
         document.getElementById('auth-toggle-btn').textContent = isLogin ? "Don't have an account? Sign Up" : "Already have an account? Login";
 
         document.getElementById('auth-toggle-btn').onclick = () => renderAuthPage(!isLogin);
+        document.getElementById('student-signup-link').onclick = renderStudentSignupPage;
         document.getElementById('teacher-signup-link').onclick = renderTeacherSignupPage;
         document.getElementById('special-auth-link').onclick = renderSpecialAuthPage;
         document.getElementById('forgot-password-link').onclick = renderForgotPasswordPage;
@@ -916,6 +907,35 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    function renderStudentSignupPage() {
+        const template = document.getElementById('template-student-signup-page');
+        DOMElements.appContainer.innerHTML = '';
+        DOMElements.appContainer.appendChild(template.content.cloneNode(true));
+        renderLogo('student-signup-logo-container');
+        document.getElementById('back-to-main-login').onclick = () => renderAuthPage(true);
+        
+        document.getElementById('student-signup-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const errorEl = document.getElementById('student-signup-error');
+            errorEl.textContent = '';
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            
+            const result = await apiCall('/api/student_signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+
+            if (result.success) {
+                initializeApp(result.user, result.chats, result.settings);
+            } else {
+                errorEl.textContent = result.error;
+            }
+        };
+    }
+
     function renderTeacherSignupPage() {
         const template = document.getElementById('template-teacher-signup-page');
         DOMElements.appContainer.innerHTML = '';
@@ -964,7 +984,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             if (result.success) {
                 showToast(result.message, 'success');
-                renderAuthPage(true); // Redirect back to login
+                renderAuthPage(true);
             } else {
                 errorEl.textContent = result.error;
             }
@@ -1055,7 +1075,6 @@ document.addEventListener('DOMContentLoaded', () => {
         );
         appState.activeChatId = sortedChatIds.length > 0 ? sortedChatIds[0] : null;
         
-        // Initialize the selected model from user's plan default
         const planDetails = { ...PLAN_CONFIG[appState.currentUser.plan] };
         appState.selectedModel = planDetails.model;
 
@@ -1066,10 +1085,8 @@ document.addEventListener('DOMContentLoaded', () => {
         renderStudyModeToggle();
         renderModelSelection();
         
-        // Show My Classes section for students
         if (appState.currentUser.account_type === 'student') {
-            document.getElementById('my-classes-section').classList.remove('hidden');
-            fetchStudentLeaderboard(); // For the first class or general
+            fetchStudentLeaderboard();
         }
     }
 
@@ -1131,9 +1148,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (appState.currentUser?.account_type === 'student') {
             const subContainer = document.createElement('div');
             subContainer.className = 'mt-4 text-center';
-            if (appState.currentUser.classrooms.length === 0) {
+            if (!appState.currentUser.classroom_code) {
                 subContainer.innerHTML = `
-                    <p class="text-gray-400 mb-4">You are not part of any classroom yet. Join your teacher's class to see the leaderboard and track your progress.</p>
+                    <p class="text-gray-400 mb-4">You are not part of a classroom yet. Join your teacher's class to see the leaderboard and track your progress.</p>
                     <button id="join-classroom-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Join Classroom</button>
                 `;
             }
@@ -1168,7 +1185,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderActiveChat();
                     renderChatHistoryList();
                     const menuToggleBtn = document.getElementById('menu-toggle-btn');
-                    if (menuToggleBtn && menuToggleBtn.offsetParent !== null) {
+                    if (menuToggleBtn && window.innerWidth < 768) {
                         document.getElementById('sidebar')?.classList.add('-translate-x-full');
                         document.getElementById('sidebar-backdrop')?.classList.add('hidden');
                     }
@@ -1177,7 +1194,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const actionsContainer = document.createElement('div');
                 actionsContainer.className = 'flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity';
 
-                // Rename Button
                 const renameBtn = document.createElement('button');
                 renameBtn.className = 'p-1 rounded-full hover:bg-blue-500/20 text-blue-400';
                 renameBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>';
@@ -1203,7 +1219,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 actionsContainer.appendChild(renameBtn);
 
-                // Delete Button
                 const deleteBtn = document.createElement('button');
                 deleteBtn.className = 'p-1 rounded-full hover:bg-red-500/20 text-red-400';
                 deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>';
@@ -1314,8 +1329,8 @@ document.addEventListener('DOMContentLoaded', () => {
             </label>
         `;
         const toggle = document.getElementById('study-mode-toggle');
+        const dot = toggle.nextElementSibling.nextElementSibling;
         const block = toggle.nextElementSibling;
-        const dot = block.nextElementSibling;
         
         toggle.checked = appState.isStudyMode;
         if (appState.isStudyMode) {
@@ -1371,7 +1386,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!appState.activeChatId) {
                 const chatCreated = await createNewChat(false);
                 if (!chatCreated) {
-                    showToast("Could not start a new chat session.", "error");
                     throw new Error("Chat creation failed.");
                 }
             }
@@ -1569,16 +1583,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     break;
                 case 'admin-impersonate-btn': handleImpersonate(); break;
                 case 'back-to-main-login': renderAuthPage(true); break;
-                case 'teacher-create-class-btn': handleCreateClass(); break;
-                case 'copy-code-btn': handleCopyClassroomCode(target.dataset.code); break;
-                case 'teacher-edit-class-btn': handleEditClass(target.dataset.code); break;
-                case 'teacher-regenerate-code-btn': handleRegenerateClassCode(target.dataset.code); break;
+                case 'teacher-gen-code-btn': handleGenerateClassroomCode(); break;
+                case 'copy-code-btn': handleCopyClassroomCode(); break;
                 case 'google-login-btn': window.location.href = '/api/google_login'; break;
                 case 'join-classroom-btn': handleJoinClassroom(); break;
-                case 'add-class-btn': handleJoinClassroom(); break;
-                case 'leave-class-btn': handleLeaveClass(target.dataset.code); break;
-                case 'view-leaderboard-btn': handleViewLeaderboard(target.dataset.code); break;
-                case 'my-classes-btn': renderMyClassesPage(); break;
             }
 
             if (target.classList.contains('delete-user-btn')) {
@@ -1598,11 +1606,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 handleViewStudentChats(target.dataset.userid);
             }
             if (target.classList.contains('kick-student-btn')) {
-                handleKickStudent(target.dataset.userid, target.dataset.classcode);
+                handleKickStudent(target.dataset.userid);
             }
         };
 
-        // These listeners are set up once when the main app UI is rendered.
         const userInput = document.getElementById('user-input');
         if (userInput) {
             userInput.onkeydown = (e) => { 
@@ -1913,16 +1920,14 @@ document.addEventListener('DOMContentLoaded', () => {
         await fetchTeacherData();
     }
     
-    async function fetchStudentLeaderboard(classCode = null) {
+    async function fetchStudentLeaderboard() {
         const leaderboardContainer = document.getElementById('student-leaderboard-container');
         if (!leaderboardContainer) return;
 
-        let endpoint = '/api/student/leaderboard';
-        if (classCode) endpoint += `/${classCode}`;
-        const result = await apiCall(endpoint);
+        const result = await apiCall('/api/student/leaderboard');
         if (result.success && result.leaderboard.length > 0) {
             leaderboardContainer.classList.remove('hidden');
-            let leaderboardHTML = `<h3 class="text-lg font-bold mb-2">Class Leaderboard${classCode ? ` (${classCode})` : ''}</h3><ul class="space-y-1">`;
+            let leaderboardHTML = `<h3 class="text-lg font-bold mb-2">Class Leaderboard</h3><ul class="space-y-1">`;
             result.leaderboard.forEach((student, index) => {
                 leaderboardHTML += `<li class="flex justify-between items-center text-sm"><span class="truncate"><strong>${index + 1}.</strong> ${student.username}</span><span class="font-mono text-yellow-400">${student.streak} days</span></li>`;
             });
@@ -1966,46 +1971,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await apiCall('/api/teacher/dashboard_data');
         if (!data.success) return;
 
-        const { classrooms, students } = data;
-        appState.teacherData.classrooms = classrooms;
+        const { classroom, students } = data;
+        appState.teacherData.classroom = classroom;
         appState.teacherData.students = students;
 
-        const classesListEl = document.getElementById('teacher-classes-list');
-        if (classesListEl) {
-            classesListEl.innerHTML = '';
-            if (classrooms.length > 0) {
-                classrooms.forEach(cls => {
-                    const classEl = document.createElement('div');
-                    classEl.className = 'bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-2';
-                    classEl.innerHTML = `
-                        <h3 class="text-lg font-bold flex justify-between items-center">
-                            ${cls.name}
-                            <div class="flex gap-2">
-                                <button id="teacher-edit-class-btn" data-code="${cls.code}" class="text-blue-400 hover:text-blue-300"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
-                                <button id="teacher-regenerate-code-btn" data-code="${cls.code}" class="text-yellow-400 hover:text-yellow-300"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg></button>
-                            </div>
-                        </h3>
-                        <p class="text-gray-400">${cls.desc}</p>
-                        <p class="text-lg font-mono text-green-400 bg-gray-800 p-3 rounded-lg flex items-center justify-between">
-                            <span>${cls.code}</span>
-                            <button id="copy-code-btn" data-code="${cls.code}" class="text-gray-400 hover:text-white transition-colors">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                            </button>
-                        </p>
-                        <div class="mt-2">
-                            <h4 class="text-sm font-semibold mb-1">Leaderboard</h4>
-                            <ul class="space-y-1 text-sm text-gray-300">
-                                ${cls.students.sort((a, b) => b.streak - a.streak).map((s, i) => `<li class="flex justify-between"><span>${i + 1}. ${s.username}</span><span>${s.streak} days</span></li>`).join('') || '<li>No students yet</li>'}
-                            </ul>
-                        </div>
-                    `;
-                    classesListEl.appendChild(classEl);
-                });
-            } else {
-                classesListEl.innerHTML = '<p class="text-gray-400">You have no classes yet. Create one above.</p>';
-            }
+        const classroomCodeEl = document.getElementById('teacher-classroom-code');
+        if (classroomCodeEl) {
+            classroomCodeEl.textContent = classroom.code || 'None';
         }
-
+        
         const studentListEl = document.getElementById('teacher-student-list');
         if (studentListEl) {
             studentListEl.innerHTML = '';
@@ -2014,75 +1988,47 @@ document.addEventListener('DOMContentLoaded', () => {
                 tr.className = 'border-b border-gray-700/50';
                 tr.innerHTML = `
                     <td class="p-2">${student.username}</td>
-                    <td class="p-2">${student.class_name}</td>
                     <td class="p-2">${student.plan}</td>
                     <td class="p-2">${student.daily_messages}/${student.message_limit}</td>
                     <td class="p-2">${student.streak} days</td>
                     <td class="p-2">${student.last_message_date}</td>
                     <td class="p-2 flex gap-2">
                         <button data-userid="${student.id}" class="view-student-chats-btn text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white">View Chats</button>
-                        <button data-userid="${student.id}" data-classcode="${student.class_code}" class="kick-student-btn text-xs px-2 py-1 rounded bg-red-600 hover:bg-red-500 text-white">Kick</button>
+                        <button data-userid="${student.id}" class="kick-student-btn text-xs px-2 py-1 rounded bg-red-600 hover:bg-red-500 text-white">Kick</button>
                     </td>
                 `;
                 studentListEl.appendChild(tr);
             });
         }
-    }
-    
-    async function handleCreateClass() {
-        const name = prompt("Enter class name:");
-        if (!name) return;
-        const desc = prompt("Enter class description:");
-        const result = await apiCall('/api/teacher/create_class', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, desc }),
-        });
-        if (result.success) {
-            showToast('Class created!', 'success');
-            fetchTeacherData();
-        } else {
-            showToast(result.error, 'error');
-        }
-    }
 
-    async function handleEditClass(code) {
-        const cls = appState.teacherData.classrooms.find(c => c.code === code);
-        if (!cls) return;
-        const newName = prompt("Enter new class name:", cls.name);
-        if (!newName) return;
-        const newDesc = prompt("Enter new class description:", cls.desc);
-        const result = await apiCall('/api/teacher/edit_class', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code, name: newName, desc: newDesc }),
-        });
-        if (result.success) {
-            showToast('Class updated!', 'success');
-            fetchTeacherData();
-        } else {
-            showToast(result.error, 'error');
-        }
-    }
-
-    async function handleRegenerateClassCode(code) {
-        if (confirm("Are you sure? This will generate a new code, old code will be invalid.")) {
-            const result = await apiCall('/api/teacher/regenerate_code', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
-            });
-            if (result.success) {
-                showToast('New code generated!', 'success');
-                fetchTeacherData();
+        const leaderboardEl = document.getElementById('teacher-leaderboard');
+        if (leaderboardEl) {
+            if (students.length > 0) {
+                const sortedStudents = [...students].sort((a, b) => b.streak - a.streak);
+                leaderboardEl.innerHTML = `
+                    <ul class="space-y-2">
+                        ${sortedStudents.map((s, i) => `<li class="flex items-center justify-between text-sm text-gray-300"><span>${i + 1}. ${s.username}</span><span class="font-bold text-yellow-400">${s.streak} days</span></li>`).join('')}
+                    </ul>
+                `;
             } else {
-                showToast(result.error, 'error');
+                leaderboardEl.innerHTML = `<p class="text-gray-400">No students in your class yet.</p>`;
             }
         }
     }
+    
+    async function handleGenerateClassroomCode() {
+        const result = await apiCall('/api/teacher/generate_classroom_code', { method: 'POST' });
+        if (result.success) {
+            showToast('New classroom code generated!', 'success');
+            await fetchTeacherData();
+        } else {
+            showToast(result.error, 'error');
+        }
+    }
 
-    function handleCopyClassroomCode(code) {
-        if (code && code !== 'Loading...') {
+    function handleCopyClassroomCode() {
+        const code = document.getElementById('teacher-classroom-code').textContent;
+        if (code && code !== 'None' && code !== 'Loading...') {
             navigator.clipboard.writeText(code);
             showToast('Classroom code copied to clipboard!', 'success');
         }
@@ -2114,12 +2060,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function handleKickStudent(studentId, classCode) {
-        if (confirm("Are you sure you want to kick this student from the class?")) {
+    async function handleKickStudent(studentId) {
+        if (confirm("Are you sure you want to kick this student from your classroom?")) {
             const result = await apiCall('/api/teacher/kick_student', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ student_id: studentId, class_code: classCode }),
+                body: JSON.stringify({ student_id: studentId }),
             });
             if (result.success) {
                 showToast(result.message, 'success');
@@ -2128,81 +2074,6 @@ document.addEventListener('DOMContentLoaded', () => {
                  showToast(result.error, 'error');
             }
         }
-    }
-
-    // --- STUDENT MY CLASSES PAGE ---
-    function renderMyClassesPage() {
-        const template = document.getElementById('template-my-classes-page');
-        DOMElements.appContainer.innerHTML = '';
-        DOMElements.appContainer.appendChild(template.content.cloneNode(true));
-        setupAppEventListeners();
-        fetchMyClasses();
-    }
-
-    async function fetchMyClasses() {
-        const result = await apiCall('/api/student/my_classes');
-        if (result.success) {
-            const listEl = document.getElementById('my-classes-list');
-            listEl.innerHTML = '';
-            if (result.classes.length > 0) {
-                result.classes.forEach(cls => {
-                    const classEl = document.createElement('div');
-                    classEl.className = 'bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-2';
-                    classEl.innerHTML = `
-                        <h3 class="text-lg font-bold flex justify-between items-center">
-                            ${cls.name}
-                            <div class="flex gap-2">
-                                <button id="view-leaderboard-btn" data-code="${cls.code}" class="text-green-400 hover:text-green-300"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="M4 2v4"/><path d="M20 2v4"/><path d="M5.2 4h13.6c1 0 1.8.8 1.8 1.8v14.4c0 1-.8 1.8-1.8 1.8H5.2c-1 0-1.8-.8-1.8-1.8V5.8c0-1 .8-1.8 1.8-1.8z"/><path d="M8 15v1h8v-1"/><path d="M8 15v-2a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M8 15V9a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v6"/></svg> Leaderboard</button>
-                                <button id="leave-class-btn" data-code="${cls.code}" class="text-red-400 hover:text-red-300"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></svg></button>
-                            </div>
-                        </h3>
-                        <p class="text-gray-400">${cls.desc}</p>
-                        <p class="text-sm text-gray-500">Teacher: ${cls.teacher_username}</p>
-                    `;
-                    listEl.appendChild(classEl);
-                });
-            } else {
-                listEl.innerHTML = '<p class="text-gray-400">You are not joined to any classes yet.</p>';
-            }
-        }
-    }
-
-    async function handleJoinClassroom() {
-        const code = prompt("Enter classroom code:");
-        if (!code) return;
-        const result = await apiCall('/api/student/join_class', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code }),
-        });
-        if (result.success) {
-            showToast('Joined class!', 'success');
-            fetchMyClasses();
-            fetchStudentLeaderboard();
-        } else {
-            showToast(result.error, 'error');
-        }
-    }
-
-    async function handleLeaveClass(code) {
-        if (confirm("Are you sure you want to leave this class?")) {
-            const result = await apiCall('/api/student/leave_class', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
-            });
-            if (result.success) {
-                showToast('Left class.', 'success');
-                fetchMyClasses();
-                fetchStudentLeaderboard();
-            } else {
-                showToast(result.error, 'error');
-            }
-        }
-    }
-
-    function handleViewLeaderboard(code) {
-        fetchStudentLeaderboard(code);
     }
 
     // --- ADMIN ACTIONS ---
@@ -2306,7 +2177,7 @@ def signup():
     if User.get_by_username(username):
         return jsonify({'error': 'Username taken'}), 400
     user_id = str(uuid.uuid4())
-    user = User(id=user_id, username=username, password_hash=generate_password_hash(password), account_type='student', plan='student')
+    user = User(id=user_id, username=username, password_hash=generate_password_hash(password))
     DB['users'][user_id] = user
     DB['chats'][user_id] = {}
     save_database()
@@ -2333,6 +2204,26 @@ def special_signup():
     return jsonify({'success': True, 'user': user_to_dict(user), 'chats': {}, 'settings': DB['site_settings']})
 
 
+@app.route('/api/student_signup', methods=['POST'])
+def student_signup():
+    data = request.json
+    username = data['username']
+    password = data['password']
+    classroom_code = data['classroom_code']
+    if User.get_by_username(username):
+        return jsonify({'error': 'Username taken'}), 400
+    if classroom_code not in DB['classrooms']:
+        return jsonify({'error': 'Invalid classroom code'}), 400
+    user_id = str(uuid.uuid4())
+    user = User(id=user_id, username=username, password_hash=generate_password_hash(password), account_type='student', classroom_code=classroom_code, plan='student')
+    DB['users'][user_id] = user
+    DB['chats'][user_id] = {}
+    DB['classrooms'][classroom_code]['students'].append(user_id)
+    save_database()
+    login_user(user)
+    return jsonify({'success': True, 'user': user_to_dict(user), 'chats': {}, 'settings': DB['site_settings']})
+
+
 @app.route('/api/teacher_signup', methods=['POST'])
 def teacher_signup():
     data = request.json
@@ -2346,10 +2237,10 @@ def teacher_signup():
     user_id = str(uuid.uuid4())
     user = User(id=user_id, username=username, password_hash=generate_password_hash(password), account_type='teacher', plan='ultra')
     classroom_code = secrets.token_hex(4).upper()
-    user.classrooms.append(classroom_code)
-    DB['classrooms'][classroom_code] = {'teacher_id': user_id, 'name': 'My First Class', 'desc': 'Welcome to my class!', 'students': []}
+    user.classroom_code = classroom_code
     DB['users'][user_id] = user
     DB['chats'][user_id] = {}
+    DB['classrooms'][classroom_code] = {'teacher_id': user_id, 'students': []}
     save_database()
     login_user(user)
     return jsonify({'success': True, 'user': user_to_dict(user), 'chats': {}, 'settings': DB['site_settings']})
@@ -2446,35 +2337,40 @@ def share_chat():
 @app.route('/api/chat', methods=['POST'])
 @login_required
 def chat():
-    chat_id = request.form['chat_id']
-    prompt = request.form['prompt']
+    chat_id = request.form.get('chat_id')
+    prompt = request.form.get('prompt')
     is_study_mode = request.form.get('is_study_mode', 'false') == 'true'
     model_name = request.form.get('model_name', 'deepseek-chat')
     file = request.files.get('file')
 
-    plan_details = PLAN_CONFIG[current_user.plan]
+    if not chat_id or not prompt:
+        return jsonify({'error': 'Missing chat_id or prompt'}), 400
+
+    plan_details = PLAN_CONFIG.get(current_user.plan, PLAN_CONFIG['free'])
     today = datetime.now().strftime("%Y-%m-%d")
-    if current_user.last_message_date != today:
+
+    if getattr(current_user, 'last_message_date', today) != today:
         current_user.daily_messages = 0
         current_user.last_message_date = today
+    
     if current_user.daily_messages >= plan_details['message_limit']:
         return jsonify({'error': 'Daily message limit reached'}), 429
+    
     current_user.daily_messages += 1
 
     if current_user.account_type == 'student':
-        last_date = datetime.strptime(current_user.last_streak_date, "%Y-%m-%d")
+        last_date = datetime.strptime(getattr(current_user, 'last_streak_date', today), "%Y-%m-%d")
         delta = datetime.now() - last_date
         if delta.days == 1:
-            current_user.streak += 1
+            current_user.streak = getattr(current_user, 'streak', 0) + 1
         elif delta.days > 1:
             current_user.streak = 1
         current_user.last_streak_date = today
 
     save_database()
 
-    image_b64 = None
     if file:
-        return jsonify({'error': 'Image support not implemented'}), 501  # Placeholder, as DeepSeek doesn't support vision
+        return jsonify({'error': 'Image support not implemented'}), 501
 
     system_prompt = "You are a helpful AI assistant."
     if is_study_mode:
@@ -2484,55 +2380,58 @@ def chat():
     elif model_name == 'hardcore-mode':
         system_prompt = "You are in hardcore mode, provide challenging problems and rigorous explanations."
 
-    if chat_id not in DB['chats'].get(current_user.id, {}):
+    user_chats = DB['chats'].get(current_user.id, {})
+    if chat_id not in user_chats:
         return jsonify({'error': 'Chat not found'}), 404
 
-    chat = DB['chats'][current_user.id][chat_id]
-    chat['messages'].append({'sender': 'user', 'content': prompt})
+    chat_history = user_chats[chat_id]['messages']
+    chat_history.append({'sender': 'user', 'content': prompt})
     save_database()
 
     def generate():
         try:
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    *[{"role": "user" if m['sender'] == 'user' else "assistant", "content": m['content']} for m in chat['messages']]
-                ],
-                "stream": True
-            }
+            # Map 'sender' to 'role' for the API
+            api_messages = [
+                {"role": "system", "content": system_prompt}
+            ]
+            for msg in chat_history:
+                role = "assistant" if msg['sender'] == 'model' else "user"
+                api_messages.append({"role": role, "content": msg['content']})
+
+            payload = { "model": model_name, "messages": api_messages, "stream": True }
             headers = {
                 "Authorization": f"Bearer {SITE_CONFIG['DEEPSEEK_API_KEY']}",
                 "Content-Type": "application/json"
             }
             response = requests.post(SITE_CONFIG['DEEPSEEK_API_URL'], json=payload, headers=headers, stream=True)
             response.raise_for_status()
+
             for line in response.iter_lines():
                 if line:
                     decoded = line.decode('utf-8')
                     if decoded.startswith("data: "):
                         try:
-                            data = json.loads(decoded[6:])
-                            if 'choices' in data and data['choices']:
-                                yield data['choices'][0]['delta'].get('content', '')
+                            data_str = decoded[6:]
+                            if data_str.strip() and data_str != '[DONE]':
+                                data = json.loads(data_str)
+                                if 'choices' in data and data['choices'] and 'delta' in data['choices'][0]:
+                                    yield data['choices'][0]['delta'].get('content', '')
                         except json.JSONDecodeError:
-                            continue # Ignore empty or malformed lines
+                            logging.warning(f"Could not decode JSON from stream: {decoded}")
+                            continue
         except Exception as e:
             logging.error(f"Error during API call: {e}")
-            yield f"Error: Could not connect to the AI model. Please try again later."
-
-    ai_msg = {'sender': 'model', 'content': ''}
-    chat['messages'].append(ai_msg)
+            yield "Error: Could not connect to the AI model. Please try again later."
 
     def stream_response():
-        content = ''
-        for chunk in generate():
-            content += chunk
-            yield chunk
-        ai_msg['content'] = content
+        ai_response_content = "".join(list(generate()))
+        
+        # Append the complete AI message to history
+        chat_history.append({'sender': 'model', 'content': ai_response_content})
+        
         # Auto-generate title for new chats
-        if len(chat['messages']) == 2 and (chat['title'] == 'New Chat' or not chat['title']):
-             title_prompt = f"Generate a very short, concise title (4 words max) for the following conversation:\n\nUser: {prompt}\nAI: {content[:100]}..."
+        if len(chat_history) == 2 and (user_chats[chat_id]['title'] == 'New Chat' or not user_chats[chat_id]['title']):
+             title_prompt = f"Generate a very short, concise title (4 words max) for this conversation:\n\nUser: {prompt}"
              try:
                  title_response = requests.post(
                      SITE_CONFIG['DEEPSEEK_API_URL'],
@@ -2543,11 +2442,14 @@ def chat():
                      headers={"Authorization": f"Bearer {SITE_CONFIG['DEEPSEEK_API_KEY']}", "Content-Type": "application/json"}
                  )
                  title_response.raise_for_status()
-                 chat['title'] = title_response.json()['choices'][0]['message']['content'].strip().strip('"')
+                 new_title = title_response.json()['choices'][0]['message']['content'].strip().strip('"')
+                 user_chats[chat_id]['title'] = new_title
              except Exception as e:
                  logging.error(f"Could not auto-generate title: {e}")
-                 chat['title'] = prompt[:30] + '...' if len(prompt) > 30 else prompt
+                 user_chats[chat_id]['title'] = prompt[:40]
+        
         save_database()
+        yield ai_response_content
 
     return Response(stream_with_context(stream_response()), mimetype='text/plain')
 
@@ -2649,19 +2551,15 @@ def delete_user_route():
     user = DB['users'][user_id]
     if user_id in DB['chats']:
         del DB['chats'][user_id]
-    if user.account_type == 'teacher':
-        for code in user.classrooms:
-            if code in DB['classrooms']:
-                for sid in DB['classrooms'][code]['students']:
-                    s = User.get(sid)
-                    if s:
-                        s.classrooms.remove(code)
-                del DB['classrooms'][code]
-    if user.account_type == 'student':
-        for code in user.classrooms:
-            if code in DB['classrooms']:
-                if user_id in DB['classrooms'][code]['students']:
-                    DB['classrooms'][code]['students'].remove(user_id)
+    if user.account_type == 'teacher' and user.classroom_code and user.classroom_code in DB['classrooms']:
+        for sid in DB['classrooms'][user.classroom_code]['students']:
+            s = User.get(sid)
+            if s:
+                s.classroom_code = None
+        del DB['classrooms'][user.classroom_code]
+    if user.account_type == 'student' and user.classroom_code and user.classroom_code in DB['classrooms']:
+        if user_id in DB['classrooms'][user.classroom_code]['students']:
+            DB['classrooms'][user.classroom_code]['students'].remove(user_id)
     del DB['users'][user_id]
     save_database()
     return jsonify({'success': True, 'message': 'User deleted'})
@@ -2711,82 +2609,42 @@ def impersonate():
 @app.route('/api/teacher/dashboard_data', methods=['GET'])
 @teacher_required
 def teacher_dashboard_data():
-    classrooms = []
+    classroom_code = current_user.classroom_code
+    classroom = DB['classrooms'].get(classroom_code, {'students': []})
     students = []
-    for code in current_user.classrooms:
-        classroom = DB['classrooms'].get(code)
-        if classroom:
-            cls_students = []
-            for sid in classroom['students']:
-                s = User.get(sid)
-                if s:
-                    cls_students.append({
-                        'id': s.id,
-                        'username': s.username,
-                        'plan': s.plan,
-                        'daily_messages': s.daily_messages,
-                        'message_limit': PLAN_CONFIG[s.plan]['message_limit'],
-                        'streak': s.streak,
-                        'last_message_date': s.last_message_date,
-                        'class_code': code,
-                        'class_name': classroom['name']
-                    })
-            students.extend(cls_students)
-            classrooms.append({
-                'code': code,
-                'name': classroom['name'],
-                'desc': classroom['desc'],
-                'students': cls_students
+    for sid in classroom['students']:
+        s = User.get(sid)
+        if s:
+            students.append({
+                'id': s.id,
+                'username': s.username,
+                'plan': s.plan,
+                'daily_messages': s.daily_messages,
+                'message_limit': PLAN_CONFIG[s.plan]['message_limit'],
+                'streak': s.streak,
+                'last_message_date': s.last_message_date
             })
     return jsonify({
         'success': True,
-        'classrooms': classrooms,
+        'classroom': {'code': classroom_code},
         'students': students
     })
 
 
-@app.route('/api/teacher/create_class', methods=['POST'])
+@app.route('/api/teacher/generate_classroom_code', methods=['POST'])
 @teacher_required
-def teacher_create_class():
-    data = request.json
-    name = data['name']
-    desc = data.get('desc', '')
-    code = secrets.token_hex(4).upper()
-    DB['classrooms'][code] = {'teacher_id': current_user.id, 'name': name, 'desc': desc, 'students': []}
-    current_user.classrooms.append(code)
-    save_database()
-    return jsonify({'success': True})
-
-
-@app.route('/api/teacher/edit_class', methods=['POST'])
-@teacher_required
-def teacher_edit_class():
-    data = request.json
-    code = data['code']
-    if code not in current_user.classrooms:
-        return jsonify({'error': 'Class not found'}), 404
-    classroom = DB['classrooms'][code]
-    classroom['name'] = data['name']
-    classroom['desc'] = data['desc']
-    save_database()
-    return jsonify({'success': True})
-
-
-@app.route('/api/teacher/regenerate_code', methods=['POST'])
-@teacher_required
-def teacher_regenerate_code():
-    data = request.json
-    old_code = data['code']
-    if old_code not in current_user.classrooms:
-        return jsonify({'error': 'Class not found'}), 404
+def generate_classroom_code():
+    old_code = current_user.classroom_code
     new_code = secrets.token_hex(4).upper()
-    DB['classrooms'][new_code] = DB['classrooms'][old_code]
-    del DB['classrooms'][old_code]
-    current_user.classrooms[current_user.classrooms.index(old_code)] = new_code
-    for sid in DB['classrooms'][new_code]['students']:
-        s = User.get(sid)
-        if s:
-            s.classrooms[s.classrooms.index(old_code)] = new_code
+    if old_code and old_code in DB['classrooms']:
+        # Also remove students from the old classroom logically
+        for student_id in DB['classrooms'][old_code]['students']:
+            student = User.get(student_id)
+            if student:
+                student.classroom_code = None
+        del DB['classrooms'][old_code]
+    DB['classrooms'][new_code] = {'teacher_id': current_user.id, 'students': []}
+    current_user.classroom_code = new_code
     save_database()
     return jsonify({'success': True, 'new_code': new_code})
 
@@ -2794,9 +2652,8 @@ def teacher_regenerate_code():
 @app.route('/api/teacher/student_chats/<student_id>', methods=['GET'])
 @teacher_required
 def student_chats(student_id):
-    # Check if student is in any of teacher's classes
-    is_in_class = any(student_id in DB['classrooms'][code]['students'] for code in current_user.classrooms if code in DB['classrooms'])
-    if not is_in_class:
+    classroom_code = current_user.classroom_code
+    if not classroom_code or classroom_code not in DB['classrooms'] or student_id not in DB['classrooms'][classroom_code]['students']:
         return jsonify({'error': 'This student is not in your classroom.'}), 403
     chats = DB['chats'].get(student_id, {})
     return jsonify({'success': True, 'chats': list(chats.values())})
@@ -2807,84 +2664,25 @@ def student_chats(student_id):
 def kick_student():
     data = request.json
     student_id = data['student_id']
-    class_code = data['class_code']
-    if class_code not in current_user.classrooms:
-        return jsonify({'error': 'You do not own this class.'}), 400
-    if class_code in DB['classrooms'] and student_id in DB['classrooms'][class_code]['students']:
-        DB['classrooms'][class_code]['students'].remove(student_id)
+    classroom_code = current_user.classroom_code
+    if not classroom_code or classroom_code not in DB['classrooms']:
+        return jsonify({'error': 'You do not have a classroom.'}), 400
+    if student_id in DB['classrooms'][classroom_code]['students']:
+        DB['classrooms'][classroom_code]['students'].remove(student_id)
         user = User.get(student_id)
-        if user and class_code in user.classrooms:
-            user.classrooms.remove(class_code)
+        if user:
+            user.classroom_code = None
         save_database()
         return jsonify({'success': True, 'message': 'Student removed from classroom.'})
     return jsonify({'error': 'Student not found in your classroom.'}), 404
 
 
-@app.route('/api/student/my_classes', methods=['GET'])
-@login_required
-def student_my_classes():
-    if current_user.account_type != 'student':
-        return jsonify({'success': False, 'error': 'Not a student.'}), 403
-    classes = []
-    for code in current_user.classrooms:
-        classroom = DB['classrooms'].get(code)
-        if classroom:
-            teacher = User.get(classroom['teacher_id'])
-            classes.append({
-                'code': code,
-                'name': classroom['name'],
-                'desc': classroom['desc'],
-                'teacher_username': teacher.username if teacher else 'Unknown'
-            })
-    return jsonify({'success': True, 'classes': classes})
-
-
-@app.route('/api/student/join_class', methods=['POST'])
-@login_required
-def student_join_class():
-    if current_user.account_type != 'student':
-        return jsonify({'error': 'Not a student'}), 403
-    data = request.json
-    code = data['code']
-    if code not in DB['classrooms']:
-        return jsonify({'error': 'Invalid classroom code'}), 400
-    if code in current_user.classrooms:
-        return jsonify({'error': 'Already joined'}), 400
-    current_user.classrooms.append(code)
-    DB['classrooms'][code]['students'].append(current_user.id)
-    save_database()
-    return jsonify({'success': True})
-
-
-@app.route('/api/student/leave_class', methods=['POST'])
-@login_required
-def student_leave_class():
-    if current_user.account_type != 'student':
-        return jsonify({'error': 'Not a student'}), 403
-    data = request.json
-    code = data['code']
-    if code not in current_user.classrooms:
-        return jsonify({'error': 'Not joined to this class'}), 400
-    current_user.classrooms.remove(code)
-    if code in DB['classrooms'] and current_user.id in DB['classrooms'][code]['students']:
-        DB['classrooms'][code]['students'].remove(current_user.id)
-    save_database()
-    return jsonify({'success': True})
-
-
 @app.route('/api/student/leaderboard', methods=['GET'])
-@app.route('/api/student/leaderboard/<class_code>', methods=['GET'])
 @login_required
-def student_leaderboard(class_code=None):
-    if current_user.account_type != 'student':
-        return jsonify({'success': False, 'error': 'Not a student.'}), 403
-    if class_code and class_code not in current_user.classrooms:
-        return jsonify({'success': False, 'error': 'Not joined to this class.'}), 404
-    if not class_code and current_user.classrooms:
-        class_code = current_user.classrooms[0]  # Default to first class
-    if not class_code:
-        return jsonify({'success': False, 'error': 'Not in any classroom.'}), 404
-    classroom = DB['classrooms'].get(class_code)
+def student_leaderboard():
+    if current_user.account_type != 'student' or not current_user.classroom_code:
+        return jsonify({'success': False, 'error': 'Not a student or not in a classroom.'}), 403
+    classroom = DB['classrooms'].get(current_user.classroom_code)
     if not classroom:
         return jsonify({'success': False, 'error': 'Classroom not found.'}), 404
     students = [User.get(sid) for sid in classroom['students']]
@@ -2896,7 +2694,6 @@ def student_leaderboard(class_code=None):
 def google_login():
     # Placeholder for Google login implementation
     return jsonify({'error': 'Google login not implemented'}), 501
-
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

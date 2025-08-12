@@ -344,7 +344,7 @@ HTML_CONTENT = """
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl animate-scale-up">
                 <div class="flex justify-center mb-6" id="auth-logo-container"></div>
                 <h2 class="text-3xl font-bold text-center text-white mb-2" id="auth-title">Welcome Back</h2>
-                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in to continue to Myth AI.</p>
+                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in as student to continue to Myth AI.</p>
                 <form id="auth-form">
                     <div class="mb-4">
                         <label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
@@ -371,7 +371,6 @@ HTML_CONTENT = """
                 </div>
             </div>
             <div class="text-center mt-4 flex justify-center gap-4">
-                <button id="student-signup-link" class="text-xs text-gray-500 hover:text-gray-400">Student Sign Up</button>
                 <button id="teacher-signup-link" class="text-xs text-gray-500 hover:text-gray-400">Teacher Sign Up</button>
                 <button id="special-auth-link" class="text-xs text-gray-500 hover:text-gray-400">Admin Portal</button>
             </div>
@@ -858,12 +857,11 @@ document.addEventListener('DOMContentLoaded', () => {
         renderLogo('auth-logo-container');
         
         document.getElementById('auth-title').textContent = isLogin ? 'Welcome Back' : 'Create Account';
-        document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue to Myth AI.' : 'Create a new general account.';
+        document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in as student to continue to Myth AI.' : 'Create a new student account.';
         document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up';
         document.getElementById('auth-toggle-btn').textContent = isLogin ? "Don't have an account? Sign Up" : "Already have an account? Login";
 
         document.getElementById('auth-toggle-btn').onclick = () => renderAuthPage(!isLogin);
-        document.getElementById('student-signup-link').onclick = renderStudentSignupPage;
         document.getElementById('teacher-signup-link').onclick = renderTeacherSignupPage;
         document.getElementById('special-auth-link').onclick = renderSpecialAuthPage;
         document.getElementById('forgot-password-link').onclick = renderForgotPasswordPage;
@@ -912,35 +910,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             if (result.success) {
                 initializeApp(result.user, {}, {});
-            } else {
-                errorEl.textContent = result.error;
-            }
-        };
-    }
-
-    function renderStudentSignupPage() {
-        const template = document.getElementById('template-student-signup-page');
-        DOMElements.appContainer.innerHTML = '';
-        DOMElements.appContainer.appendChild(template.content.cloneNode(true));
-        renderLogo('student-signup-logo-container');
-        document.getElementById('back-to-main-login').onclick = () => renderAuthPage(true);
-        
-        document.getElementById('student-signup-form').onsubmit = async (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const errorEl = document.getElementById('student-signup-error');
-            errorEl.textContent = '';
-            const formData = new FormData(form);
-            const data = Object.fromEntries(formData.entries());
-            
-            const result = await apiCall('/api/student_signup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data),
-            });
-
-            if (result.success) {
-                initializeApp(result.user, result.chats, result.settings);
             } else {
                 errorEl.textContent = result.error;
             }
@@ -1345,8 +1314,8 @@ document.addEventListener('DOMContentLoaded', () => {
             </label>
         `;
         const toggle = document.getElementById('study-mode-toggle');
-        const dot = toggle.parentElement.querySelector('.dot');
-        const block = toggle.parentElement.querySelector('.block');
+        const block = toggle.nextElementSibling;
+        const dot = block.nextElementSibling;
         
         toggle.checked = appState.isStudyMode;
         if (appState.isStudyMode) {
@@ -2004,9 +1973,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const classesListEl = document.getElementById('teacher-classes-list');
         if (classesListEl) {
             classesListEl.innerHTML = '';
-            if (classrooms.length === 0) {
-                classesListEl.innerHTML = '<p class="text-gray-400">You have no classes yet. Create one above.</p>';
-            } else {
+            if (classrooms.length > 0) {
                 classrooms.forEach(cls => {
                     const classEl = document.createElement('div');
                     classEl.className = 'bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-2';
@@ -2034,6 +2001,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     `;
                     classesListEl.appendChild(classEl);
                 });
+            } else {
+                classesListEl.innerHTML = '<p class="text-gray-400">You have no classes yet. Create one above.</p>';
             }
         }
 
@@ -2175,9 +2144,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (result.success) {
             const listEl = document.getElementById('my-classes-list');
             listEl.innerHTML = '';
-            if (result.classes.length === 0) {
-                listEl.innerHTML = '<p class="text-gray-400">You are not joined to any classes yet.</p>';
-            } else {
+            if (result.classes.length > 0) {
                 result.classes.forEach(cls => {
                     const classEl = document.createElement('div');
                     classEl.className = 'bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-2';
@@ -2194,6 +2161,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     `;
                     listEl.appendChild(classEl);
                 });
+            } else {
+                listEl.innerHTML = '<p class="text-gray-400">You are not joined to any classes yet.</p>';
             }
         }
     }
@@ -2337,7 +2306,7 @@ def signup():
     if User.get_by_username(username):
         return jsonify({'error': 'Username taken'}), 400
     user_id = str(uuid.uuid4())
-    user = User(id=user_id, username=username, password_hash=generate_password_hash(password))
+    user = User(id=user_id, username=username, password_hash=generate_password_hash(password), account_type='student', plan='student')
     DB['users'][user_id] = user
     DB['chats'][user_id] = {}
     save_database()
@@ -2357,26 +2326,6 @@ def special_signup():
         return jsonify({'error': 'Username taken'}), 400
     user_id = str(uuid.uuid4())
     user = User(id=user_id, username=username, password_hash=generate_password_hash(password), role='admin', plan='ultra')
-    DB['users'][user_id] = user
-    DB['chats'][user_id] = {}
-    save_database()
-    login_user(user)
-    return jsonify({'success': True, 'user': user_to_dict(user), 'chats': {}, 'settings': DB['site_settings']})
-
-
-@app.route('/api/student_signup', methods=['POST'])
-def student_signup():
-    data = request.json
-    username = data['username']
-    password = data['password']
-    classroom_code = data.get('classroom_code')
-    if User.get_by_username(username):
-        return jsonify({'error': 'Username taken'}), 400
-    user_id = str(uuid.uuid4())
-    user = User(id=user_id, username=username, password_hash=generate_password_hash(password), account_type='student', plan='student')
-    if classroom_code and classroom_code in DB['classrooms']:
-        user.classrooms.append(classroom_code)
-        DB['classrooms'][classroom_code]['students'].append(user_id)
     DB['users'][user_id] = user
     DB['chats'][user_id] = {}
     save_database()

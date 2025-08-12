@@ -27,7 +27,62 @@
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
     <div id="modal-container"></div>
     <!-- TEMPLATES START -->
-    <template id="template-auth-page"><div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);"><div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl"><div class="flex items-center justify-center gap-3 mb-4"><svg class="w-12 h-12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 7L12 12L22 7" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12V22" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logo-gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs></svg><h1 class="text-4xl font-bold text-center brand-gradient-text">Myth AI</h1></div><p class="text-gray-400 text-center mb-6" id="auth-subtitle">Welcome Back</p><form id="auth-form"><div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div id="teacher-key-field" class="hidden mb-4"><label class="flex items-center text-sm text-gray-400"><input type="checkbox" id="is-teacher-checkbox" class="mr-2 bg-gray-700 border-gray-600 rounded">Sign up as a Teacher</label><input type="text" id="teacher-secret-key" name="secret_key" class="hidden w-full mt-2 p-2 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Enter Teacher Secret Key"></div><div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div><button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button><p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p></form><div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div></div></div></template>
+    <template id="template-role-choice">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);">
+            <div class="w-full max-w-md text-center">
+                <div class="flex items-center justify-center gap-3 mb-4">
+                    <svg class="w-16 h-16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 7L12 12L22 7" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12V22" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logo-gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs></svg>
+                    <h1 class="text-5xl font-bold brand-gradient-text">Myth AI</h1>
+                </div>
+                <p class="text-gray-400 text-lg mb-10">Select your role to continue</p>
+                <div class="space-y-4">
+                    <button data-role="student" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-blue-400 border border-transparent">
+                        <div>
+                            <h2 class="text-xl font-bold text-white">Student Portal</h2>
+                            <p class="text-gray-400">Join classes, submit assignments, and learn with AI.</p>
+                        </div>
+                        <span class="text-2xl">&rarr;</span>
+                    </button>
+                    <button data-role="teacher" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-purple-400 border border-transparent">
+                        <div>
+                            <h2 class="text-xl font-bold text-white">Teacher Portal</h2>
+                            <p class="text-gray-400">Create classes, manage students, and assign quizzes.</p>
+                        </div>
+                        <span class="text-2xl">&rarr;</span>
+                    </button>
+                    <button data-role="admin" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-red-400 border border-transparent">
+                        <div>
+                            <h2 class="text-xl font-bold text-white">Admin Portal</h2>
+                            <p class="text-gray-400">Manage users, classes, and site settings.</p>
+                        </div>
+                        <span class="text-2xl">&rarr;</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="template-auth-form">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);">
+            <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl">
+                <button id="back-to-roles" class="text-sm text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Role Selection</button>
+                <h1 class="text-3xl font-bold text-center brand-gradient-text mb-2" id="auth-title">Portal Login</h1>
+                <p class="text-gray-400 text-center mb-6" id="auth-subtitle">Sign in to continue</p>
+                <form id="auth-form">
+                    <input type="hidden" id="account_type" name="account_type" value="student">
+                    <div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div>
+                    <div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div>
+                    <div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div>
+                    <div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div>
+                    <div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div>
+                    <button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button>
+                    <p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p>
+                </form>
+                <div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div>
+            </div>
+        </div>
+    </template>
+    
     <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 7L12 12L22 7" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12V22" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logo-gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs></svg><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
@@ -52,16 +107,14 @@
     <script>
     document.addEventListener('DOMContentLoaded', () => {
         // --- CONFIGURATION ---
-        const BASE_URL = 'https://myth-ai.onrender.com'; // The address of your running Python backend
-        // This object holds public keys and other info that the backend would normally provide.
-        // You MUST replace these with your actual keys for Stripe to work.
+        const BASE_URL = 'https://myth-ai.onrender.com';
         const SITE_CONFIG = {
-            STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY', // Replace with your actual Stripe publishable key
-            STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID' // Replace with your actual Stripe Price ID
+            STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
+            STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
         };
         // ---------------------
 
-        const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true };
+        const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null };
         const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container') };
         
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
@@ -72,14 +125,13 @@
                     options.headers = { 'Content-Type': 'application/json', ...options.headers }; 
                     options.body = JSON.stringify(options.body); 
                 } 
-                // Prepend the BASE_URL to the endpoint for every API call
                 const response = await fetch(`${BASE_URL}${endpoint}`, { 
-                    credentials: 'include', // Important for sending cookies
+                    // credentials: 'include', // This can cause CORS issues if server not configured perfectly
                     ...options 
                 }); 
                 const data = await response.json(); 
                 if (!response.ok) { 
-                    if (response.status === 401 && !window.location.pathname.includes('reset-password')) handleLogout(false); 
+                    if (response.status === 401) handleLogout(false); 
                     throw new Error(data.error || `Request failed with status ${response.status}`); 
                 } 
                 return { success: true, ...data }; 
@@ -97,7 +149,6 @@
         
         function connectSocket() { 
             if (appState.socket) appState.socket.disconnect(); 
-            // Point the socket connection to the backend URL
             appState.socket = io(BASE_URL); 
             appState.socket.on('connect', () => { 
                 console.log('Socket connected!'); 
@@ -112,9 +163,20 @@
             }); 
         }
         
+        function setupRoleChoicePage() {
+            renderPage('template-role-choice', () => {
+                document.querySelectorAll('.role-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        appState.selectedRole = e.currentTarget.dataset.role;
+                        setupAuthPage();
+                    });
+                });
+            });
+        }
+
         function setupAuthPage() {
             appState.isLoginView = true;
-            renderPage('template-auth-page', () => {
+            renderPage('template-auth-form', () => {
                 updateAuthView();
                 document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit);
                 document.getElementById('auth-toggle-btn').addEventListener('click', () => {
@@ -122,37 +184,37 @@
                     updateAuthView();
                 });
                 document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword);
-                document.getElementById('is-teacher-checkbox')?.addEventListener('change', (e) => {
-                    document.getElementById('teacher-secret-key').classList.toggle('hidden', !e.target.checked);
-                });
+                document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage);
             });
         }
         
         function updateAuthView() {
-            const form = document.getElementById('auth-form');
+            const title = document.getElementById('auth-title');
             const subtitle = document.getElementById('auth-subtitle');
             const submitBtn = document.getElementById('auth-submit-btn');
             const toggleBtn = document.getElementById('auth-toggle-btn');
             const emailField = document.getElementById('email-field');
             const teacherKeyField = document.getElementById('teacher-key-field');
-            const forgotPasswordLink = document.getElementById('forgot-password-link');
+            
+            title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`;
 
             if (appState.isLoginView) {
-                subtitle.textContent = 'Welcome Back';
+                subtitle.textContent = 'Sign in to continue';
                 submitBtn.textContent = 'Login';
                 toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>";
                 emailField.classList.add('hidden');
                 teacherKeyField.classList.add('hidden');
-                forgotPasswordLink.classList.remove('hidden');
-                form.querySelector('#email').required = false;
+                document.getElementById('email').required = false;
             } else {
                 subtitle.textContent = 'Create your Account';
                 submitBtn.textContent = 'Sign Up';
                 toggleBtn.innerHTML = "Already have an account? <span class='font-semibold'>Login</span>";
                 emailField.classList.remove('hidden');
-                teacherKeyField.classList.remove('hidden');
-                forgotPasswordLink.classList.add('hidden');
-                form.querySelector('#email').required = true;
+                document.getElementById('email').required = true;
+                if (appState.selectedRole === 'teacher') {
+                    teacherKeyField.classList.remove('hidden');
+                    document.getElementById('teacher-secret-key').required = true;
+                }
             }
         }
 
@@ -160,13 +222,24 @@
             e.preventDefault();
             const endpoint = appState.isLoginView ? '/api/login' : '/api/signup';
             let body = Object.fromEntries(new FormData(e.target));
+            
             if (!appState.isLoginView) {
-                body.is_teacher = document.getElementById('is-teacher-checkbox').checked;
+                body.account_type = appState.selectedRole;
             }
+            
             const result = await apiCall(endpoint, { method: 'POST', body });
+            
             if (result.success) {
-                // The /api/status call will fetch the SITE_CONFIG, so we don't need it from the login response
-                initializeApp(result.user, {}); 
+                if (result.user.role === appState.selectedRole || (appState.selectedRole === 'student' && result.user.role === 'teacher') || (appState.selectedRole === 'teacher' && result.user.role === 'student')) {
+                     initializeApp(result.user, {});
+                } else if (appState.selectedRole === 'admin' && result.user.role !== 'admin') {
+                    document.getElementById('auth-error').textContent = "You do not have admin privileges.";
+                    handleLogout(true);
+                }
+                else {
+                    document.getElementById('auth-error').textContent = `This account is not a ${appState.selectedRole} account.`;
+                    handleLogout(true);
+                }
             } else {
                 document.getElementById('auth-error').textContent = result.error;
             }
@@ -286,7 +359,7 @@
         async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/api/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${u.username}</td><td class="p-3">${u.email}</td><td class="p-3">${u.role}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${c.name}</td><td class="p-3">${c.teacher_name}</td><td class="p-3">${c.code}</td><td class="p-3">${c.student_count}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); }); } }
         
         async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/api/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
-        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/api/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.replace('/'); }
+        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/api/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
         async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); const result = await apiCall('/api/join_class', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/api/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/api/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = appState.selectedClass.name; document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
@@ -299,23 +372,19 @@
             const message = input.value.trim();
             if (!message || !appState.socket) return;
             
-            // Immediately emit the user's message to the chat
             appState.socket.emit('send_message', { class_id: appState.selectedClass.id, message: message });
             
-            // Disable input and show loading state
             input.value = '';
             input.disabled = true;
             button.disabled = true;
             button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>';
 
-            // Call the backend to get the AI response
             const result = await apiCall('/api/generate_ai_response', {
                 method: 'POST',
                 body: { prompt: message, class_id: appState.selectedClass.id }
             });
 
             if (!result.success) {
-                // If the API call fails, create a temporary error message in the chat
                 const errorMsg = {
                     id: 'error-' + Date.now(),
                     class_id: appState.selectedClass.id,
@@ -327,7 +396,6 @@
                 appendChatMessage(errorMsg);
             }
             
-            // Re-enable input
             input.disabled = false;
             button.disabled = false;
             button.innerHTML = 'Send';
@@ -420,11 +488,12 @@
             if (result.success && result.logged_in) {
                 initializeApp(result.user, result.settings);
             } else {
-                setupAuthPage();
+                setupRoleChoicePage();
             }
         }
         main();
     });
     </script>
 </body>
-</ht
+</html>
+

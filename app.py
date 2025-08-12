@@ -1,9 +1,8 @@
-
 import os
 import json
 import logging
 import base64
-import tim
+import time
 import uuid
 import secrets
 import requests
@@ -314,7 +313,7 @@ HTML_CONTENT = """
         .study-buddy-mode ::-webkit-scrollbar-track { background: #fde68a; }
         .study-buddy-mode ::-webkit-scrollbar-thumb { background: #d97706; }
         .study-buddy-mode #sidebar button:hover { background-color: rgba(251, 146, 60, 0.3); }
-        .study-buddy-mode #sidebar .bg-blue-600\/30 { background-color: rgba(249, 115, 22, 0.4); }
+        .study-buddy-mode #sidebar .bg-blue-600\\/30 { background-color: rgba(249, 115, 22, 0.4); }
         .typing-indicator span { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: currentColor; margin: 0 2px; animation: typing-bounce 1.4s infinite ease-in-out both; }
         .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
         .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
@@ -1376,7 +1375,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    # --- CHAT LOGIC ---
+    // --- CHAT LOGIC ---
     async function handleSendMessage() {
         const userInput = document.getElementById('user-input');
         if (!userInput) return;
@@ -1564,7 +1563,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    # --- EVENT LISTENERS & HANDLERS ---
+    // --- EVENT LISTENERS & HANDLERS ---
     function setupAppEventListeners() {
         const appContainer = DOMElements.appContainer;
         
@@ -1767,10 +1766,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        let content = `# ${chat.title}\n\n`;
+        let content = `# ${chat.title}\\n\\n`;
         chat.messages.forEach(msg => {
             const sender = msg.sender === 'user' ? 'You' : 'AI';
-            content += `**${sender}:**\n${msg.content}\n\n`;
+            content += `**${sender}:**\\n${msg.content}\\n\\n`;
         });
 
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -1783,7 +1782,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast("Chat downloaded!", "success");
     }
 
-    # --- UPGRADE & PAYMENT LOGIC ---
+    // --- UPGRADE & PAYMENT LOGIC ---
     async function renderUpgradePage() {
         const template = document.getElementById('template-upgrade-page');
         DOMElements.appContainer.innerHTML = '';
@@ -1843,7 +1842,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    # --- PROFILE PAGE LOGIC ---
+    // --- PROFILE PAGE LOGIC ---
     function renderProfilePage() {
         const template = document.getElementById('template-profile-page');
         DOMElements.appContainer.innerHTML = '';
@@ -1878,7 +1877,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    # --- ADMIN & TEACHER LOGIC ---
+    // --- ADMIN & TEACHER LOGIC ---
     function renderAdminDashboard() {
         const template = document.getElementById('template-admin-dashboard');
         DOMElements.appContainer.innerHTML = '';
@@ -2118,7 +2117,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    # --- ADMIN ROUTES ---
+    // --- ADMIN ROUTES ---
     async function handleSetAnnouncement(e) {
         e.preventDefault();
         const text = document.getElementById('announcement-input').value;
@@ -2168,7 +2167,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    # --- INITIAL LOAD ---
+    // --- INITIAL LOAD ---
     checkLoginStatus();
 });
 </script>
@@ -2515,6 +2514,8 @@ def stripe_webhook():
         return 'Invalid signature', 400
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
+        # The following print statement has been corrected and commented out.
+        # print(session)
         user_id = session['metadata'].get('user_id')
         plan_id = session['metadata'].get('plan_id')
         user = User.get(user_id)
@@ -2701,4 +2702,3 @@ def google_login():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-

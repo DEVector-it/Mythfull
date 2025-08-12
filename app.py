@@ -35,7 +35,7 @@ DATABASE_FILE = 'database.json'
 
 # --- Site & API Configuration ---
 SITE_CONFIG = {
-    "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
+    "DEEPSEEK_API_KEY": os.environ.get("sk-86b9be839a494729a87db0b12d8519ba"),
     "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions",
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),

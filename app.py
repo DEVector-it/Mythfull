@@ -35,7 +35,7 @@ DATABASE_FILE = 'database.json'
 
 # --- Site & API Configuration ---
 SITE_CONFIG = {
-    "DEEPSEEK_API_KEY": os.environ.get("sk-86b9be839a494729a87db0b12d8519ba"),
+    "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
     "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions",
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
@@ -229,6 +229,32 @@ def rate_limited(max_attempts=5):
             return f(*args, **kwargs)
         return decorated_function
     return decorator
+
+def send_password_reset_email(user):
+    token = secrets.token_urlsafe(16)
+    DB['reset_tokens'][token] = {"user_id": user.id, "expires": time.time() + 3600} # 1 hour expiration
+    save_database()
+    reset_url = url_for('index', _external=True) + f"?reset_token={token}"
+    msg = Message("Password Reset Request",
+                  sender=app.config['MAIL_DEFAULT_SENDER'],
+                  recipients=[user.email])
+    msg.body = f"""Hello {user.username},
+
+To reset your password, visit the following link:
+{reset_url}
+
+If you did not make this request, simply ignore this email. This link is valid for 1 hour.
+
+Thank you,
+The Myth AI Team
+"""
+    try:
+        mail.send(msg)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to send password reset email to {user.email}: {e}")
+        return False
+
 
 # --- 6. HTML, CSS, and JavaScript Frontend ---
 HTML_CONTENT = """
@@ -496,7 +522,7 @@ HTML_CONTENT = """
                          <div id="student-leaderboard-container" class="glassmorphism p-4 rounded-lg hidden"></div>
                         <div id="stop-generating-container" class="text-center mb-2" style="display: none;">
                             <button id="stop-generating-btn" class="bg-red-600/50 hover:bg-red-600/80 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2 mx-auto"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><rect width="10" height="10" x="3" y="3" rx="1"/></svg> Stop Generating</button>
-                        </div>
+                    </div>
                         <div class="relative glassmorphism rounded-2xl shadow-lg">
                             <div id="preview-container" class="hidden p-2 border-b border-gray-600"></div>
                             <textarea id="user-input" placeholder="Message Myth AI..." class="w-full bg-transparent p-4 pl-14 pr-16 resize-none rounded-2xl focus:outline-none" rows="1"></textarea>
@@ -1115,6 +1141,18 @@ document.addEventListener('DOMContentLoaded', () => {
         chatWindow.appendChild(template.content.cloneNode(true));
         renderLogo('welcome-logo-container');
         
+        if (appState.currentUser?.account_type === 'student') {
+            const subContainer = document.createElement('div');
+            subContainer.className = 'mt-4 text-center';
+            if (!appState.currentUser.classroom_code) {
+                subContainer.innerHTML = `
+                    <p class="text-gray-400 mb-4">You are not part of a classroom yet. Join your teacher's class to see the leaderboard and track your progress.</p>
+                    <button id="join-classroom-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Join Classroom</button>
+                `;
+            }
+            chatWindow.appendChild(subContainer);
+        }
+        
         if (appState.isStudyMode) {
             document.getElementById('welcome-title').textContent = "Welcome to Study Buddy!";
             document.getElementById('welcome-subtitle').textContent = "Let's learn something new. Ask me a question about your homework.";
@@ -1609,7 +1647,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (!planDetails.can_upload) {
                             showToast("Your current plan does not support image uploads.", "error");
                             e.target.value = null;
-                            return;
                         }
                         appState.uploadedFile = e.target.files[0];
                         updatePreviewContainer();
@@ -2117,36 +2154,56 @@ document.addEventListener('DOMContentLoaded', () => {
 
 # --- 7. Backend Helper Functions ---
 def check_and_reset_daily_limit(user):
-    """Resets a user's daily message count if the day has changed."""
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    if user.last_message_date != today_str:
-        user.last_message_date = today_str
-        user.daily_messages = 0
-        
-        if user.account_type == 'student':
-            last_streak_date = datetime.strptime(user.last_streak_date, "%Y-%m-%d")
-            if (datetime.now() - last_streak_date).days > 1:
-                user.streak = 0
-            
-        save_database()
+    """Resets a user's daily message count if the day has changed."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if user.last_message_date != today_str:
+        user.last_message_date = today_str
+        user.daily_messages = 0
+        
+        if user.account_type == 'student':
+            last_streak_date = datetime.strptime(user.last_streak_date, "%Y-%m-%d")
+            if (datetime.now() - last_streak_date).days > 1:
+                user.streak = 0
+            
+        save_database()
 
 def get_user_data_for_frontend(user):
-    """Prepares user data for sending to the frontend."""
-    if not user: return {}
-    check_and_reset_daily_limit(user)
-    plan_details = PLAN_CONFIG.get(user.plan, PLAN_CONFIG['free'])
-    
-    data = {
-        "id": user.id, "username": user.username, "role": user.role, "plan": user.plan,
-        "account_type": user.account_type, "daily_messages": user.daily_messages,
-        "message_limit": plan_details["message_limit"], "can_upload": plan_details["can_upload"],
-        "is_student_in_class": user.account_type == 'student' and user.classroom_code is not None,
-        "streak": user.streak,
-        "available_models": plan_details.get("available_models", ["deepseek-chat"])
-    }
-    return data
+    """Prepares user data for sending to the frontend."""
+    if not user: return {}
+    check_and_reset_daily_limit(user)
+    plan_details = PLAN_CONFIG.get(user.plan, PLAN_CONFIG['free'])
+    
+    data = {
+        "id": user.id, "username": user.username, "role": user.role, "plan": user.plan,
+        "account_type": user.account_type, "daily_messages": user.daily_messages,
+        "message_limit": plan_details["message_limit"], "can_upload": plan_details["can_upload"],
+        "is_student_in_class": user.account_type == 'student' and user.classroom_code is not None,
+        "streak": user.streak,
+        "available_models": plan_details.get("available_models", ["deepseek-chat"])
+    }
+    return data
 
 def get_all_user_chats(user_id):
-    """Retrieves all chats belonging to a specific user."""
-    return {chat_id: chat_data for chat_id, chat_data in DB['chats'].items() if ch
+    """Retrieves all chats belonging to a specific user."""
+    return {chat_id: chat_data for chat_id, chat_data in DB['chats'].items() if chat_data.get('user_id') == user_id}
 
+def generate_unique_classroom_code():
+    while True:
+        code = secrets.token_hex(4).upper()
+        if code not in DB['classrooms']:
+            return code
+
+@app.route('/api/join_classroom', methods=['POST'])
+@login_required
+def join_classroom_api():
+    data = request.get_json()
+    classroom_code = data.get('classroom_code', '').strip().upper()
+
+    if current_user.account_type != 'student':
+        return jsonify({"error": "Only student accounts can join a classroom."}), 403
+
+    if current_user.classroom_code:
+        return jsonify({"error": "You are already a member of a classroom."}), 409
+
+    if classroom_code not in DB['classrooms']:
+        return jsonify({"error": "Invalid classroom code."}), 

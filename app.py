@@ -1,4 +1,4 @@
-
+# --- Imports ---
 import os
 import json
 import logging
@@ -38,7 +38,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 
 # --- Security: Content Security Policy (CSP) ---
-# NOTE: The lambda for the nonce was removed. Talisman injects the nonce automatically.
 csp = {
     'default-src': "'self'",
     'script-src': [
@@ -206,7 +205,6 @@ def student_required(f):
 @app.route('/reset-password/<token>')
 def index(token=None):
     # Serves the main HTML file. JS handles routing.
-    # NOTE: The nonce is now retrieved from the session object.
     return Response(HTML_CONTENT.format(csp_nonce=session.get('_csp_nonce')), mimetype='text/html')
 
 @app.route('/api/status')
@@ -263,7 +261,6 @@ def teacher_signup():
     if not all([username, password, email]) or len(username) < 3 or len(password) < 6 or '@' not in email:
         return jsonify({"error": "Valid email, username (min 3 chars), and password (min 6 chars) are required."}), 400
     
-    # BUG FIX: Was 'jupytext', now 'jsonify'
     if User.get_by_username(username): return jsonify({"error": "Username already exists."}), 409
     if User.get_by_email(email): return jsonify({"error": "Email already in use."}), 409
         
@@ -349,11 +346,13 @@ def my_classes():
     for class_id in current_user.classes:
         if class_id in DB['classes']:
             cls = DB['classes'][class_id]
+            # BUG FIX: Safely get teacher object before accessing attributes.
+            teacher = User.get(cls.get("teacher_id"))
             user_classes.append({
                 "id": cls["id"],
                 "name": cls["name"],
                 "code": cls["code"] if current_user.account_type == 'teacher' else None,
-                "teacher": User.get(cls["teacher_id"]).username if cls.get("teacher_id") else "Unknown"
+                "teacher": teacher.username if teacher else "Unknown"
             })
     return jsonify({"success": True, "classes": user_classes})
 
@@ -361,20 +360,20 @@ def my_classes():
 @student_required
 def join_class():
     data = request.get_json()
-    code = data.get('code').upper()
+    code = data.get('code', '').upper()
     if not code:
         return jsonify({"error": "Class code is required."}), 400
     
-    matching_class = next((cid for cid, cls in DB['classes'].items() if cls['code'] == code), None)
+    matching_class = next((cid for cid, cls in DB['classes'].items() if cls.get('code') == code), None)
     if not matching_class:
         return jsonify({"error": "Invalid class code."}), 404
     if matching_class in current_user.classes:
-        return jsonify({"error": "Already joined this class."}), 400
+        return jsonify({"error": "Already in this class."}), 400
     
     DB['classes'][matching_class]['students'].append(current_user.id)
     current_user.classes.append(matching_class)
     save_database()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "message": "Successfully joined class."})
 
 # ==============================================================================
 # --- 9. PROFILE & PERKS API ROUTES ---
@@ -403,7 +402,7 @@ def get_perks():
 # --- 10. MESSAGING API ROUTES ---
 # ==============================================================================
 @app.route('/api/send_message', methods=['POST'])
-@student_required
+@login_required # Allow both students and teachers to send messages
 def send_message():
     data = request.get_json()
     class_id = data.get('class_id')
@@ -415,18 +414,22 @@ def send_message():
     message_id = str(uuid.uuid4())
     if class_id not in DB['messages']:
         DB['messages'][class_id] = []
+    
     DB['messages'][class_id].append({
         "id": message_id,
         "sender_id": current_user.id,
         "message": message,
         "timestamp": datetime.now().isoformat()
     })
-    # Optionally send email to teacher
-    teacher = User.get(cls['teacher_id'])
-    if teacher:
-        msg = Message("New Message from Student", recipients=[teacher.email])
-        msg.body = f"Student {current_user.username} sent: {message}"
-        mail.send(msg)
+    
+    # Optionally send email to the other party
+    if current_user.account_type == 'student':
+        teacher = User.get(cls.get('teacher_id'))
+        if teacher and teacher.email:
+            msg = Message(f"New Message in {cls.get('name')}", recipients=[teacher.email])
+            msg.body = f"Student {current_user.username} sent a message: {message}"
+            # mail.send(msg) # Uncomment when mail is fully configured and desired
+    
     save_database()
     return jsonify({"success": True})
 
@@ -435,13 +438,27 @@ def send_message():
 def get_class_messages(class_id):
     if class_id not in current_user.classes:
         return jsonify({"error": "Access denied."}), 403
+    
     messages = DB['messages'].get(class_id, [])
-    formatted = [{
-        "sender": User.get(m['sender_id']).username if m.get('sender_id') else "AI",
-        "message": m['message'],
-        "timestamp": m['timestamp']
-    } for m in messages]
-    return jsonify({"success": True, "messages": formatted})
+    formatted_messages = []
+    for m in messages:
+        # BUG FIX: Safely get sender object before accessing attributes.
+        sender_id = m.get('sender_id')
+        sender_name = "System" # Default name
+        if sender_id == "AI":
+            sender_name = "AI"
+        else:
+            sender = User.get(sender_id)
+            if sender:
+                sender_name = sender.username
+
+        formatted_messages.append({
+            "sender": sender_name,
+            "message": m.get('message', ''),
+            "timestamp": m.get('timestamp')
+        })
+        
+    return jsonify({"success": True, "messages": formatted_messages})
 
 # ==============================================================================
 # --- 11. AI CHAT PLACEHOLDER ---
@@ -452,18 +469,20 @@ def ai_chat():
     data = request.get_json()
     message = data.get('message')
     class_id = data.get('class_id')  # Optional, for class-specific chat
-    # Placeholder AI response (integrate real AI here, e.g., OpenAI)
-    ai_response = f"AI response to: {message}"  # Mock
+    # Placeholder AI response (integrate real AI here)
+    ai_response = f"This is a placeholder AI response to: \"{message}\"" 
+    
     if class_id and class_id in current_user.classes:
         if class_id not in DB['messages']:
             DB['messages'][class_id] = []
         DB['messages'][class_id].append({
             "id": str(uuid.uuid4()),
-            "sender_id": "AI",
+            "sender_id": "AI", # Special ID for AI
             "message": ai_response,
             "timestamp": datetime.now().isoformat()
         })
         save_database()
+        
     return jsonify({"success": True, "response": ai_response})
 
 # ==============================================================================
@@ -485,7 +504,7 @@ HTML_CONTENT = """
         .glassmorphism { background: rgba(31, 41, 55, 0.5); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
         .brand-gradient { background-image: linear-gradient(to right, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .fade-in { animation: fadeIn 0.5s ease-out forwards; }
-        @keyframes fadeIn { '0%': { opacity: 0 }, '100%': { opacity: 1 } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     </style>
 </head>
 <body class="text-gray-200 antialiased">
@@ -493,15 +512,11 @@ HTML_CONTENT = """
     <div id="app-container" class="relative h-screen w-screen overflow-hidden"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
 
-    <template id="template-logo">
-        </template>
-
     <template id="template-auth-page">
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in">
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl">
-                <div class="flex justify-center mb-6" id="auth-logo-container"></div>
-                <h2 class="text-3xl font-bold text-center text-white mb-2" id="auth-title">Welcome</h2>
-                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in to your account.</p>
+                <h1 class="text-4xl font-bold text-center brand-gradient mb-4">Myth AI Portal</h1>
+                <p class="text-gray-400 text-center mb-8" id="auth-subtitle">Sign in to continue</p>
                 <form id="auth-form">
                     <div class="mb-4">
                         <label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
@@ -514,7 +529,7 @@ HTML_CONTENT = """
                     <div class="flex justify-end mb-6">
                         <button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button>
                     </div>
-                    <button type="submit" id="auth-submit-btn" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white font-bold py-3 px-4 rounded-lg">Login</button>
+                    <button type="submit" id="auth-submit-btn" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button>
                     <p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p>
                 </form>
                 <div class="text-center mt-6">
@@ -530,20 +545,20 @@ HTML_CONTENT = """
     <template id="template-signup-page">
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in">
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl">
-                <h2 class="text-3xl font-bold text-center text-white mb-2">Sign Up</h2>
-                <p class="text-gray-400 text-center mb-8">Create a new account.</p>
+                <h2 class="text-3xl font-bold text-center text-white mb-2">Create Student Account</h2>
+                <p class="text-gray-400 text-center mb-8">Begin your learning journey.</p>
                 <form id="signup-form">
                     <div class="mb-4">
                         <label for="signup-username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
-                        <input type="text" id="signup-username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                        <input type="text" id="signup-username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required minlength="3">
                     </div>
                     <div class="mb-4">
                         <label for="signup-email" class="block text-sm font-medium text-gray-300 mb-1">Email</label>
                         <input type="email" id="signup-email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
                     </div>
                     <div class="mb-4">
-                        <label for="signup-password" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
-                        <input type="password" id="signup-password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                        <label for="signup-password" class="block text-sm font-medium text-gray-300 mb-1">Password (min. 6 characters)</label>
+                        <input type="password" id="signup-password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required minlength="6">
                     </div>
                     <button type="submit" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white font-bold py-3 px-4 rounded-lg">Sign Up</button>
                     <p id="signup-error" class="text-red-400 text-sm text-center h-4 mt-3"></p>
@@ -558,20 +573,20 @@ HTML_CONTENT = """
     <template id="template-teacher-signup-page">
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in">
             <div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl">
-                <h2 class="text-3xl font-bold text-center text-white mb-2">Teacher Sign Up</h2>
-                <p class="text-gray-400 text-center mb-8">Create a teacher account.</p>
+                <h2 class="text-3xl font-bold text-center text-white mb-2">Create Teacher Account</h2>
+                <p class="text-gray-400 text-center mb-8">A valid secret key is required.</p>
                 <form id="teacher-signup-form">
                     <div class="mb-4">
                         <label for="teacher-username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
-                        <input type="text" id="teacher-username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                        <input type="text" id="teacher-username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required minlength="3">
                     </div>
                     <div class="mb-4">
                         <label for="teacher-email" class="block text-sm font-medium text-gray-300 mb-1">Email</label>
                         <input type="email" id="teacher-email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
                     </div>
                     <div class="mb-4">
-                        <label for="teacher-password" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
-                        <input type="password" id="teacher-password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                        <label for="teacher-password" class="block text-sm font-medium text-gray-300 mb-1">Password (min. 6 characters)</label>
+                        <input type="password" id="teacher-password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required minlength="6">
                     </div>
                     <div class="mb-4">
                         <label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label>
@@ -590,11 +605,11 @@ HTML_CONTENT = """
     <template id="template-student-dashboard">
         <div class="flex h-full w-full bg-gray-800 fade-in">
             <nav class="w-64 bg-gray-900 p-6 flex flex-col gap-4">
-                <h2 class="text-2xl font-bold text-white mb-4">Student Dashboard</h2>
-                <button id="tab-my-classes" class="text-left text-gray-300 hover:text-white">My Classes</button>
-                <button id="tab-ai-chat" class="text-left text-gray-300 hover:text-white">Chat with AI</button>
-                <button id="tab-perks" class="text-left text-gray-300 hover:text-white">Perks</button>
-                <button id="tab-profile" class="text-left text-gray-300 hover:text-white">Customize Profile</button>
+                <h2 class="text-2xl font-bold text-white mb-4">Dashboard</h2>
+                <button data-tab="my-classes" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">My Classes</button>
+                <button data-tab="ai-chat" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">Chat with AI</button>
+                <button data-tab="perks" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">Perks</button>
+                <button data-tab="profile" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">Profile</button>
                 <button id="logout-btn" class="mt-auto bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg">Logout</button>
             </nav>
             <main class="flex-1 p-8 overflow-y-auto">
@@ -604,44 +619,54 @@ HTML_CONTENT = """
     </template>
     
     <template id="template-my-classes">
-        <h3 class="text-2xl font-bold text-white mb-4">My Classes</h3>
-        <div class="mb-6">
-            <input type="text" id="class-code" placeholder="Enter class code" class="p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <button id="join-class-btn" class="ml-2 bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded-lg">Join</button>
+        <h3 class="text-2xl font-bold text-white mb-6">My Classes</h3>
+        <div class="mb-6 glassmorphism p-4 rounded-lg">
+            <h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4>
+            <div class="flex items-center gap-2">
+                <input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button id="join-class-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg">Join</button>
+            </div>
         </div>
         <ul id="classes-list" class="space-y-4"></ul>
         <div id="selected-class-chat" class="mt-8 hidden">
             <h4 class="text-xl font-bold text-white mb-2">Chat for <span id="selected-class-name"></span></h4>
-            <div id="chat-messages" class="bg-gray-700/50 p-4 rounded-lg h-64 overflow-y-auto mb-4"></div>
-            <input type="text" id="chat-input" placeholder="Type message or AI query" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <button id="send-chat-btn" class="mt-2 bg-green-600 hover:bg-green-500 text-white py-2 px-4 rounded-lg">Send</button>
+            <div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-64 overflow-y-auto mb-4 border border-gray-700"></div>
+            <div class="flex items-center gap-2">
+                <input type="text" id="chat-input" placeholder="Type message or AI query..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button id="send-chat-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-lg">Send</button>
+            </div>
         </div>
     </template>
     
     <template id="template-ai-chat-global">
         <h3 class="text-2xl font-bold text-white mb-4">Global AI Chat</h3>
-        <div id="global-chat-messages" class="bg-gray-700/50 p-4 rounded-lg h-96 overflow-y-auto mb-4"></div>
-        <input type="text" id="global-chat-input" placeholder="Ask AI anything..." class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-        <button id="send-global-chat-btn" class="mt-2 bg-green-600 hover:bg-green-500 text-white py-2 px-4 rounded-lg">Send</button>
+        <div id="global-chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-96 overflow-y-auto mb-4 border border-gray-700"></div>
+        <div class="flex items-center gap-2">
+            <input type="text" id="global-chat-input" placeholder="Ask AI anything..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button id="send-global-chat-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-lg">Send</button>
+        </div>
     </template>
     
     <template id="template-perks">
-        <h3 class="text-2xl font-bold text-white mb-4">Your Perks</h3>
-        <ul id="perks-list" class="space-y-2 text-gray-300"></ul>
+        <h3 class="text-2xl font-bold text-white mb-4">Your Plan & Perks</h3>
+        <div class="glassmorphism p-6 rounded-lg">
+            <p class="text-lg">Current Plan: <span class="font-bold text-cyan-400" id="current-plan"></span></p>
+            <ul id="perks-list" class="space-y-2 text-gray-300 mt-4 list-disc list-inside"></ul>
+        </div>
     </template>
     
     <template id="template-profile">
         <h3 class="text-2xl font-bold text-white mb-4">Customize Profile</h3>
-        <form id="profile-form">
+        <form id="profile-form" class="glassmorphism p-6 rounded-lg">
             <div class="mb-4">
                 <label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label>
-                <textarea id="bio" name="bio" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                <textarea id="bio" name="bio" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" rows="4"></textarea>
             </div>
             <div class="mb-4">
                 <label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label>
-                <input type="text" id="avatar" name="avatar" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="url" id="avatar" name="avatar" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
             </div>
-            <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+            <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-lg">Save Profile</button>
         </form>
     </template>
     
@@ -649,7 +674,8 @@ HTML_CONTENT = """
         <div class="flex h-full w-full bg-gray-800 fade-in">
             <nav class="w-64 bg-gray-900 p-6 flex flex-col gap-4">
                 <h2 class="text-2xl font-bold text-white mb-4">Teacher Dashboard</h2>
-                <button id="tab-my-classes" class="text-left text-gray-300 hover:text-white">My Classes</button>
+                <button data-tab="my-classes" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">My Classes</button>
+                 <button data-tab="profile" class="dashboard-tab text-left text-gray-300 hover:text-white p-2 rounded-md">Profile</button>
                 <button id="logout-btn" class="mt-auto bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg">Logout</button>
             </nav>
             <main class="flex-1 p-8 overflow-y-auto">
@@ -659,17 +685,22 @@ HTML_CONTENT = """
     </template>
     
     <template id="template-teacher-classes">
-        <h3 class="text-2xl font-bold text-white mb-4">My Classes</h3>
-        <div class="mb-6">
-            <input type="text" id="new-class-name" placeholder="New class name" class="p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <button id="create-class-btn" class="ml-2 bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded-lg">Create</button>
+        <h3 class="text-2xl font-bold text-white mb-6">My Classes</h3>
+        <div class="mb-6 glassmorphism p-4 rounded-lg">
+            <h4 class="font-semibold text-lg mb-2 text-white">Create a New Class</h4>
+            <div class="flex items-center gap-2">
+                <input type="text" id="new-class-name" placeholder="New class name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button id="create-class-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg">Create</button>
+            </div>
         </div>
         <ul id="classes-list" class="space-y-4"></ul>
         <div id="selected-class-chat" class="mt-8 hidden">
             <h4 class="text-xl font-bold text-white mb-2">Chat for <span id="selected-class-name"></span></h4>
-            <div id="chat-messages" class="bg-gray-700/50 p-4 rounded-lg h-64 overflow-y-auto mb-4"></div>
-            <input type="text" id="chat-input" placeholder="Type message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <button id="send-chat-btn" class="mt-2 bg-green-600 hover:bg-green-500 text-white py-2 px-4 rounded-lg">Send</button>
+            <div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-64 overflow-y-auto mb-4 border border-gray-700"></div>
+            <div class="flex items-center gap-2">
+                <input type="text" id="chat-input" placeholder="Type a message to the class..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button id="send-chat-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-lg">Send</button>
+            </div>
         </div>
     </template>
     
@@ -682,16 +713,16 @@ HTML_CONTENT = """
             <div class="p-6 glassmorphism rounded-lg">
                 <h2 class="text-xl font-semibold mb-4 text-white">User Management (<span id="admin-total-users">0</span>)</h2>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-left text-white">
+                    <table class="w-full text-left text-sm text-gray-300">
                         <thead>
                             <tr class="border-b border-gray-600">
-                                <th class="p-2">Username</th>
-                                <th class="p-2">Email</th>
-                                <th class="p-2">Role</th>
-                                <th class="p-2">Plan</th>
+                                <th class="p-3">Username</th>
+                                <th class="p-3">Email</th>
+                                <th class="p-3">Account Type</th>
+                                <th class="p-3">Plan</th>
                             </tr>
                         </thead>
-                        <tbody id="admin-user-list"></tbody>
+                        <tbody id="admin-user-list" class="divide-y divide-gray-700/50"></tbody>
                     </table>
                 </div>
             </div>
@@ -714,7 +745,10 @@ HTML_CONTENT = """
             toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`;
             toast.textContent = message;
             DOMElements.toastContainer.appendChild(toast);
-            setTimeout(() => toast.remove(), 4000);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 500);
+            }, 3500);
         }
 
         async function apiCall(endpoint, options = {}) {
@@ -726,12 +760,15 @@ HTML_CONTENT = """
                 const response = await fetch(endpoint, { credentials: 'include', ...options });
                 const data = await response.json();
                 if (!response.ok) {
-                    if (response.status === 401) handleLogout(false); // Force logout on auth error
-                    throw new Error(data.error || 'An unknown error occurred.');
+                    if (response.status === 401 && !window.location.pathname.includes('reset-password')) {
+                         handleLogout(false);
+                    }
+                    throw new Error(data.error || `Request failed with status ${response.status}`);
                 }
                 return { success: true, ...data };
             } catch (error) {
                 showToast(error.message, 'error');
+                console.error("API Call Error:", error);
                 return { success: false, error: error.message };
             }
         }
@@ -742,89 +779,94 @@ HTML_CONTENT = """
                 console.error(`Template ${templateId} not found.`);
                 return;
             }
+            const content = template.content.cloneNode(true);
             DOMElements.appContainer.innerHTML = '';
-            DOMElements.appContainer.appendChild(template.content.cloneNode(true));
+            DOMElements.appContainer.appendChild(content);
             if (setupFunction) setupFunction();
         }
 
         function renderSubTemplate(container, templateId, setupFunction) {
             const template = document.getElementById(templateId);
             if (!template) return;
+            const content = template.content.cloneNode(true);
             container.innerHTML = '';
-            container.appendChild(template.content.cloneNode(true));
+            container.appendChild(content);
             if (setupFunction) setupFunction();
         }
 
-        // --- PAGE SETUP FUNCTIONS ---
+        // --- PAGE & ROUTER SETUP ---
         function setupAuthPage() {
-            document.getElementById('auth-form').addEventListener('submit', handleLoginSubmit);
-            document.getElementById('auth-toggle-btn').addEventListener('click', () => renderPage('template-signup-page', setupSignupPage));
-            document.getElementById('teacher-signup-btn').addEventListener('click', () => renderPage('template-teacher-signup-page', setupTeacherSignupPage));
-            document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword);
+            renderPage('template-auth-page', () => {
+                document.getElementById('auth-form').addEventListener('submit', handleLoginSubmit);
+                document.getElementById('auth-toggle-btn').addEventListener('click', () => setupSignupPage('student'));
+                document.getElementById('teacher-signup-btn').addEventListener('click', () => setupSignupPage('teacher'));
+                document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword);
+            });
         }
         
-        function setupSignupPage() {
-            document.getElementById('signup-form').addEventListener('submit', handleStudentSignupSubmit);
-            document.getElementById('back-to-login').addEventListener('click', () => renderPage('template-auth-page', setupAuthPage));
-        }
-        
-        function setupTeacherSignupPage() {
-            document.getElementById('teacher-signup-form').addEventListener('submit', handleTeacherSignupSubmit);
-            document.getElementById('back-to-login').addEventListener('click', () => renderPage('template-auth-page', setupAuthPage));
+        function setupSignupPage(type = 'student') {
+            const templateId = type === 'teacher' ? 'template-teacher-signup-page' : 'template-signup-page';
+            renderPage(templateId, () => {
+                const formId = type === 'teacher' ? 'teacher-signup-form' : 'signup-form';
+                const handler = type === 'teacher' ? handleTeacherSignupSubmit : handleStudentSignupSubmit;
+                document.getElementById(formId).addEventListener('submit', handler);
+                document.getElementById('back-to-login').addEventListener('click', setupAuthPage);
+            });
         }
 
-        function setupStudentDashboard() {
-            const tabs = {
+        function setupDashboard() {
+            const user = appState.currentUser;
+            if (!user) return setupAuthPage();
+            
+            const templateId = `template-${user.account_type}-dashboard`;
+            renderPage(templateId, () => {
+                document.querySelectorAll('.dashboard-tab').forEach(tab => {
+                    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+                });
+                document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
+                switchTab(appState.currentTab);
+            });
+        }
+
+        // --- TAB & CONTENT SETUP FUNCTIONS ---
+        function switchTab(tab) {
+            appState.currentTab = tab;
+            document.querySelectorAll('.dashboard-tab').forEach(t => {
+                t.classList.toggle('bg-gray-700', t.dataset.tab === tab);
+            });
+
+            const contentContainer = document.getElementById('dashboard-content');
+            const setups = {
                 'my-classes': setupMyClassesTab,
                 'ai-chat': setupAiChatTab,
                 'perks': setupPerksTab,
                 'profile': setupProfileTab,
             };
-            Object.keys(tabs).forEach(tab => {
-                const btn = document.getElementById(`tab-${tab}`);
-                if (btn) btn.addEventListener('click', () => switchTab(tab));
-            });
-            document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
-            switchTab(appState.currentTab);
-        }
-        
-        function setupTeacherDashboard() {
-            document.getElementById('tab-my-classes').addEventListener('click', () => switchTab('my-classes'));
-            document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
-            switchTab('my-classes');
-        }
-
-        async function setupAdminDashboard() {
-            document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
-            const result = await apiCall('/api/admin_data');
-            if(result.success) {
-                document.getElementById('admin-total-users').textContent = result.stats.total_users;
-                const userList = document.getElementById('admin-user-list');
-                userList.innerHTML = result.users.map(user => `
-                    <tr class="border-b border-gray-700/50">
-                        <td class="p-2">${user.username}</td>
-                        <td class="p-2">${user.email}</td>
-                        <td class="p-2">${user.role}</td>
-                        <td class="p-2">${user.plan}</td>
-                    </tr>
-                `).join('');
+            if (setups[tab]) {
+                setups[tab](contentContainer);
             }
         }
-
-        // --- TAB SETUP FUNCTIONS ---
-        async function setupMyClassesTab() {
-            const content = document.getElementById('dashboard-content');
-            renderSubTemplate(content, appState.currentUser.account_type === 'teacher' ? 'template-teacher-classes' : 'template-my-classes', async () => {
+        
+        async function setupMyClassesTab(container) {
+            const templateId = appState.currentUser.account_type === 'teacher' ? 'template-teacher-classes' : 'template-my-classes';
+            renderSubTemplate(container, templateId, async () => {
                 const result = await apiCall('/api/my_classes');
-                if (result.success) {
+                if (result.success && result.classes) {
                     const list = document.getElementById('classes-list');
-                    list.innerHTML = result.classes.map(cls => `
-                        <li class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50" data-id="${cls.id}">
-                            <div class="font-bold text-white">${cls.name}</div>
-                            <div class="text-gray-400 text-sm">Teacher: ${cls.teacher}${appState.currentUser.account_type === 'teacher' ? ` | Code: ${cls.code}` : ''}</div>
-                        </li>
-                    `).join('');
-                    list.querySelectorAll('li').forEach(li => li.addEventListener('click', () => selectClass(li.dataset.id)));
+                    if (result.classes.length === 0) {
+                        list.innerHTML = `<li class="text-gray-400 text-center p-4">You haven't joined or created any classes yet.</li>`;
+                    } else {
+                        list.innerHTML = result.classes.map(cls => `
+                            <li class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${cls.id}" data-name="${cls.name}">
+                                <div class="font-bold text-white">${cls.name}</div>
+                                <div class="text-gray-400 text-sm">Teacher: ${cls.teacher}${appState.currentUser.account_type === 'teacher' ? ` | Code: <span class="font-mono text-cyan-400">${cls.code}</span>` : ''}</div>
+                            </li>
+                        `).join('');
+                    }
+                    list.querySelectorAll('li').forEach(li => li.addEventListener('click', (e) => {
+                        const targetLi = e.currentTarget;
+                        selectClass(targetLi.dataset.id, targetLi.dataset.name);
+                    }));
                 }
                 if (appState.currentUser.account_type === 'student') {
                     document.getElementById('join-class-btn').addEventListener('click', handleJoinClass);
@@ -834,27 +876,26 @@ HTML_CONTENT = """
             });
         }
 
-        function setupAiChatTab() {
-            const content = document.getElementById('dashboard-content');
-            renderSubTemplate(content, 'template-ai-chat-global', () => {
+        function setupAiChatTab(container) {
+            renderSubTemplate(container, 'template-ai-chat-global', () => {
                 updateGlobalChatMessages();
                 document.getElementById('send-global-chat-btn').addEventListener('click', handleGlobalAiChat);
+                document.getElementById('global-chat-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') handleGlobalAiChat(); });
             });
         }
 
-        async function setupPerksTab() {
-            const content = document.getElementById('dashboard-content');
-            renderSubTemplate(content, 'template-perks', async () => {
+        async function setupPerksTab(container) {
+            renderSubTemplate(container, 'template-perks', async () => {
                 const result = await apiCall('/api/perks');
                 if (result.success) {
-                    document.getElementById('perks-list').innerHTML = result.perks.map(perk => `<li>- ${perk}</li>`).join('');
+                    document.getElementById('perks-list').innerHTML = result.perks.map(perk => `<li>${perk}</li>`).join('');
+                    document.getElementById('current-plan').textContent = appState.currentUser.plan.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
                 }
             });
         }
 
-        function setupProfileTab() {
-            const content = document.getElementById('dashboard-content');
-            renderSubTemplate(content, 'template-profile', () => {
+        function setupProfileTab(container) {
+            renderSubTemplate(container, 'template-profile', () => {
                 document.getElementById('bio').value = appState.currentUser.profile.bio || '';
                 document.getElementById('avatar').value = appState.currentUser.profile.avatar || '';
                 document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
@@ -864,51 +905,32 @@ HTML_CONTENT = """
         // --- EVENT HANDLERS ---
         async function handleLoginSubmit(e) {
             e.preventDefault();
-            const form = e.target;
-            const errorEl = document.getElementById('auth-error');
-            errorEl.textContent = '';
-            const data = Object.fromEntries(new FormData(form).entries());
-            const result = await apiCall('/api/login', { method: 'POST', body: data });
-            if (result.success) {
-                initializeApp(result.user, result.settings);
-            } else {
-                errorEl.textContent = result.error;
-            }
+            const result = await apiCall('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+            if (result.success) initializeApp(result.user, result.settings);
+            else document.getElementById('auth-error').textContent = result.error;
         }
         
         async function handleStudentSignupSubmit(e) {
             e.preventDefault();
-            const form = e.target;
-            const errorEl = document.getElementById('signup-error');
-            errorEl.textContent = '';
-            const data = Object.fromEntries(new FormData(form).entries());
-            const result = await apiCall('/api/student_signup', { method: 'POST', body: data });
-            if (result.success) {
-                initializeApp(result.user, {});
-            } else {
-                errorEl.textContent = result.error;
-            }
+            const result = await apiCall('/api/student_signup', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+            if (result.success) initializeApp(result.user, {});
+            else document.getElementById('signup-error').textContent = result.error;
         }
         
         async function handleTeacherSignupSubmit(e) {
             e.preventDefault();
-            const form = e.target;
-            const errorEl = document.getElementById('teacher-signup-error');
-            errorEl.textContent = '';
-            const data = Object.fromEntries(new FormData(form).entries());
-            const result = await apiCall('/api/teacher_signup', { method: 'POST', body: data });
-            if (result.success) {
-                initializeApp(result.user, {});
-            } else {
-                errorEl.textContent = result.error;
-            }
+            const result = await apiCall('/api/teacher_signup', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+            if (result.success) initializeApp(result.user, {});
+            else document.getElementById('teacher-signup-error').textContent = result.error;
         }
         
         async function handleForgotPassword() {
-            const email = prompt('Enter your email:');
-            if (email) {
+            const email = prompt('Please enter your account email address:');
+            if (email && /^\S+@\S+\.\S+$/.test(email)) {
                 const result = await apiCall('/api/request-password-reset', { method: 'POST', body: { email } });
-                showToast(result.message || 'Request sent.', 'info');
+                if(result.success) showToast(result.message || 'Request sent.', 'info');
+            } else if (email) {
+                showToast('Please enter a valid email address.', 'error');
             }
         }
         
@@ -919,65 +941,82 @@ HTML_CONTENT = """
         }
         
         async function handleJoinClass() {
-            const code = document.getElementById('class-code').value.trim().toUpperCase();
-            if (!code) return showToast('Enter a code.', 'error');
+            const codeInput = document.getElementById('class-code');
+            const code = codeInput.value.trim().toUpperCase();
+            if (!code) return showToast('Please enter a class code.', 'error');
             const result = await apiCall('/api/join_class', { method: 'POST', body: { code } });
             if (result.success) {
-                showToast('Joined class!', 'success');
-                setupMyClassesTab();
+                showToast(result.message || 'Joined class!', 'success');
+                codeInput.value = '';
+                setupMyClassesTab(document.getElementById('dashboard-content'));
             }
         }
         
         async function handleCreateClass() {
-            const name = document.getElementById('new-class-name').value.trim();
-            if (!name) return showToast('Enter a class name.', 'error');
+            const nameInput = document.getElementById('new-class-name');
+            const name = nameInput.value.trim();
+            if (!name) return showToast('Please enter a class name.', 'error');
             const result = await apiCall('/api/create_class', { method: 'POST', body: { name } });
             if (result.success) {
-                showToast('Class created!', 'success');
-                setupMyClassesTab();
+                showToast(`Class "${result.class.name}" created!`, 'success');
+                nameInput.value = '';
+                setupMyClassesTab(document.getElementById('dashboard-content'));
             }
         }
         
-        async function selectClass(classId) {
-            appState.selectedClass = classId;
-            document.getElementById('selected-class-chat').classList.remove('hidden');
-            const cls = (await apiCall('/api/my_classes')).classes.find(c => c.id === classId);
-            document.getElementById('selected-class-name').textContent = cls.name;
+        function selectClass(classId, className) {
+            appState.selectedClass = { id: classId, name: className };
+            const chatContainer = document.getElementById('selected-class-chat');
+            chatContainer.classList.remove('hidden');
+            document.getElementById('selected-class-name').textContent = className;
             updateChatMessages(classId);
+            
             const sendBtn = document.getElementById('send-chat-btn');
-            sendBtn.removeEventListener('click', handleSendChat); // Prevent multiple listeners
-            sendBtn.addEventListener('click', handleSendChat);
+            const chatInput = document.getElementById('chat-input');
+            
+            const sendHandler = () => handleSendChat(classId);
+            sendBtn.onclick = sendHandler; // Use onclick to easily replace handler
+            chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendHandler(); };
         }
         
-        async function handleSendChat() {
+        async function handleSendChat(classId) {
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
-            if (!message || !appState.selectedClass) return;
-            const endpoint = appState.currentUser.account_type === 'student' ? '/api/send_message' : '/api/send_message'; // Same for now
-            const result = await apiCall(endpoint, { method: 'POST', body: { class_id: appState.selectedClass, message } });
-            if (result.success) {
-                input.value = '';
-                updateChatMessages(appState.selectedClass);
-            }
-            // For students, optionally chat with AI in class
+            if (!message) return;
+
+            input.disabled = true;
+            
+            // Student sends message AND triggers AI response in parallel
             if (appState.currentUser.account_type === 'student') {
-                const aiResult = await apiCall('/api/ai_chat', { method: 'POST', body: { message, class_id: appState.selectedClass } });
-                if (aiResult.success) {
-                    updateChatMessages(appState.selectedClass);
-                }
+                await Promise.all([
+                    apiCall('/api/send_message', { method: 'POST', body: { class_id: classId, message } }),
+                    apiCall('/api/ai_chat', { method: 'POST', body: { message, class_id: classId } })
+                ]);
+            } else { // Teacher just sends a message
+                await apiCall('/api/send_message', { method: 'POST', body: { class_id: classId, message } });
             }
+            
+            input.value = '';
+            input.disabled = false;
+            input.focus();
+            updateChatMessages(classId);
         }
         
         async function updateChatMessages(classId) {
+            if (!appState.selectedClass || appState.selectedClass.id !== classId) return;
             const result = await apiCall(`/api/class_messages/${classId}`);
             if (result.success) {
                 const messagesDiv = document.getElementById('chat-messages');
-                messagesDiv.innerHTML = result.messages.map(m => `
-                    <div class="mb-2">
-                        <span class="font-bold ${m.sender === 'AI' ? 'text-blue-400' : 'text-green-400'}">${m.sender}:</span> ${m.message}
-                        <span class="text-gray-500 text-xs">${new Date(m.timestamp).toLocaleString()}</span>
-                    </div>
-                `).join('');
+                messagesDiv.innerHTML = result.messages.map(m => {
+                    const isCurrentUser = m.sender === appState.currentUser.username;
+                    const isAI = m.sender === "AI";
+                    const senderClass = isAI ? 'text-cyan-400' : (isCurrentUser ? 'text-green-400' : 'text-yellow-400');
+                    return `
+                    <div class="mb-2 text-sm">
+                        <span class="font-bold ${senderClass}">${m.sender}:</span> 
+                        <span class="text-gray-200">${m.message}</span>
+                    </div>`;
+                }).join('');
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
         }
@@ -986,81 +1025,65 @@ HTML_CONTENT = """
             const input = document.getElementById('global-chat-input');
             const message = input.value.trim();
             if (!message) return;
-            appState.globalChatHistory.push({ sender: appState.currentUser.username, message, timestamp: new Date().toISOString() });
+            
+            input.disabled = true;
+            appState.globalChatHistory.push({ sender: appState.currentUser.username, message });
             updateGlobalChatMessages();
+            
             const result = await apiCall('/api/ai_chat', { method: 'POST', body: { message } });
             if (result.success) {
-                appState.globalChatHistory.push({ sender: 'AI', message: result.response, timestamp: new Date().toISOString() });
+                appState.globalChatHistory.push({ sender: 'AI', message: result.response });
                 updateGlobalChatMessages();
             }
             input.value = '';
+            input.disabled = false;
+            input.focus();
         }
         
         function updateGlobalChatMessages() {
             const messagesDiv = document.getElementById('global-chat-messages');
-            messagesDiv.innerHTML = appState.globalChatHistory.map(m => `
-                <div class="mb-2">
-                    <span class="font-bold ${m.sender === 'AI' ? 'text-blue-400' : 'text-green-400'}">${m.sender}:</span> ${m.message}
-                    <span class="text-gray-500 text-xs">${new Date(m.timestamp).toLocaleString()}</span>
-                </div>
-            `).join('');
+            if (!messagesDiv) return;
+            messagesDiv.innerHTML = appState.globalChatHistory.map(m => {
+                 const isAI = m.sender === "AI";
+                 const senderClass = isAI ? 'text-cyan-400' : 'text-green-400';
+                 return `
+                    <div class="mb-2 text-sm">
+                        <span class="font-bold ${senderClass}">${m.sender}:</span>
+                        <span class="text-gray-200">${m.message}</span>
+                    </div>`;
+            }).join('');
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
         async function handleUpdateProfile(e) {
             e.preventDefault();
-            const form = e.target;
-            const data = Object.fromEntries(new FormData(form).entries());
-            const result = await apiCall('/api/update_profile', { method: 'POST', body: data });
+            const result = await apiCall('/api/update_profile', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
             if (result.success) {
                 appState.currentUser.profile = result.profile;
                 showToast('Profile updated!', 'success');
             }
         }
-        
-        function switchTab(tab) {
-            appState.currentTab = tab;
-            const setups = {
-                'my-classes': setupMyClassesTab,
-                'ai-chat': setupAiChatTab,
-                'perks': setupPerksTab,
-                'profile': setupProfileTab,
-            };
-            setups[tab]();
-        }
 
-        // --- INITIALIZATION ---
+        // --- APP INITIALIZATION ---
         function initializeApp(user, settings) {
             appState.currentUser = user;
-            if (settings.announcement) {
+            if (settings && settings.announcement) {
                 DOMElements.announcementBanner.textContent = settings.announcement;
                 DOMElements.announcementBanner.classList.remove('hidden');
             }
-            
-            // Route to the correct dashboard based on role
-            switch(user.account_type) {
-                case 'teacher':
-                    renderPage('template-teacher-dashboard', setupTeacherDashboard);
-                    break;
-                case 'admin':
-                    renderPage('template-admin-dashboard', setupAdminDashboard);
-                    break;
-                default: // 'student' and any other type
-                    renderPage('template-student-dashboard', setupStudentDashboard);
-                    break;
-            }
+            setupDashboard();
         }
 
-        async function checkLoginStatus() {
+        async function main() {
             const result = await apiCall('/api/status');
             if (result.success && result.logged_in) {
                 initializeApp(result.user, result.settings);
             } else {
-                renderPage('template-auth-page', setupAuthPage);
+                setupAuthPage();
             }
         }
 
-        checkLoginStatus();
+        main();
     });
     </script>
 </body>
@@ -1087,10 +1110,13 @@ def initialize_app():
 
 if __name__ == '__main__':
     initialize_app()
-    # Create the index.html file if it doesn't exist for easier development
+    # This block is for local development convenience.
+    # It creates a static index.html to be served if you open the file directly.
     if not os.path.exists('index.html'):
         with open('index.html', 'w', encoding='utf-8') as f:
-            f.write(HTML_CONTENT.format(csp_nonce="development-nonce")) # Add a placeholder for local file
+            # Use a placeholder nonce for local file viewing
+            f.write(HTML_CONTENT.format(csp_nonce="development-nonce"))
             
     port = int(os.environ.get('PORT', 5000))
+    # debug=False is recommended for production environments
     app.run(host='0.0.0.0', port=port, debug=True)

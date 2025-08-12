@@ -9,3 +9,4 @@ Pillow
 authlib
 itsdangerous
 gunicorn
+flask_mail

@@ -519,7 +519,7 @@ HTML_CONTENT = """
                 <div id="chat-window" class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 min-h-0"></div>
                 <div class="flex-shrink-0 p-2 md:p-4 md:px-6 border-t border-gray-700/50">
                     <div class="max-w-4xl mx-auto">
-                         <div id="student-leaderboard-container" class="glassmorphism p-4 rounded-lg hidden"></div>
+                         <div id="student-leaderboard-container" class="glassmorphism p-4 rounded-lg hidden mb-2"></div>
                         <div id="stop-generating-container" class="text-center mb-2" style="display: none;">
                             <button id="stop-generating-btn" class="bg-red-600/50 hover:bg-red-600/80 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2 mx-auto"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><rect width="10" height="10" x="3" y="3" rx="1"/></svg> Stop Generating</button>
                         </div>
@@ -793,7 +793,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
-    // Polyfill for fetch.
     async function apiCall(endpoint, options = {}) {
         try {
             const response = await fetch(endpoint, {
@@ -1240,11 +1239,16 @@ document.addEventListener('DOMContentLoaded', () => {
                             body: JSON.stringify({ chat_id: chat.id }),
                         }).then(result => {
                             if (result.success) {
-                                delete appState.chats[appState.activeChatId];
-                                const sortedChatIds = Object.keys(appState.chats).sort((a, b) => (appState.chats[b].created_at || '').localeCompare(appState.chats[a].created_at || ''));
-                                appState.activeChatId = sortedChatIds.length > 0 ? sortedChatIds[0] : null;
+                                const wasActive = appState.activeChatId === chat.id;
+                                delete appState.chats[chat.id];
+                                if (wasActive) {
+                                    const sortedChatIds = Object.keys(appState.chats).sort((a, b) => (appState.chats[b].created_at || '').localeCompare(appState.chats[a].created_at || ''));
+                                    appState.activeChatId = sortedChatIds.length > 0 ? sortedChatIds[0] : null;
+                                }
                                 renderChatHistoryList();
-                                renderActiveChat();
+                                if (wasActive) {
+                                    renderActiveChat();
+                                }
                                 showToast("Chat deleted.", "success");
                             }
                         });
@@ -1391,9 +1395,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const chatCreated = await createNewChat(false);
                 if (!chatCreated) {
                     showToast("Could not start a new chat session.", "error");
-                    return;
+                    throw new Error("Chat creation failed.");
                 }
-                renderActiveChat();
             }
             
             if (appState.chats[appState.activeChatId]?.messages.length === 0) {
@@ -1413,72 +1416,68 @@ document.addEventListener('DOMContentLoaded', () => {
             appState.uploadedFile = null;
             updatePreviewContainer();
 
-            try {
-                const formData = new FormData();
-                formData.append('chat_id', appState.activeChatId);
-                formData.append('prompt', prompt);
-                formData.append('is_study_mode', appState.isStudyMode);
-                formData.append('model_name', appState.selectedModel);
-                if (fileToSend) {
-                    formData.append('file', fileToSend);
-                }
+            const formData = new FormData();
+            formData.append('chat_id', appState.activeChatId);
+            formData.append('prompt', prompt);
+            formData.append('is_study_mode', appState.isStudyMode);
+            formData.append('model_name', appState.selectedModel);
+            if (fileToSend) {
+                formData.append('file', fileToSend);
+            }
 
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    body: formData,
-                    signal: appState.abortController.signal,
-                });
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                body: formData,
+                signal: appState.abortController.signal,
+            });
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    if (response.status === 401) handleLogout(false);
-                    throw new Error(errorData.error || `Server error: ${response.status}`);
-                }
+            if (!response.ok) {
+                const errorData = await response.json();
+                if (response.status === 401) handleLogout(false);
+                throw new Error(errorData.error || `Server error: ${response.status}`);
+            }
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let fullResponse = '';
-                const chatWindow = document.getElementById('chat-window');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullResponse = '';
+            const chatWindow = document.getElementById('chat-window');
 
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, {stream: true});
-                    fullResponse += chunk;
-                    aiContentEl.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse + '<span class="animate-pulse">▍</span>'));
-                    if(chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
-                }
-                
-                if (!fullResponse.trim()) {
-                    fullResponse = "I'm sorry, I couldn't generate a response. Please try again.";
-                }
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, {stream: true});
+                fullResponse += chunk;
+                aiContentEl.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse + '<span class="animate-pulse">▍</span>'));
+                if(chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+            }
+            
+            if (!fullResponse.trim()) {
+                fullResponse = "I'm sorry, I couldn't generate a response. Please try again.";
+            }
 
-                aiContentEl.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
-                renderCodeCopyButtons();
-                const ttsButton = aiContentEl.parentElement.querySelector('.tts-btn');
-                if (ttsButton) ttsButton.style.display = 'block';
+            aiContentEl.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+            renderCodeCopyButtons();
+            const ttsButton = aiContentEl.parentElement.querySelector('.tts-btn');
+            if (ttsButton) ttsButton.style.display = 'block';
 
-                const updatedData = await apiCall('/api/status');
-                if (updatedData.success) {
-                    appState.currentUser = updatedData.user;
-                    appState.chats = updatedData.chats;
-                    renderChatHistoryList();
-                    updateUserInfo();
-                    document.getElementById('chat-title').textContent = appState.chats[appState.activeChatId].title;
+            const updatedData = await apiCall('/api/status');
+            if (updatedData.success) {
+                appState.currentUser = updatedData.user;
+                appState.chats = updatedData.chats;
+                renderChatHistoryList();
+                updateUserInfo();
+                const activeChat = appState.chats[appState.activeChatId];
+                if (activeChat) {
+                    document.getElementById('chat-title').textContent = activeChat.title;
                 }
-            } catch (err) {
-                if (err.name !== 'AbortError') {
-                    if (aiContentEl) aiContentEl.innerHTML = `<p class="text-red-400 mt-2"><strong>Error:</strong> ${err.message}</p>`;
-                    showToast(err.message, 'error');
-                }
-            } finally {
-                appState.isAITyping = false;
-                appState.abortController = null;
-                updateUIState();
+            }
+        } catch (err) {
+            if (err.name !== 'AbortError') {
+                const lastMessage = document.querySelector('#chat-window .message-wrapper:last-child .message-content');
+                if (lastMessage) lastMessage.innerHTML = `<p class="text-red-400 mt-2"><strong>Error:</strong> ${err.message}</p>`;
+                showToast(err.message, 'error');
             }
         } finally {
-             // This `finally` block is the crucial part of the fix.
-             // It ensures that the state is reset even if the inner try block fails.
             appState.isAITyping = false;
             appState.abortController = null;
             updateUIState();
@@ -1503,7 +1502,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const canTTS = (appState.currentUser.plan === 'pro' || appState.currentUser.plan === 'ultra');
         if (senderIsAI && canTTS) {
              ttsButtonHTML = `
-                <button class="tts-btn p-1 rounded-full text-gray-400 hover:text-white transition-colors" title="Listen to response">
+                <button class="tts-btn p-1 rounded-full text-gray-400 hover:text-white transition-colors" title="Listen to response" style="display: none;">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
                 </button>
             `;
@@ -1529,7 +1528,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function handleTTS(text, button) {
-        showToast("TTS is not yet implemented for the DeepSeek API.", "error");
+        showToast("TTS is not yet implemented for the DeepSeek API.", "info");
         button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`;
     }
     
@@ -1567,123 +1566,102 @@ document.addEventListener('DOMContentLoaded', () => {
     function setupAppEventListeners() {
         const appContainer = DOMElements.appContainer;
         
-        const removeListeners = () => {
-            appContainer.onclick = null;
-            const userInput = document.getElementById('user-input');
-            if (userInput) {
-                userInput.onkeydown = null;
-                userInput.oninput = null;
+        // This single, delegated event listener handles all button clicks.
+        appContainer.onclick = (e) => {
+            const target = e.target.closest('button');
+            if (!target) return;
+
+            switch (target.id) {
+                case 'new-chat-btn': createNewChat(true); break;
+                case 'logout-btn': handleLogout(); break;
+                case 'teacher-logout-btn': handleLogout(); break;
+                case 'admin-logout-btn': handleLogout(); break;
+                case 'send-btn': handleSendMessage(); break;
+                case 'stop-generating-btn': appState.abortController?.abort(); break;
+                case 'rename-chat-btn': handleRenameChat(); break;
+                case 'delete-chat-btn': handleDeleteChat(); break;
+                case 'share-chat-btn': handleShareChat(); break;
+                case 'download-chat-btn': handleDownloadChat(); break;
+                case 'upgrade-plan-btn': renderUpgradePage(); break;
+                case 'profile-page-btn': renderProfilePage(); break;
+                case 'back-to-chat-btn': renderAppUI(); break;
+                case 'upload-btn': document.getElementById('file-input')?.click(); break;
+                case 'menu-toggle-btn': 
+                    document.getElementById('sidebar')?.classList.toggle('-translate-x-full');
+                    document.getElementById('sidebar-backdrop')?.classList.toggle('hidden');
+                    break;
+                case 'admin-impersonate-btn': handleImpersonate(); break;
+                case 'back-to-main-login': renderAuthPage(true); break;
+                case 'teacher-gen-code-btn': handleGenerateClassroomCode(); break;
+                case 'copy-code-btn': handleCopyClassroomCode(); break;
+                case 'google-login-btn': window.location.href = '/api/google_login'; break;
+                case 'join-classroom-btn': handleJoinClassroom(); break;
             }
-            const backdrop = document.getElementById('sidebar-backdrop');
-            if (backdrop) backdrop.onclick = null;
-            const fileInput = document.getElementById('file-input');
-            if (fileInput) fileInput.onchange = null;
-            const announcementForm = document.getElementById('announcement-form');
-            if(announcementForm) announcementForm.onsubmit = null;
+
+            if (target.classList.contains('delete-user-btn')) {
+                handleAdminDeleteUser(target.dataset.userid);
+            }
+            if (target.classList.contains('admin-edit-user-btn')) {
+                const { userid, username, plan } = target.dataset;
+                openAdminEditModal(userid, username, plan);
+            }
+            if (target.classList.contains('admin-reset-messages-btn')) {
+                handleAdminResetMessages(target.dataset.userid);
+            }
+            if (target.classList.contains('purchase-btn') && !target.disabled) {
+                handlePurchase(target.dataset.planid);
+            }
+            if (target.classList.contains('view-student-chats-btn')) {
+                handleViewStudentChats(target.dataset.userid);
+            }
+            if (target.classList.contains('kick-student-btn')) {
+                handleKickStudent(target.dataset.userid);
+            }
         };
 
-        const addListeners = () => {
-            appContainer.onclick = (e) => {
-                const target = e.target.closest('button');
-                if (!target) return;
+        // These listeners are set up once when the main app UI is rendered.
+        const userInput = document.getElementById('user-input');
+        if (userInput) {
+            userInput.onkeydown = (e) => { 
+                if (e.key === 'Enter' && !e.shiftKey) { 
+                    e.preventDefault(); 
+                    handleSendMessage(); 
+                } 
+            };
+            userInput.oninput = () => { 
+                userInput.style.height = 'auto'; 
+                userInput.style.height = `${userInput.scrollHeight}px`; 
+            };
+        }
+        
+        const backdrop = document.getElementById('sidebar-backdrop');
+        if (backdrop) {
+            backdrop.onclick = () => {
+                document.getElementById('sidebar')?.classList.add('-translate-x-full');
+                backdrop.classList.add('hidden');
+            };
+        }
 
-                switch (target.id) {
-                    case 'new-chat-btn': createNewChat(true); break;
-                    case 'logout-btn': handleLogout(); break;
-                    case 'teacher-logout-btn': handleLogout(); break;
-                    case 'admin-logout-btn': handleLogout(); break;
-                    case 'send-btn': handleSendMessage(); break;
-                    case 'stop-generating-btn': appState.abortController?.abort(); break;
-                    case 'rename-chat-btn': handleRenameChat(); break;
-                    case 'delete-chat-btn': handleDeleteChat(); break;
-                    case 'share-chat-btn': handleShareChat(); break;
-                    case 'download-chat-btn': handleDownloadChat(); break;
-                    case 'upgrade-plan-btn': renderUpgradePage(); break;
-                    case 'profile-page-btn': renderProfilePage(); break;
-                    case 'back-to-chat-btn': renderAppUI(); break;
-                    case 'upload-btn': document.getElementById('file-input')?.click(); break;
-                    case 'menu-toggle-btn': 
-                        document.getElementById('sidebar')?.classList.toggle('-translate-x-full');
-                        document.getElementById('sidebar-backdrop')?.classList.toggle('hidden');
-                        break;
-                    case 'admin-impersonate-btn': handleImpersonate(); break;
-                    case 'back-to-main-login': renderAuthPage(true); break;
-                    case 'teacher-gen-code-btn': handleGenerateClassroomCode(); break;
-                    case 'copy-code-btn': handleCopyClassroomCode(); break;
-                    case 'google-login-btn': window.location.href = '/api/google_login'; break;
-                    case 'join-classroom-btn': handleJoinClassroom(); break;
-                }
-
-                if (target.classList.contains('delete-user-btn')) {
-                    handleAdminDeleteUser(e);
-                }
-                if (target.classList.contains('admin-edit-user-btn')) {
-                    const userId = target.dataset.userid;
-                    const username = target.dataset.username;
-                    const plan = target.dataset.plan;
-                    openAdminEditModal(userId, username, plan);
-                }
-                if (target.classList.contains('admin-reset-messages-btn')) {
-                    const userId = target.dataset.userid;
-                    handleAdminResetMessages(userId);
-                }
-                if (target.classList.contains('purchase-btn') && !target.disabled) {
-                    handlePurchase(target.dataset.planid);
-                }
-                if (target.classList.contains('view-student-chats-btn')) {
-                    handleViewStudentChats(e.target.dataset.userid);
-                }
-                if (target.classList.contains('kick-student-btn')) {
-                    handleKickStudent(e.target.dataset.userid);
+        const fileInput = document.getElementById('file-input');
+        if (fileInput) {
+            fileInput.onchange = (e) => {
+                if (e.target.files.length > 0) {
+                    const planDetails = PLAN_CONFIG[appState.currentUser.plan] || PLAN_CONFIG['free'];
+                    if (!planDetails.can_upload) {
+                        showToast("Your current plan does not support image uploads.", "error");
+                        e.target.value = null;
+                        return;
+                    }
+                    appState.uploadedFile = e.target.files[0];
+                    updatePreviewContainer();
                 }
             };
-
-            const userInput = document.getElementById('user-input');
-            if (userInput) {
-                userInput.onkeydown = (e) => { 
-                    if (e.key === 'Enter' && !e.shiftKey) { 
-                        e.preventDefault(); 
-                        handleSendMessage(); 
-                    } 
-                };
-                userInput.oninput = () => { 
-                    userInput.style.height = 'auto'; 
-                    userInput.style.height = `${userInput.scrollHeight}px`; 
-                };
-            }
-            
-            const backdrop = document.getElementById('sidebar-backdrop');
-            if (backdrop) {
-                backdrop.onclick = () => {
-                    document.getElementById('sidebar')?.classList.add('-translate-x-full');
-                    backdrop.classList.add('hidden');
-                };
-            }
-
-            const fileInput = document.getElementById('file-input');
-            if (fileInput) {
-                fileInput.onchange = (e) => {
-                    if (e.target.files.length > 0) {
-                        const planDetails = PLAN_CONFIG[appState.currentUser.plan] || PLAN_CONFIG['free'];
-                        if (!planDetails.can_upload) {
-                            showToast("Your current plan does not support image uploads.", "error");
-                            e.target.value = null;
-                            return;
-                        }
-                        appState.uploadedFile = e.target.files[0];
-                        updatePreviewContainer();
-                    }
-                };
-            }
-            
-            const announcementForm = document.getElementById('announcement-form');
-            if(announcementForm) {
-                announcementForm.onsubmit = handleSetAnnouncement;
-            }
-        };
-
-        removeListeners();
-        addListeners();
+        }
+        
+        const announcementForm = document.getElementById('announcement-form');
+        if(announcementForm) {
+            announcementForm.onsubmit = handleSetAnnouncement;
+        }
     }
 
     async function handleLogout(doApiCall = true) {
@@ -1708,9 +1686,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (result.success) {
                     appState.chats[appState.activeChatId].title = newTitle.trim();
                     renderChatHistoryList();
-                    if (appState.activeChatId === chat.id) {
-                        document.getElementById('chat-title').textContent = newTitle.trim();
-                    }
+                    document.getElementById('chat-title').textContent = newTitle.trim();
                     showToast("Chat renamed!", "success");
                 }
             });
@@ -1901,7 +1877,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const planSelect = modalWrapper.querySelector('#admin-plan-select');
         planSelectContainer.classList.remove('hidden');
 
-        // Use Object.keys for reliable iteration
         const plans = Object.keys(PLAN_CONFIG);
         planSelect.innerHTML = '';
         plans.forEach(planId => {
@@ -1943,8 +1918,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (result.success) {
             showToast(result.message, 'success');
             fetchAdminData();
-        } else {
-            showToast(result.error, 'error');
         }
     }
 
@@ -1962,18 +1935,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!leaderboardContainer) return;
 
         const result = await apiCall('/api/student/leaderboard');
-        if (result.success) {
+        if (result.success && result.leaderboard.length > 0) {
             leaderboardContainer.classList.remove('hidden');
-            let leaderboardHTML = `<h3 class="text-lg font-bold mb-2">Class Leaderboard</h3>`;
-            if (result.leaderboard.length > 0) {
-                leaderboardHTML += `<ul class="space-y-1">`;
-                result.leaderboard.forEach((student, index) => {
-                    leaderboardHTML += `<li class="flex justify-between items-center text-sm"><span class="truncate"><strong>${index + 1}.</strong> ${student.username}</span><span class="font-mono text-yellow-400">${student.streak} days</span></li>`;
-                });
-                leaderboardHTML += `</ul>`;
-            } else {
-                leaderboardHTML += `<p class="text-sm text-gray-400">No students have a streak yet.</p>`;
-            }
+            let leaderboardHTML = `<h3 class="text-lg font-bold mb-2">Class Leaderboard</h3><ul class="space-y-1">`;
+            result.leaderboard.forEach((student, index) => {
+                leaderboardHTML += `<li class="flex justify-between items-center text-sm"><span class="truncate"><strong>${index + 1}.</strong> ${student.username}</span><span class="font-mono text-yellow-400">${student.streak} days</span></li>`;
+            });
+            leaderboardHTML += `</ul>`;
             leaderboardContainer.innerHTML = leaderboardHTML;
         } else {
             leaderboardContainer.classList.add('hidden');
@@ -2087,9 +2055,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     chatEl.className = 'bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4';
                     chatEl.innerHTML = `<h3 class="text-lg font-bold">${chat.title}</h3>`;
                     chat.messages.forEach(msg => {
+                        const contentHTML = DOMPurify.sanitize(marked.parse(msg.content || ''));
                         chatEl.innerHTML += `
                             <div class="p-2 rounded-lg ${msg.sender === 'user' ? 'bg-blue-900/30' : 'bg-gray-700/30'}">
-                                <strong>${msg.sender === 'user' ? 'Student' : 'AI'}:</strong> ${msg.content}
+                                <strong>${msg.sender === 'user' ? 'Student' : 'AI'}:</strong> ${contentHTML}
                             </div>
                         `;
                     });
@@ -2117,7 +2086,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- ADMIN ROUTES ---
+    // --- ADMIN ACTIONS ---
     async function handleSetAnnouncement(e) {
         e.preventDefault();
         const text = document.getElementById('announcement-input').value;
@@ -2137,9 +2106,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function handleAdminDeleteUser(e) {
-        const userId = e.target.dataset.userid;
-        if (confirm(`Are you sure you want to delete user ${userId}? This is irreversible.`)) {
+    function handleAdminDeleteUser(userId) {
+        if (confirm(`Are you sure you want to delete this user? This is irreversible.`)) {
             apiCall('/api/admin/delete_user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2430,7 +2398,7 @@ def chat():
                 "model": model_name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    *[{"role": m['sender'], "content": m['content']} for m in chat['messages']]
+                    *[{"role": "user" if m['sender'] == 'user' else "assistant", "content": m['content']} for m in chat['messages']]
                 ],
                 "stream": True
             }
@@ -2444,11 +2412,15 @@ def chat():
                 if line:
                     decoded = line.decode('utf-8')
                     if decoded.startswith("data: "):
-                        data = json.loads(decoded[6:])
-                        if 'choices' in data and data['choices']:
-                            yield data['choices'][0]['delta'].get('content', '')
+                        try:
+                            data = json.loads(decoded[6:])
+                            if 'choices' in data and data['choices']:
+                                yield data['choices'][0]['delta'].get('content', '')
+                        except json.JSONDecodeError:
+                            continue # Ignore empty or malformed lines
         except Exception as e:
-            yield f"Error: {str(e)}"
+            logging.error(f"Error during API call: {e}")
+            yield f"Error: Could not connect to the AI model. Please try again later."
 
     ai_msg = {'sender': 'model', 'content': ''}
     chat['messages'].append(ai_msg)
@@ -2459,8 +2431,23 @@ def chat():
             content += chunk
             yield chunk
         ai_msg['content'] = content
-        if len(chat['messages']) == 2:
-            chat['title'] = prompt[:30] + '...' if len(prompt) > 30 else prompt
+        # Auto-generate title for new chats
+        if len(chat['messages']) == 2 and (chat['title'] == 'New Chat' or not chat['title']):
+             title_prompt = f"Generate a very short, concise title (4 words max) for the following conversation:\n\nUser: {prompt}\nAI: {content[:100]}..."
+             try:
+                 title_response = requests.post(
+                     SITE_CONFIG['DEEPSEEK_API_URL'],
+                     json={
+                         "model": "deepseek-chat",
+                         "messages": [{"role": "user", "content": title_prompt}]
+                     },
+                     headers={"Authorization": f"Bearer {SITE_CONFIG['DEEPSEEK_API_KEY']}", "Content-Type": "application/json"}
+                 )
+                 title_response.raise_for_status()
+                 chat['title'] = title_response.json()['choices'][0]['message']['content'].strip().strip('"')
+             except Exception as e:
+                 logging.error(f"Could not auto-generate title: {e}")
+                 chat['title'] = prompt[:30] + '...' if len(prompt) > 30 else prompt
         save_database()
 
     return Response(stream_with_context(stream_response()), mimetype='text/plain')
@@ -2491,15 +2478,19 @@ def create_checkout_session():
         return jsonify({'error': 'Invalid plan'}), 400
     price_id = price_id_map[plan_id]
     mode = 'payment' if plan_id == 'ultra' else 'subscription'
-    session = stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=[{'price': price_id, 'quantity': 1}],
-        mode=mode,
-        success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/?payment=success',
-        cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/?payment=cancel',
-        metadata={'user_id': current_user.id, 'plan_id': plan_id}
-    )
-    return jsonify({'success': True, 'id': session.id})
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{'price': price_id, 'quantity': 1}],
+            mode=mode,
+            success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/?payment=success',
+            cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/?payment=cancel',
+            metadata={'user_id': current_user.id, 'plan_id': plan_id}
+        )
+        return jsonify({'success': True, 'id': session.id})
+    except Exception as e:
+        logging.error(f"Stripe session creation failed: {e}")
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/webhook/stripe', methods=['POST'])
@@ -2514,8 +2505,7 @@ def stripe_webhook():
         return 'Invalid signature', 400
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
-        # The following print statement has been corrected and commented out.
-        # print(session)
+        # print(session) # Debugging line
         user_id = session['metadata'].get('user_id')
         plan_id = session['metadata'].get('plan_id')
         user = User.get(user_id)
@@ -2646,19 +2636,24 @@ def generate_classroom_code():
     old_code = current_user.classroom_code
     new_code = secrets.token_hex(4).upper()
     if old_code and old_code in DB['classrooms']:
+        # Also remove students from the old classroom logically
+        for student_id in DB['classrooms'][old_code]['students']:
+            student = User.get(student_id)
+            if student:
+                student.classroom_code = None
         del DB['classrooms'][old_code]
     DB['classrooms'][new_code] = {'teacher_id': current_user.id, 'students': []}
     current_user.classroom_code = new_code
     save_database()
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'new_code': new_code})
 
 
 @app.route('/api/teacher/student_chats/<student_id>', methods=['GET'])
 @teacher_required
 def student_chats(student_id):
     classroom_code = current_user.classroom_code
-    if classroom_code not in DB['classrooms'] or student_id not in DB['classrooms'][classroom_code]['students']:
-        return jsonify({'error': 'Not your student'}), 403
+    if not classroom_code or classroom_code not in DB['classrooms'] or student_id not in DB['classrooms'][classroom_code]['students']:
+        return jsonify({'error': 'This student is not in your classroom.'}), 403
     chats = DB['chats'].get(student_id, {})
     return jsonify({'success': True, 'chats': list(chats.values())})
 
@@ -2669,26 +2664,26 @@ def kick_student():
     data = request.json
     student_id = data['student_id']
     classroom_code = current_user.classroom_code
-    if classroom_code not in DB['classrooms']:
-        return jsonify({'error': 'No classroom'}), 400
+    if not classroom_code or classroom_code not in DB['classrooms']:
+        return jsonify({'error': 'You do not have a classroom.'}), 400
     if student_id in DB['classrooms'][classroom_code]['students']:
         DB['classrooms'][classroom_code]['students'].remove(student_id)
         user = User.get(student_id)
         if user:
             user.classroom_code = None
         save_database()
-        return jsonify({'success': True, 'message': 'Student kicked'})
-    return jsonify({'error': 'Student not in class'}), 404
+        return jsonify({'success': True, 'message': 'Student removed from classroom.'})
+    return jsonify({'error': 'Student not found in your classroom.'}), 404
 
 
 @app.route('/api/student/leaderboard', methods=['GET'])
 @login_required
 def student_leaderboard():
     if current_user.account_type != 'student' or not current_user.classroom_code:
-        return jsonify({'success': False, 'error': 'Not a student or no classroom'}), 403
+        return jsonify({'success': False, 'error': 'Not a student or not in a classroom.'}), 403
     classroom = DB['classrooms'].get(current_user.classroom_code)
     if not classroom:
-        return jsonify({'success': False, 'error': 'Classroom not found'}), 404
+        return jsonify({'success': False, 'error': 'Classroom not found.'}), 404
     students = [User.get(sid) for sid in classroom['students']]
     leaderboard = sorted([{'username': s.username, 'streak': s.streak} for s in students if s], key=lambda x: x['streak'], reverse=True)
     return jsonify({'success': True, 'leaderboard': leaderboard})

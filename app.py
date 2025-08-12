@@ -39,9 +39,9 @@ SITE_CONFIG = {
     "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions",
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
-    "STRIPE_PRO_PRICE_ID": "price_1Ou3jXBSm9qhr9Evw6G6jLd5",  # Example ID, replace with yours
-    "STRIPE_ULTRA_PRICE_ID": "price_1Ou4b1BSm9qhr9Ev7bK7f6iF",  # Example ID, replace with yours
-    "STRIPE_STUDENT_PRICE_ID": "price_1Ou4cCBSm9qhr9Ev9K7m3O8R",  # Example ID, replace with yours
+    "STRIPE_PRO_PRICE_ID": os.environ.get('STRIPE_PRO_PRICE_ID'),
+    "STRIPE_ULTRA_PRICE_ID": os.environ.get('STRIPE_ULTRA_PRICE_ID'),
+    "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
     "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
     "SECRET_REGISTRATION_KEY": os.environ.get('SECRET_REGISTRATION_KEY'),
     "SECRET_STUDENT_KEY": os.environ.get('SECRET_STUDENT_KEY'),
@@ -643,7 +643,7 @@ HTML_CONTENT = """
             <p id="welcome-subtitle" class="text-gray-400 max-w-md">Start a new conversation or select one from the sidebar. How can I help you today?</p>
     
             <div id="model-selection-wrapper" class="flex items-center gap-2 mt-4 hidden">
-                <label for="model-select" class="text-gray-400 text-sm">Model:</label>
+                <label for="model-select" class="text-gray-400 text-sm">Mode:</label>
                 <select id="model-select" class="bg-gray-700/50 text-white rounded-lg p-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </select>
             </div>
@@ -1105,7 +1105,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (planDetails.available_models and planDetails.available_models.length > 1) {
             modelSelectionContainer.classList.remove('hidden');
-            let selectHtml = `<label for="model-select" class="text-gray-400 text-sm">Model:</label><select id="model-select" class="bg-gray-700/50 text-white rounded-lg p-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">`;
+            let selectHtml = `<label for="model-select" class="text-gray-400 text-sm">Mode:</label><select id="model-select" class="bg-gray-700/50 text-white rounded-lg p-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">`;
             planDetails.available_models.forEach(model => {
                 selectHtml += `<option value="${model}" ${model === appState.selectedModel ? 'selected' : ''}>${model}</option>`;
             });
@@ -2173,4 +2173,3 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-

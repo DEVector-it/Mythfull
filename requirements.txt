@@ -11,3 +11,4 @@ itsdangerous
 gunicorn
 tim
 flask_mail
+flask_sqlalchemy

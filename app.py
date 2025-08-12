@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 import stripe
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
 from flask_mail import Mail, Message
-from flask_talisman import Talisman, CSP
+from flask_talisman import Talisman
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---

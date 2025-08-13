@@ -10,4 +10,6 @@ werkzeug
 itsdangerous
 gunicorn
 eventlet
-
+sqlalchemy.engine 
+from flask_socketio 
+from flask_cors

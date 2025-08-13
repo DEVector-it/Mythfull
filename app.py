@@ -296,7 +296,13 @@ HTML_CONTENT = """
     <template id="template-contact-form"><h2 class="text-2xl font-bold text-white mb-4">Contact Us</h2><form id="contact-form"><div class="mb-4"><label for="contact-name" class="block text-sm">Name</label><input type="text" id="contact-name" name="name" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-email" class="block text-sm">Email</label><input type="email" id="contact-email" name="email" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-message" class="block text-sm">Message</label><textarea id="contact-message" name="message" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Send Message</button></form></template>
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const BASE_URL = ''; 
+        // --- MODIFIED ---
+        // This logic dynamically sets the backend URL.
+        // For local development, it's an empty string to use relative paths.
+        // For deployed versions (like on Netlify), it points to your Render backend.
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const BASE_URL = isLocal ? '' : 'https://myth-ai.onrender.com';
+
         const SITE_CONFIG = {
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
@@ -337,6 +343,7 @@ HTML_CONTENT = """
         
         function connectSocket() { 
             if (appState.socket) appState.socket.disconnect(); 
+            // When connecting the socket, also use the dynamic BASE_URL
             appState.socket = io(BASE_URL); 
             appState.socket.on('connect', () => { 
                 console.log('Socket connected!'); 
@@ -907,6 +914,7 @@ if __name__ == '__main__':
     initialize_app_database()
     port = int(os.environ.get('PORT', 10000))
     socketio.run(app, host='0.0.0.0', port=port)
+
 
 
 

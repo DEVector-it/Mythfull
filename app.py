@@ -100,6 +100,7 @@ class User(UserMixin, db.Model):
     has_subscription = db.Column(db.Boolean, default=False)
     stripe_customer_id = db.Column(db.String(120), nullable=True, index=True)
     ai_persona = db.Column(db.String(500), nullable=True, default=None)
+    theme_preference = db.Column(db.String(50), nullable=True, default='dark')
     
     # Relationships
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
@@ -129,7 +130,8 @@ class User(UserMixin, db.Model):
             'created_at': self.created_at.isoformat(),
             'has_subscription': self.has_subscription,
             'profile': profile_data,
-            'ai_persona': self.ai_persona
+            'ai_persona': self.ai_persona,
+            'theme_preference': self.theme_preference
         }
 
 class Profile(db.Model):
@@ -290,8 +292,24 @@ HTML_CONTENT = """
     <script src="https://cdn.tailwindcss.com"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script><script src="https://js.stripe.com/v3/"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --brand-hue: 220; --bg-dark: #0F172A; --bg-med: #1E293B; --bg-light: #334155; --glow-color: hsl(var(--brand-hue), 100%, 70%); }
-        body { background-color: var(--bg-dark); font-family: 'Inter', sans-serif; }
+        :root {
+            --brand-hue: 220;
+            --bg-dark: #0F172A;
+            --bg-med: #1E293B;
+            --bg-light: #334155;
+            --glow-color: hsl(var(--brand-hue), 100%, 70%);
+            --text-color: #E2E8F0;
+            --text-secondary-color: #94A3B8;
+        }
+        body { background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color); }
+        .theme-light {
+            --bg-dark: #F1F5F9;
+            --bg-med: #E2E8F0;
+            --bg-light: #CBD5E1;
+            --glow-color: hsl(200, 90%, 50%);
+            --text-color: #1E293B;
+            --text-secondary-color: #475569;
+        }
         .glassmorphism { background: rgba(31, 41, 55, 0.5); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
         .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(260, 90%, 65%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .brand-gradient-bg { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 55%), hsl(260, 90%, 60%)); }
@@ -327,6 +345,7 @@ HTML_CONTENT = """
     <template id="template-welcome-anime">
         <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://placehold.co/1920x1080/0F172A/FFFFFF?text=Anime+Background');">
             <div class="glassmorphism p-8 rounded-xl text-center">
+                <img src="https://placehold.co/150x150/FFFFFF/000000?text=Myth+AI" alt="Myth AI Logo" class="mx-auto mb-4 rounded-full shadow-lg">
                 <h1 class="text-4xl font-bold text-white mb-4">Welcome to Myth AI!</h1>
                 <p class="text-gray-300 mb-6">Your journey into AI-powered learning begins now.</p>
                 <button id="get-started-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Get Started</button>
@@ -436,11 +455,39 @@ HTML_CONTENT = """
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
         };
+        
+        const themes = {
+            dark: {
+                '--bg-dark': '#0F172A',
+                '--bg-med': '#1E293B',
+                '--bg-light': '#334155',
+                '--glow-color': 'hsl(220, 100%, 70%)',
+                '--text-color': '#E2E8F0',
+                '--text-secondary-color': '#94A3B8'
+            },
+            light: {
+                '--bg-dark': '#F1F5F9',
+                '--bg-med': '#E2E8F0',
+                '--bg-light': '#CBD5E1',
+                '--glow-color': 'hsl(200, 90%, 50%)',
+                '--text-color': '#1E293B',
+                '--text-secondary-color': '#475569'
+            },
+        };
 
         const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null };
         const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container') };
         
         document.getElementById('current-year').textContent = new Date().getFullYear();
+
+        function applyTheme(themeName) {
+            const theme = themes[themeName];
+            if (theme) {
+                for (const [key, value] of Object.entries(theme)) {
+                    document.documentElement.style.setProperty(key, value);
+                }
+            }
+        }
 
         function playAudio(id) {
             const audio = document.getElementById(id);
@@ -639,6 +686,10 @@ HTML_CONTENT = """
         
         function handleLoginSuccess(user, settings) {
             appState.currentUser = user;
+            // Apply theme preference immediately
+            if (user.theme_preference) {
+                applyTheme(user.theme_preference);
+            }
             // Play welcome audio and animation
             renderPage('template-welcome-anime', () => {
                 playAudio('welcome-audio');
@@ -752,7 +803,45 @@ HTML_CONTENT = """
             }
         }
 
-        function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
+        function setupProfileTab(container) { 
+            renderSubTemplate(container, 'template-profile', () => { 
+                document.getElementById('bio').value = appState.currentUser.profile.bio || ''; 
+                document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; 
+                
+                const themeSelect = document.createElement('select');
+                themeSelect.id = 'theme-select';
+                themeSelect.name = 'theme_preference';
+                themeSelect.className = 'w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600';
+                themeSelect.innerHTML = `
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                `;
+                themeSelect.value = appState.currentUser.theme_preference || 'dark';
+
+                const themeControl = document.createElement('div');
+                themeControl.className = 'mb-4';
+                themeControl.innerHTML = '<label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>';
+                themeControl.appendChild(themeSelect);
+
+                document.getElementById('profile-form').prepend(themeControl);
+                document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
+            }); 
+        }
+        
+        async function handleUpdateProfile(e) {
+            e.preventDefault();
+            const form = e.target;
+            const body = Object.fromEntries(new FormData(form));
+
+            const result = await apiCall('/update_profile', { method: 'POST', body });
+            if (result.success) {
+                appState.currentUser.profile = result.profile;
+                appState.currentUser.theme_preference = body.theme_preference;
+                applyTheme(body.theme_preference);
+                showToast('Profile updated!', 'success');
+            }
+        }
+
         function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription. Manage your subscription, view invoices, and update payment methods through the customer portal.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for unlimited AI interactions and more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
         async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(value)}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
         async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(c.student_count)}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } }
@@ -871,6 +960,8 @@ HTML_CONTENT = """
 
         async function initializeApp(user, settings) {
             appState.currentUser = user;
+            // Apply user's theme preference
+            applyTheme(user.theme_preference);
             setupDashboard();
         }
 
@@ -928,6 +1019,8 @@ HTML_CONTENT = """
             const result = await apiCall('/update_profile', { method: 'POST', body });
             if (result.success) {
                 appState.currentUser.profile = result.profile;
+                appState.currentUser.theme_preference = body.theme_preference;
+                applyTheme(body.theme_preference);
                 showToast('Profile updated!', 'success');
             }
         }
@@ -1335,6 +1428,7 @@ def update_profile():
             profile = current_user.profile
         profile.bio = data['bio']
         profile.avatar = data['avatar']
+        current_user.theme_preference = data.get('theme_preference', 'dark')
         db.session.commit()
         return jsonify(success=True, profile={'bio': profile.bio, 'avatar': profile.avatar})
     except Exception as e:

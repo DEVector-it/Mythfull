@@ -519,10 +519,25 @@ HTML_CONTENT = """
             e.preventDefault();
             const form = e.target;
             const endpoint = appState.isLoginView ? '/login' : '/signup';
-            let body = Object.fromEntries(new FormData(form));
             
-            if (appState.selectedRole === 'admin') {
-                body.username = 'big ballz';
+            const body = {};
+            const formData = new FormData(form);
+
+            if (appState.isLoginView) {
+                body.username = formData.get('username');
+                body.password = formData.get('password');
+                body.account_type = appState.selectedRole;
+                if (appState.selectedRole === 'admin') {
+                    body.admin_secret_key = formData.get('admin_secret_key');
+                }
+            } else { // Sign up view
+                body.username = formData.get('username');
+                body.email = formData.get('email');
+                body.password = formData.get('password');
+                body.account_type = appState.selectedRole;
+                if (appState.selectedRole === 'teacher') {
+                    body.secret_key = formData.get('secret_key');
+                }
             }
             
             const result = await apiCall(endpoint, { method: 'POST', body });
@@ -879,13 +894,20 @@ def handle_exception(e):
 @app.route('/api/signup', methods=['POST'])
 def signup():
     data = request.json
+    if not data or 'username' not in data or 'password' not in data or 'email' not in data or 'account_type' not in data:
+        return jsonify(error='Missing required fields.'), 400
+
     if User.query.filter_by(username=data['username']).first():
         return jsonify(error='Username taken'), 400
-    if User.query.filter_by(email=data.get('email')).first():
+    if User.query.filter_by(email=data['email']).first():
         return jsonify(error='Email taken'), 400
 
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         return jsonify(error='Invalid teacher key'), 403
+    
+    # New check for admin signup
+    if data['account_type'] == 'admin':
+        return jsonify(error='Admin accounts cannot be created via signup.'), 403
 
     hashed_pw = generate_password_hash(data['password'])
     user = User(
@@ -908,11 +930,14 @@ def signup():
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify(error='Missing required fields.'), 400
+
     user = User.query.filter_by(username=data['username']).first()
     if not user or not check_password_hash(user.password_hash, data['password']):
         return jsonify(error='Invalid credentials'), 401
 
-    if data.get('account_type') == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
+    if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         return jsonify(error='Invalid admin key'), 403
 
     if not user.profile:
@@ -1156,7 +1181,6 @@ def admin_toggle_maintenance():
     setting = SiteSettings.query.get('maintenance')
     if not setting:
         setting = SiteSettings(key='maintenance', value='false')
-        db.session.add(setting)
     setting.value = 'true' if setting.value == 'false' else 'false'
     db.session.commit()
     return jsonify(success=True, enabled=setting.value == 'true')

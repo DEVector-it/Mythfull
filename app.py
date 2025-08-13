@@ -30,18 +30,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
-allowed_origins = [
-    "https://reallymythai.netlify.app",
-    "https://mythproal.netlify.app",
-    "https://myth-ai.onrender.com",
-    "https://myth-ai.onrender.com",
-    "http://127.0.0.1:5000",
-    "http://localhost:5000",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "null"
-]
-CORS(app, supports_credentials=True, origins=allowed_origins)
+# Allow all origins for CORS
+CORS(app, supports_credentials=True, origins="*")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
@@ -183,7 +173,6 @@ HTML_CONTENT = """
     <div id="app-container" class="relative h-screen w-screen overflow-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
     <div id="modal-container"></div>
-    <!-- TEMPLATES START -->
     <template id="template-welcome-anime">
         <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://placehold.co/1920x1080/0F172A/FFFFFF?text=Anime+Background');">
             <div class="glassmorphism p-8 rounded-xl text-center">
@@ -281,10 +270,9 @@ HTML_CONTENT = """
     <template id="template-privacy-policy"><h2 class="text-2xl font-bold text-white mb-4">Privacy Policy</h2><p class="text-gray-300">This is a placeholder for your privacy policy. You should replace this with your actual policy, detailing how you collect, use, and protect user data. Make sure to comply with relevant regulations like GDPR and CCPA.</p></template>
     <template id="template-plans"><h2 class="text-2xl font-bold text-white mb-4">Subscription Plans</h2><div class="grid md:grid-cols-2 gap-6"><div class="glassmorphism p-6 rounded-lg"><h3 class="text-xl font-bold text-cyan-400">Free Plan</h3><p class="text-gray-400">Basic access for all users.</p></div><div class="glassmorphism p-6 rounded-lg border-2 border-purple-500"><h3 class="text-xl font-bold text-purple-400">Pro Plan</h3><p class="text-gray-400">Unlock unlimited AI interactions and advanced features.</p><button class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg" id="upgrade-from-modal-btn">Upgrade Now</button></div></div></template>
     <template id="template-contact-form"><h2 class="text-2xl font-bold text-white mb-4">Contact Us</h2><form id="contact-form"><div class="mb-4"><label for="contact-name" class="block text-sm">Name</label><input type="text" id="contact-name" name="name" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-email" class="block text-sm">Email</label><input type="email" id="contact-email" name="email" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-message" class="block text-sm">Message</label><textarea id="contact-message" name="message" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Send Message</button></form></template>
-    <!-- TEMPLATES END -->
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const BASE_URL = 'https://myth-ai.onrender.com';
+        const BASE_URL = ''; // API calls will be relative to the server's domain
         const SITE_CONFIG = {
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
@@ -429,7 +417,7 @@ HTML_CONTENT = """
             
             if (result.success) {
                 if (result.user.role === appState.selectedRole || (appState.selectedRole !== 'admin')) {
-                     initializeApp(result.user, {});
+                    initializeApp(result.user, {});
                 } else {
                     document.getElementById('auth-error').textContent = `Authentication failed. Please check your credentials and role.`;
                     handleLogout(true);

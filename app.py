@@ -30,6 +30,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
+allowed_origins = [
+    "https://reallymythai.netlify.app",
+    "https://mythproal.netlify.app",
+    "https://myth-ai.onrender.com",
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "null"
+]
+CORS(app, supports_credentials=True, origins=allowed_origins)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
@@ -871,6 +882,7 @@ if __name__ == '__main__':
     initialize_app_database()
     port = int(os.environ.get('PORT', 10000))
     socketio.run(app, host='0.0.0.0', port=port)
+
 
 
 

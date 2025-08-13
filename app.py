@@ -609,7 +609,7 @@ HTML_CONTENT = """
             if (setups[tab]) setups[tab](contentContainer);
         }
         
-        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'), listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); const result = await apiCall('/my_classes'); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(cls => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${cls.id}" data-name="${cls.name}"><div class="font-bold text-white text-lg">${cls.name}</div><div class="text-gray-400 text-sm">Teacher: ${cls.teacher_name}</div>${appState.currentUser.role === 'teacher' ? `<div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${cls.code}</span></div>` : ''}</div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', (e) => selectClass(e.currentTarget.dataset.id))); } }); }
+        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'), listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); const result = await apiCall('/my_classes'); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(cls => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${cls.id}" data-name="${cls.name}"><div class="font-bold text-white text-lg">${escapeHtml(cls.name)}</div><div class="text-gray-400 text-sm">Teacher: ${escapeHtml(cls.teacher_name)}</div>${appState.currentUser.role === 'teacher' ? `<div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(cls.code)}</span></div>` : ''}</div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', (e) => selectClass(e.currentTarget.dataset.id))); } }); }
         
         async function setupTeamModeTab(container) {
             renderSubTemplate(container, 'template-team-mode', async () => {
@@ -625,10 +625,10 @@ HTML_CONTENT = """
                     } else {
                         listContainer.innerHTML = result.teams.map(team => `
                             <div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${team.id}">
-                                <div class="font-bold text-white text-lg">${team.name}</div>
-                                <div class="text-gray-400 text-sm">Owner: ${team.owner_name}</div>
-                                <div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${team.code}</span></div>
-                                <div class="text-sm text-gray-400">${team.member_count} members</div>
+                                <div class="font-bold text-white text-lg">${escapeHtml(team.name)}</div>
+                                <div class="text-gray-400 text-sm">Owner: ${escapeHtml(team.owner_name)}</div>
+                                <div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></div>
+                                <div class="text-sm text-gray-400">${escapeHtml(team.member_count)} members</div>
                             </div>
                         `).join('');
                         listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => selectTeam(e.currentTarget.dataset.id)));
@@ -1150,7 +1150,7 @@ def join_team():
         team = Team.query.filter_by(code=data['code'].upper()).first()
         if not team:
             return jsonify(error='Invalid team code'), 404
-        current_user.members.append(team)
+        current_user.teams.append(team)
         db.session.commit()
         return jsonify(success=True, message='Joined team')
     except Exception as e:
@@ -1162,7 +1162,7 @@ def join_team():
 @login_required
 def get_team(team_id):
     team = Team.query.options(db.joinedload(Team.members).subqueryload(User.profile)).get_or_404(team_id)
-    # Authorization check
+    # Add authorization check if needed
     return jsonify(success=True, team={
         'id': team.id,
         'name': team.name,
@@ -1231,7 +1231,7 @@ def stripe_webhooks():
     #
     # event = None
     # payload = request.data
-    # sig_header = request.headers['STRIPE_SIGNATURE']
+    # sig_header = request.headers.get('STRIPE_SIGNATURE')
     #
     # try:
     #     event = stripe.Webhook.construct_event(

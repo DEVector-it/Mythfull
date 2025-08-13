@@ -380,7 +380,7 @@ HTML_CONTENT = """
     <template id="template-admin-dashboard"><h3 class="text-3xl font-bold text-white mb-6">Admin Panel</h3><div id="admin-stats" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="users">Users</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="classes">Classes</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="settings">Settings</button></div><div id="admin-view-content"></div></main></div></template>
     <template id="template-admin-users-view"><h4 class="text-xl font-bold text-white mb-4">User Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Username</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Created At</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-user-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
     <template id="template-admin-classes-view"><h4 class="text-xl font-bold text-white mb-4">Class Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Name</th><th class="p-3">Teacher</th><th class="p-3">Code</th><th class="p-3">Students</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-class-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
-    <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label class="block text-sm font-medium text-gray-300 mb-1">Maintenance Mode</label><button type="button" id="maintenance-toggle-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">Toggle Maintenance Mode</button></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
+    <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="ai-persona-input" class="block text-sm font-medium text-gray-300 mb-1">AI Persona</label><input type="text" id="ai-persona-input" name="ai_persona" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="e.g. A helpful study guide"></div><div class="mb-4"><label class="block text-sm font-medium text-gray-300 mb-1">Maintenance Mode</label><button type="button" id="maintenance-toggle-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">Toggle Maintenance Mode</button></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
     <template id="template-modal"><div class="modal-overlay"><div class="glassmorphism rounded-2xl p-8 shadow-2xl w-full max-w-2xl modal-content relative"><button class="absolute top-4 right-4 text-gray-400 hover:text-white">&times;</button><div class="modal-body"></div></div></div></template>
     <template id="template-privacy-policy"><h2 class="text-2xl font-bold text-white mb-4">Privacy Policy</h2><p class="text-gray-300">This is a placeholder for your privacy policy. You should replace this with your actual policy, detailing how you collect, use, and protect user data. Make sure to comply with relevant regulations like GDPR and CCPA.</p></template>
     <template id="template-plans"><h2 class="text-2xl font-bold text-white mb-4">Subscription Plans</h2><div class="grid md:grid-cols-2 gap-6"><div class="glassmorphism p-6 rounded-lg"><h3 class="text-xl font-bold text-cyan-400">Free Plan</h3><p class="text-gray-400">Basic access for all users.</p></div><div class="glassmorphism p-6 rounded-lg border-2 border-purple-500"><h3 class="text-xl font-bold text-purple-400">Pro Plan</h3><p class="text-gray-400">Unlock unlimited AI interactions and advanced features.</p><button class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg" id="upgrade-from-modal-btn">Upgrade Now</button></div></div></template>
@@ -702,9 +702,13 @@ HTML_CONTENT = """
                 let settingsKey = '';
                 if (command === '/announce') settingsKey = 'announcement';
                 if (command === '/motd') settingsKey = 'daily_message';
+                if (command === '/persona') settingsKey = 'ai_persona';
 
                 if (settingsKey) {
-                    const result = await apiCall('/admin/update_settings', { method: 'POST', body: { [settingsKey]: value } });
+                    const endpoint = settingsKey === 'ai_persona' ? '/admin/set_ai_persona' : '/admin/update_settings';
+                    const body = settingsKey === 'ai_persona' ? { persona: value } : { [settingsKey]: value };
+                    
+                    const result = await apiCall(endpoint, { method: 'POST', body });
                     if (result.success) {
                         showToast(`Admin command successful: ${settingsKey} updated.`, 'success');
                         input.value = '';
@@ -728,7 +732,14 @@ HTML_CONTENT = """
                 body: { prompt: message, class_id: appState.selectedClass.id }
             });
 
-            if (!result.success) {
+            if (result.success) {
+                // Since the AI response is sent via socket.io, we only need to re-enable the form here
+                // The `new_message` event handler will append the message to the chat.
+                input.disabled = false;
+                button.disabled = false;
+                button.innerHTML = 'Send';
+                input.focus();
+            } else {
                 const errorMsg = {
                     id: 'error-' + Date.now(),
                     class_id: appState.selectedClass.id,
@@ -738,12 +749,11 @@ HTML_CONTENT = """
                     timestamp: new Date().toISOString()
                 };
                 appendChatMessage(errorMsg);
+                input.disabled = false;
+                button.disabled = false;
+                button.innerHTML = 'Send';
+                input.focus();
             }
-            
-            input.disabled = false;
-            button.disabled = false;
-            button.innerHTML = 'Send';
-            input.focus();
         }
 
         function appendChatMessage(message) {
@@ -857,7 +867,7 @@ HTML_CONTENT = """
             const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' });
             if (result.success) {
                 showToast('Class deleted.', 'success');
-                switchAdminView('classes');
+                    switchAdminView('classes');
             }
         }
 
@@ -865,8 +875,30 @@ HTML_CONTENT = """
             e.preventDefault();
             const form = e.target;
             const body = Object.fromEntries(new FormData(form));
-            const result = await apiCall('/admin/update_settings', { method: 'POST', body });
-            if (result.success) showToast('Settings updated.', 'success');
+            
+            // Check if the AI persona field has a value, and create a separate call for it.
+            if (body.ai_persona !== undefined) {
+                const personaResult = await apiCall('/admin/set_ai_persona', { method: 'POST', body: { persona: body.ai_persona } });
+                if (!personaResult.success) {
+                    showToast(personaResult.error, 'error');
+                    return;
+                }
+            }
+            
+            // Handle other settings updates
+            const updateBody = { ...body };
+            delete updateBody.ai_persona;
+
+            if (Object.keys(updateBody).length > 0) {
+                const settingsResult = await apiCall('/admin/update_settings', { method: 'POST', body: updateBody });
+                if (settingsResult.success) {
+                    showToast('Settings updated.', 'success');
+                } else {
+                    showToast(settingsResult.error, 'error');
+                }
+            } else if (body.ai_persona) {
+                showToast('AI persona updated.', 'success');
+            }
         }
 
         async function handleToggleMaintenance() {
@@ -1110,9 +1142,10 @@ def generate_ai_response():
     if any(q in prompt for q in ['who made you', 'who created you', 'who is your creator']):
         ai_response = "I was created by DeVHossein."
     else:
-        # Implement AI response generation using GEMINI_API_KEY
-        # For placeholder:
-        ai_response = f"AI response to: {data['prompt']}"
+        # Placeholder logic based on the AI persona setting
+        ai_persona_setting = SiteSettings.query.filter_by(key='ai_persona').first()
+        ai_persona = ai_persona_setting.value if ai_persona_setting else "a helpful AI assistant"
+        ai_response = f"As {ai_persona}, my response is: " + data.get('prompt', '')
 
     try:
         msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)

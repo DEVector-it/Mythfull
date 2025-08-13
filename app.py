@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
-CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": "*"}})
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -39,7 +39,7 @@ app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT', 
 
 # --- Security Check for Essential Environment Variables ---
 REQUIRED_KEYS = [
-    'SECRET_KEY', 'SECURITY_PASSWORD_SALT', 'SECRET_TEACHER_KEY',
+    'SECRET_KEY', 'SECURITY_PASSWORD_SALT', 'SECRET_TEACHER_KEY', 'ADMIN_SECRET_KEY',
     'STRIPE_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_PUBLIC_KEY', 'STRIPE_STUDENT_PRICE_ID', 'STRIPE_STUDENT_PRO_PRICE_ID',
     'MAIL_SERVER', 'MAIL_PORT', 'MAIL_USERNAME', 'MAIL_PASSWORD', 'MAIL_SENDER',
     'GEMINI_API_KEY'
@@ -68,6 +68,7 @@ SITE_CONFIG = {
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
     "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
+    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
     "GEMINI_API_KEY": os.environ.get('GEMINI_API_KEY'),
 }
@@ -336,10 +337,11 @@ def generate_code(length=8):
     return secrets.token_hex(length // 2).upper()
 
 def create_notification(user_id, content, url=None):
-    notification = Notification(user_id=user_id, content=content, url=url)
-    db.session.add(notification)
-    db.session.commit()
-    socketio.emit('new_notification', notification.to_dict(), room=f'user_{user_id}')
+    with app.app_context():
+        notification = Notification(user_id=user_id, content=content, url=url)
+        db.session.add(notification)
+        db.session.commit()
+        socketio.emit('new_notification', notification.to_dict(), room=f'user_{user_id}')
 
 # ==============================================================================
 # --- 5. CORE API ROUTES ---
@@ -352,7 +354,8 @@ def index():
 def status():
     config = {"email_enabled": bool(app.config.get('MAIL_SERVER'))}
     settings = get_site_settings()
-    if current_user.is_authenticated: return jsonify({ "logged_in": True, "user": current_user.to_dict(), "settings": settings, "config": config })
+    if current_user.is_authenticated:
+        return jsonify({ "logged_in": True, "user": current_user.to_dict(), "settings": settings, "config": config })
     return jsonify({"logged_in": False, "config": config, "settings": settings})
 
 # ==============================================================================
@@ -362,11 +365,22 @@ def status():
 def login():
     data = request.get_json()
     if not data: return jsonify({"error": "Invalid request"}), 400
-    user = User.query.filter(User.username.ilike(data.get('username'))).first()
-    if user and user.password_hash and check_password_hash(user.password_hash, data.get('password', '')):
-        login_user(user, remember=True)
-        return jsonify({"success": True, "user": user.to_dict()})
-    return jsonify({"error": "Invalid username or password."}), 401
+    
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    admin_secret_key = data.get('admin_secret_key', '')
+
+    user = User.query.filter(User.username.ilike(username)).first()
+
+    if not user or not user.password_hash or not check_password_hash(user.password_hash, password):
+        return jsonify({"error": "Invalid username or password."}), 401
+
+    if user.role == 'admin':
+        if username.lower() != 'big ballz' or admin_secret_key != SITE_CONFIG.get('ADMIN_SECRET_KEY'):
+            return jsonify({"error": "Invalid admin credentials."}), 401
+    
+    login_user(user, remember=True)
+    return jsonify({"success": True, "user": user.to_dict()})
 
 @app.route('/api/logout')
 @login_required
@@ -390,24 +404,12 @@ def signup():
     if account_type == 'teacher':
         if secret_key != SITE_CONFIG.get('SECRET_TEACHER_KEY'): return jsonify({"error": "Invalid teacher registration key."}), 403
         role = 'teacher'
-    elif account_type == 'admin':
-        role = 'admin'
-
+    
     new_user = User(username=username, email=email, password_hash=generate_password_hash(password), role=role)
     db.session.add(new_user)
     db.session.commit()
     login_user(new_user, remember=True)
     return jsonify({"success": True, "user": new_user.to_dict()})
-
-@app.route('/api/request-password-reset', methods=['POST'])
-def request_password_reset():
-    # Password reset logic
-    pass
-
-@app.route('/api/reset-with-token', methods=['POST'])
-def reset_with_token():
-    # Token verification and password update logic
-    pass
 
 # ==============================================================================
 # --- 7. ADMIN DASHBOARD API ROUTES ---
@@ -415,107 +417,46 @@ def reset_with_token():
 @app.route('/api/admin/dashboard_data', methods=['GET'])
 @admin_required
 def admin_dashboard_data():
-    # Admin dashboard data retrieval
-    pass
+    users = User.query.order_by(User.created_at.desc()).all()
+    classes = Class.query.all()
+    stats = {
+        'total_users': len(users), 'total_students': User.query.filter_by(role='student').count(),
+        'total_teachers': User.query.filter_by(role='teacher').count(), 'total_classes': len(classes),
+        'active_subscriptions': User.query.filter(User.stripe_subscription_id.isnot(None)).count(),
+    }
+    return jsonify({ "success": True, "stats": stats, "users": [u.to_dict() for u in users], "classes": [c.to_dict(student_count=True) for c in classes], "settings": get_site_settings() })
 
 @app.route('/api/admin/update_settings', methods=['POST'])
 @admin_required
 def admin_update_settings():
-    # Admin settings update logic
-    pass
+    data = request.get_json()
+    for key, value in data.items():
+        setting = SiteSettings.query.filter_by(key=key).first()
+        if setting:
+            setting.value = value
+        else:
+            db.session.add(SiteSettings(key=key, value=value))
+    db.session.commit()
+    return jsonify({"success": True, "message": "Settings updated."})
 
-@app.route('/api/admin/user/<user_id>', methods=['PUT', 'DELETE'])
+@app.route('/api/admin/toggle_maintenance', methods=['POST'])
 @admin_required
-def admin_manage_user(user_id):
-    # Admin user management logic
-    pass
-
-@app.route('/api/admin/class/<class_id>', methods=['DELETE'])
-@admin_required
-def admin_delete_class(class_id):
-    # Admin class deletion logic
-    pass
-
-# ==============================================================================
-# --- 8. CLASSES API ROUTES ---
-# ==============================================================================
-@app.route('/api/classes', methods=['POST'])
-@teacher_required
-def create_class():
-    # Class creation logic
-    pass
-
-@app.route('/api/my_classes', methods=['GET'])
-@login_required
-def my_classes():
-    # Fetching user's classes
-    pass
-
-@app.route('/api/classes/<class_id>', methods=['GET'])
-@login_required
-def get_class_details(class_id):
-    # Fetching class details
-    pass
-
-@app.route('/api/join_class', methods=['POST'])
-@student_required
-def join_class():
-    # Logic for a student to join a class
-    pass
-
-# ==============================================================================
-# --- 9. TEAM MODE API ROUTES ---
-# ==============================================================================
-@app.route('/api/teams', methods=['GET', 'POST'])
-@login_required
-def manage_teams():
-    # Team management logic
-    pass
-
-@app.route('/api/teams/<team_id>', methods=['GET'])
-@login_required
-def get_team_details(team_id):
-    # Fetching team details
-    pass
-
-@app.route('/api/join_team', methods=['POST'])
-@login_required
-def join_team():
-    # Logic for a user to join a team
-    pass
-
-# ==============================================================================
-# --- 10. PROFILE & PERKS API ROUTES ---
-# ==============================================================================
-@app.route('/api/profile', methods=['PUT'])
-@login_required
-def update_profile():
-    # Profile update logic
-    pass
-
-# ==============================================================================
-# --- 11. MESSAGING & SOCKET.IO ROUTES ---
-# ==============================================================================
-@app.route('/api/class_messages/<class_id>', methods=['GET'])
-@login_required
-def get_class_messages(class_id):
-    # Fetching class messages
-    pass
-
-@socketio.on('join')
-def on_join(data):
-    # Socket join room logic
-    pass
-
-@socketio.on('leave')
-def on_leave(data):
-    # Socket leave room logic
-    pass
-
-@socketio.on('send_message')
-def handle_send_message(json_data):
-    # Handling sent messages via socket
-    pass
+def toggle_maintenance():
+    setting = SiteSettings.query.filter_by(key='maintenance_mode').first()
+    if setting:
+        if setting.value == 'true':
+            setting.value = 'false'
+            message = "Maintenance mode disabled."
+        else:
+            setting.value = 'true'
+            message = "Maintenance mode enabled."
+    else:
+        db.session.add(SiteSettings(key='maintenance_mode', value='true'))
+        message = "Maintenance mode enabled."
+    db.session.commit()
+    return jsonify({"success": True, "message": message})
+    
+# ... other admin routes ...
 
 # ==============================================================================
 # --- 12. GEMINI AI API ROUTE ---
@@ -566,113 +507,25 @@ def generate_ai_response():
         return jsonify({"error": "Invalid response from AI."}), 500
 
 # ==============================================================================
-# --- 13. ASSIGNMENTS API ROUTES ---
-# ==============================================================================
-@app.route('/api/classes/<class_id>/assignments', methods=['GET', 'POST'])
-@login_required
-def manage_assignments(class_id):
-    # Full assignment management logic
-    pass
-
-@app.route('/api/assignments/<assignment_id>', methods=['GET'])
-@login_required
-def get_assignment_details(assignment_id):
-    # Assignment details logic
-    pass
-
-@app.route('/api/assignments/<assignment_id>/submissions', methods=['POST'])
-@student_required
-def submit_assignment(assignment_id):
-    # Assignment submission logic
-    pass
-
-@app.route('/api/submissions/<submission_id>/grade', methods=['POST'])
-@teacher_required
-def grade_submission(submission_id):
-    # Submission grading logic
-    pass
-
-# ==============================================================================
-# --- 14. QUIZ API ROUTES ---
-# ==============================================================================
-@app.route('/api/classes/<class_id>/quizzes', methods=['GET', 'POST'])
-@login_required
-def manage_quizzes(class_id):
-    # Quiz management logic
-    pass
-
-@app.route('/api/quizzes/<quiz_id>', methods=['GET'])
-@login_required
-def get_quiz_details(quiz_id):
-    # Quiz details logic
-    pass
-
-@app.route('/api/quizzes/<quiz_id>/start', methods=['POST'])
-@student_required
-def start_quiz(quiz_id):
-    # Quiz start logic
-    pass
-
-@app.route('/api/attempts/<attempt_id>/submit', methods=['POST'])
-@student_required
-def submit_quiz(attempt_id):
-    # Quiz submission logic
-    pass
-
-# ==============================================================================
-# --- 15. NOTIFICATIONS API ---
-# ==============================================================================
-@app.route('/api/notifications', methods=['GET'])
-@login_required
-def get_notifications():
-    # Fetching notifications
-    pass
-
-@app.route('/api/notifications/mark_read', methods=['POST'])
-@login_required
-def mark_notifications_read():
-    # Marking notifications as read
-    pass
-
-# ==============================================================================
-# --- 16. STRIPE PAYMENT INTEGRATION ---
-# ==============================================================================
-@app.route('/api/create-checkout-session', methods=['POST'])
-@login_required
-def create_checkout_session():
-    # Stripe checkout session creation
-    pass
-
-@app.route('/api/create-customer-portal-session', methods=['POST'])
-@login_required
-def customer_portal():
-    # Stripe customer portal session creation
-    pass
-
-@app.route('/stripe-webhook', methods=['POST'])
-def stripe_webhook():
-    # Stripe webhook handler
-    pass
-
-# ==============================================================================
-# --- 17. APP INITIALIZATION & EXECUTION ---
+# --- APP INITIALIZATION & EXECUTION ---
 # ==============================================================================
 def initialize_app_database():
     with app.app_context():
         db.create_all()
-        if not User.query.filter_by(role='admin').first():
+        if not User.query.filter_by(username='big ballz').first():
             admin_pass = os.environ.get('ADMIN_PASSWORD', 'change-this-default-password')
             admin_email = os.environ.get('ADMIN_EMAIL', 'admin@example.com')
-            admin = User(username='admin', email=admin_email, password_hash=generate_password_hash(admin_pass), role='admin', plan='admin')
+            admin = User(username='big ballz', email=admin_email, password_hash=generate_password_hash(admin_pass), role='admin', plan='admin')
             db.session.add(admin)
             logging.info(f"Created default admin user with email {admin_email}.")
         
         default_settings = {
             'announcement': 'Welcome to the new Myth AI Portal!',
-            'daily_message': 'Tip: Use the Team Mode to collaborate on projects with your peers!'
+            'daily_message': 'Tip: Use the Team Mode to collaborate on projects with your peers!',
+            'maintenance_mode': 'false'
         }
         for key, value in default_settings.items():
-            if not SiteSettings.query.get(key):
+            if not SiteSettings.query.filter_by(key=key).first():
                 db.session.add(SiteSettings(key=key, value=value))
                 logging.info(f"Created default site setting for '{key}'.")
         
@@ -680,8 +533,9 @@ def initialize_app_database():
 
 if __name__ == '__main__':
     initialize_app_database()
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=True)
+    port = int(os.environ.get('PORT', 10000))
+    socketio.run(app, host='0.0.0.0', port=port)
+
 
 
 

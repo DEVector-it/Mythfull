@@ -99,6 +99,7 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     has_subscription = db.Column(db.Boolean, default=False)
     stripe_customer_id = db.Column(db.String(120), nullable=True, index=True)
+    ai_persona = db.Column(db.String(500), nullable=True, default=None)
     
     # Relationships
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
@@ -108,7 +109,8 @@ class User(UserMixin, db.Model):
     submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
     quiz_attempts = db.relationship('QuizAttempt', back_populates='student', lazy=True, cascade="all, delete-orphan")
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
-    ai_persona = db.Column(db.String(500), nullable=True)
+    def __repr__(self):
+        return f'<User {self.username}>'
 
     def to_dict(self):
         profile_data = {
@@ -126,7 +128,8 @@ class User(UserMixin, db.Model):
             'role': self.role,
             'created_at': self.created_at.isoformat(),
             'has_subscription': self.has_subscription,
-            'profile': profile_data
+            'profile': profile_data,
+            'ai_persona': self.ai_persona
         }
 
 class Profile(db.Model):
@@ -135,6 +138,8 @@ class Profile(db.Model):
     bio = db.Column(db.Text, nullable=True)
     avatar = db.Column(db.String(500), nullable=True)
     user = db.relationship('User', back_populates='profile')
+    def __repr__(self):
+        return f'<Profile {self.user_id}>'
 
 class Team(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -143,6 +148,8 @@ class Team(db.Model):
     owner_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
     owner = db.relationship('User', foreign_keys=[owner_id])
     members = db.relationship('User', secondary=team_member_association, back_populates='teams', lazy='dynamic')
+    def __repr__(self):
+        return f'<Team {self.name}>'
 
 class Class(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -154,6 +161,8 @@ class Class(db.Model):
     messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
     assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
     quizzes = db.relationship('Quiz', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    def __repr__(self):
+        return f'<Class {self.name}>'
 
 class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -163,6 +172,8 @@ class ChatMessage(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     class_obj = db.relationship('Class', back_populates='messages')
     sender = db.relationship('User')
+    def __repr__(self):
+        return f'<Message from {self.sender_id}>'
 
 class Assignment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -172,6 +183,8 @@ class Assignment(db.Model):
     due_date = db.Column(db.DateTime, nullable=False)
     class_obj = db.relationship('Class', back_populates='assignments')
     submissions = db.relationship('Submission', back_populates='assignment', lazy='dynamic', cascade="all, delete-orphan")
+    def __repr__(self):
+        return f'<Assignment {self.title}>'
 
 class Submission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -183,6 +196,8 @@ class Submission(db.Model):
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
     assignment = db.relationship('Assignment', back_populates='submissions')
     student = db.relationship('User', back_populates='submissions')
+    def __repr__(self):
+        return f'<Submission {self.id}>'
 
 class Quiz(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -193,6 +208,8 @@ class Quiz(db.Model):
     class_obj = db.relationship('Class', back_populates='quizzes')
     questions = db.relationship('Question', back_populates='quiz', lazy=True, cascade="all, delete-orphan")
     attempts = db.relationship('QuizAttempt', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
+    def __repr__(self):
+        return f'<Quiz {self.title}>'
 
 class Question(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -201,6 +218,8 @@ class Question(db.Model):
     question_type = db.Column(db.String(50), nullable=False, default='multiple_choice')
     quiz = db.relationship('Quiz', back_populates='questions')
     choices = db.Column(db.JSON, nullable=False) # Store choices as JSON array of objects e.g. [{"id": "...", "text": "...", "is_correct": true/false}]
+    def __repr__(self):
+        return f'<Question {self.id}>'
 
 class QuizAttempt(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -212,6 +231,8 @@ class QuizAttempt(db.Model):
     answers = db.Column(db.JSON, nullable=True)
     quiz = db.relationship('Quiz', back_populates='attempts')
     student = db.relationship('User', back_populates='quiz_attempts')
+    def __repr__(self):
+        return f'<QuizAttempt {self.id}>'
 
 class Notification(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -220,10 +241,14 @@ class Notification(db.Model):
     is_read = db.Column(db.Boolean, default=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', back_populates='notifications')
+    def __repr__(self):
+        return f'<Notification {self.id}>'
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.String(500))
+    def __repr__(self):
+        return f'<SiteSettings {self.key}>'
 
 # ==============================================================================
 # --- 3. USER & SESSION MANAGEMENT ---
@@ -606,14 +631,25 @@ HTML_CONTENT = """
             const result = await apiCall(endpoint, { method: 'POST', body });
             
             if (result.success) {
-                initializeApp(result.user, {}); // settings will be fetched in initializeApp
+                handleLoginSuccess(result.user, {}); // settings will be fetched in initializeApp
             } else {
                 document.getElementById('auth-error').textContent = result.error;
             }
         }
         
-        function setupDashboard() {
-            const user = appState.currentUser;
+        function handleLoginSuccess(user, settings) {
+            appState.currentUser = user;
+            // Play welcome audio and animation
+            renderPage('template-welcome-anime', () => {
+                playAudio('welcome-audio');
+                setTimeout(() => {
+                    // After the animation, transition to the dashboard
+                    setupDashboard(user, settings);
+                }, 4000); // Wait for the animation/voice-over to finish
+            });
+        }
+        
+        function setupDashboard(user, settings) {
             if (!user) return setupAuthPage();
             connectSocket();
             renderPage('template-main-dashboard', () => {
@@ -1211,9 +1247,8 @@ def generate_ai_response():
     if any(q in prompt for q in ['who made you', 'who created you', 'who is your creator']):
         ai_response = "I was created by DeVHossein."
     else:
-        # Placeholder logic based on the AI persona setting
-        ai_persona_setting = SiteSettings.query.filter_by(key='ai_persona').first()
-        ai_persona = ai_persona_setting.value if ai_persona_setting and ai_persona_setting.value else "a helpful AI assistant"
+        # Use user-specific AI persona if it exists, otherwise use the site-wide setting
+        ai_persona = current_user.ai_persona if current_user.ai_persona else "a helpful AI assistant"
         ai_response = f"As {ai_persona}, my response is: " + data.get('prompt', '')
 
     try:
@@ -1514,6 +1549,33 @@ def admin_set_ai_persona():
         return jsonify(success=False, error='Failed to set AI persona.'), 500
 
 
+@app.route('/api/teacher/set_student_persona', methods=['POST'])
+@teacher_required
+def teacher_set_student_persona():
+    data = request.json
+    student_id = data.get('student_id')
+    persona = data.get('persona')
+
+    if not student_id or persona is None:
+        return jsonify(error='Missing student_id or persona field.'), 400
+
+    student = User.query.get(student_id)
+    if not student:
+        return jsonify(error='Student not found.'), 404
+
+    # Teacher can only set persona for students in their classes
+    if current_user.role == 'teacher' and student not in current_user.taught_classes.first().students:
+        return jsonify(error='You do not have permission to modify this student.'), 403
+
+    try:
+        student.ai_persona = persona if persona else None
+        db.session.commit()
+        return jsonify(success=True, message=f'AI persona for {student.username} updated.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error setting student persona: {str(e)}")
+        return jsonify(error='Failed to set student persona.'), 500
+
 @app.route('/api/request-password-reset', methods=['POST'])
 def request_password_reset():
     data = request.json
@@ -1577,28 +1639,41 @@ def on_send_message(data):
     }, room=f'class_{data["class_id"]}')
 
 # Run the app
-if __name__ == '__main__':
+def initialize_database():
+    """Initializes the database with default settings and a default admin user."""
     with app.app_context():
         db.create_all()
-        # Initial data for the app
-        if not User.query.first():
-            admin_user = User(
-                username='big ballz',
-                email='admin@example.com',
-                password_hash=generate_password_hash('adminpassword'),
-                role='admin'
-            )
-            db.session.add(admin_user)
-            db.session.flush()
-            admin_profile = Profile(user_id=admin_user.id)
-            db.session.add(admin_profile)
-            db.session.commit()
-            logging.info("Default admin user created.")
         
+        # Create default admin user if one doesn't exist
+        if not User.query.first():
+            try:
+                admin_user = User(
+                    username='big ballz',
+                    email='admin@example.com',
+                    password_hash=generate_password_hash('adminpassword'),
+                    role='admin'
+                )
+                db.session.add(admin_user)
+                db.session.flush()
+                admin_profile = Profile(user_id=admin_user.id)
+                db.session.add(admin_profile)
+                db.session.commit()
+                logging.info("Default admin user created.")
+            except IntegrityError:
+                db.session.rollback()
+                logging.warning("Default admin user already exists.")
+        
+        # Create default AI persona setting if it doesn't exist
         if not SiteSettings.query.filter_by(key='ai_persona').first():
-            ai_persona_setting = SiteSettings(key='ai_persona', value='a helpful AI assistant')
-            db.session.add(ai_persona_setting)
-            db.session.commit()
-            logging.info("Default AI persona setting created.")
+            try:
+                ai_persona_setting = SiteSettings(key='ai_persona', value='a helpful AI assistant')
+                db.session.add(ai_persona_setting)
+                db.session.commit()
+                logging.info("Default AI persona setting created.")
+            except IntegrityError:
+                db.session.rollback()
+                logging.warning("Default AI persona setting already exists.")
 
+if __name__ == '__main__':
+    initialize_database()
     socketio.run(app, debug=True)

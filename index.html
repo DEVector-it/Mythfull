@@ -27,11 +27,30 @@
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
     <div id="modal-container"></div>
     <!-- TEMPLATES START -->
+    <template id="template-welcome-anime">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://placehold.co/1920x1080/0F172A/FFFFFF?text=Anime+Background');">
+            <div class="glassmorphism p-8 rounded-xl text-center">
+                <h1 class="text-4xl font-bold text-white mb-4">Welcome to Myth AI!</h1>
+                <p class="text-gray-300 mb-6">Your journey into AI-powered learning begins now.</p>
+                <button id="get-started-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Get Started</button>
+            </div>
+        </div>
+    </template>
+
+    <template id="template-maintenance">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 text-center">
+            <svg class="w-16 h-16 text-yellow-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            <h1 class="text-4xl font-bold text-white mb-2">Under Maintenance</h1>
+            <p class="text-gray-400 mb-8">We're currently performing scheduled maintenance. Please check back soon.</p>
+            <button id="admin-login-btn" class="text-blue-400 hover:text-blue-300">Admin Login</button>
+        </div>
+    </template>
+
     <template id="template-role-choice">
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);">
             <div class="w-full max-w-md text-center">
                 <div class="flex items-center justify-center gap-3 mb-4">
-                    <svg class="w-16 h-16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 7L12 12L22 7" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12V22" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logo-gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs></svg>
+                    <svg class="w-16 h-16" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg>
                     <h1 class="text-5xl font-bold brand-gradient-text">Myth AI</h1>
                 </div>
                 <p class="text-gray-400 text-lg mb-10">Select your role to continue</p>
@@ -74,6 +93,7 @@
                     <div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div>
                     <div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div>
                     <div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div>
+                    <div id="admin-key-field" class="hidden mb-4"><label for="admin-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Admin Key</label><input type="password" id="admin-secret-key" name="admin_secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for admin login"></div>
                     <div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div>
                     <button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button>
                     <p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p>
@@ -83,14 +103,14 @@
         </div>
     </template>
     
-    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 7L12 12L22 7" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12V22" stroke="url(#logo-gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logo-gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs></svg><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
+    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><svg class="w-8 h-8" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
     <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div></template>
     <template id="template-teacher-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Class</h4><div class="flex items-center gap-2"><input type="text" id="new-class-name" placeholder="New class name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></template>
     <template id="template-team-actions"><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a Team</h4><div class="flex items-center gap-2"><input type="text" id="team-code" placeholder="Enter team code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Team</h4><div class="flex items-center gap-2"><input type="text" id="new-team-name" placeholder="New team name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></div></template>
     <template id="template-selected-class-view"><div class="glassmorphism p-6 rounded-lg"><div class="flex justify-between items-start"><h4 class="text-2xl font-bold text-white mb-4">Class: <span id="selected-class-name"></span></h4><button id="back-to-classes-btn" class="text-sm text-blue-400 hover:text-blue-300">&larr; Back to All Classes</button></div><div class="flex border-b border-gray-600 mb-4"><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab" data-tab="chat">Chat</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab" data-tab="assignments">Assignments</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab" data-tab="quizzes">Quizzes</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab" data-tab="students">Students</button></div><div id="class-view-content"></div></div></template>
-    <template id="template-class-chat-view"><div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-96 overflow-y-auto mb-4 border border-gray-700 flex flex-col gap-4"></div><form id="chat-form" class="flex items-center gap-2"><input type="text" id="chat-input" placeholder="Ask the AI assistant..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button type="submit" id="send-chat-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Send</button></form></template>
+    <template id="template-class-chat-view"><div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-96 overflow-y-auto mb-4 border border-gray-700 flex flex-col gap-4"></div><form id="chat-form" class="flex items-center gap-2"><input type="text" id="chat-input" placeholder="Ask the AI assistant or type an admin command..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button type="submit" id="send-chat-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Send</button></form></template>
     <template id="template-class-assignments-view"><div class="flex justify-between items-center mb-4"><h5 class="text-xl font-semibold text-white">Assignments</h5><div id="assignment-action-container"></div></div><div id="assignments-list" class="space-y-4"></div></template>
     <template id="template-class-quizzes-view"><div class="flex justify-between items-center mb-4"><h5 class="text-xl font-semibold text-white">Quizzes</h5><div id="quiz-action-container"></div></div><div id="quizzes-list" class="space-y-4"></div></template>
     <template id="template-class-students-view"><h5 class="text-xl font-semibold text-white mb-4">Enrolled Students</h5><ul id="class-students-list" class="space-y-2"></ul></template>
@@ -99,20 +119,18 @@
     <template id="template-admin-dashboard"><h3 class="text-3xl font-bold text-white mb-6">Admin Panel</h3><div id="admin-stats" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div><div class="flex border-b border-gray-600 mb-4"><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab" data-tab="users">Users</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab" data-tab="classes">Classes</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab" data-tab="settings">Settings</button></div><div id="admin-view-content"></div></template>
     <template id="template-admin-users-view"><h4 class="text-xl font-bold text-white mb-4">User Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Username</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Created At</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-user-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
     <template id="template-admin-classes-view"><h4 class="text-xl font-bold text-white mb-4">Class Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Name</th><th class="p-3">Teacher</th><th class="p-3">Code</th><th class="p-3">Students</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-class-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
-    <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
+    <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label class="block text-sm font-medium text-gray-300 mb-1">Maintenance Mode</label><button type="button" id="maintenance-toggle-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">Toggle Maintenance Mode</button></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
     <template id="template-modal"><div class="modal-overlay"><div class="glassmorphism rounded-2xl p-8 shadow-2xl w-full max-w-2xl modal-content relative"><button class="absolute top-4 right-4 text-gray-400 hover:text-white">&times;</button><div class="modal-body"></div></div></div></template>
     <template id="template-privacy-policy"><h2 class="text-2xl font-bold text-white mb-4">Privacy Policy</h2><p class="text-gray-300">This is a placeholder for your privacy policy. You should replace this with your actual policy, detailing how you collect, use, and protect user data. Make sure to comply with relevant regulations like GDPR and CCPA.</p></template>
     <template id="template-plans"><h2 class="text-2xl font-bold text-white mb-4">Subscription Plans</h2><div class="grid md:grid-cols-2 gap-6"><div class="glassmorphism p-6 rounded-lg"><h3 class="text-xl font-bold text-cyan-400">Free Plan</h3><p class="text-gray-400">Basic access for all users.</p></div><div class="glassmorphism p-6 rounded-lg border-2 border-purple-500"><h3 class="text-xl font-bold text-purple-400">Pro Plan</h3><p class="text-gray-400">Unlock unlimited AI interactions and advanced features.</p><button class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg" id="upgrade-from-modal-btn">Upgrade Now</button></div></div></template>
     <!-- TEMPLATES END -->
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // --- CONFIGURATION ---
         const BASE_URL = 'https://myth-ai.onrender.com';
         const SITE_CONFIG = {
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
         };
-        // ---------------------
 
         const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null };
         const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container') };
@@ -126,7 +144,6 @@
                     options.body = JSON.stringify(options.body); 
                 } 
                 const response = await fetch(`${BASE_URL}${endpoint}`, { 
-                    // credentials: 'include', // This can cause CORS issues if server not configured perfectly
                     ...options 
                 }); 
                 const data = await response.json(); 
@@ -184,7 +201,10 @@
                     updateAuthView();
                 });
                 document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword);
-                document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage);
+                document.getElementById('back-to-roles').addEventListener('click', () => {
+                    // if in maintenance mode, this button shouldn't exist, but as a fallback:
+                    main();
+                });
             });
         }
         
@@ -195,15 +215,32 @@
             const toggleBtn = document.getElementById('auth-toggle-btn');
             const emailField = document.getElementById('email-field');
             const teacherKeyField = document.getElementById('teacher-key-field');
+            const adminKeyField = document.getElementById('admin-key-field');
+            const usernameInput = document.getElementById('username');
             
             title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`;
+            adminKeyField.classList.add('hidden');
+            teacherKeyField.classList.add('hidden');
+            usernameInput.value = '';
+            usernameInput.disabled = false;
+
+            if (appState.selectedRole === 'admin') {
+                usernameInput.value = 'big ballz';
+                usernameInput.disabled = true;
+                toggleBtn.classList.add('hidden'); // No sign up for admin
+                if(appState.isLoginView) {
+                    adminKeyField.classList.remove('hidden');
+                    document.getElementById('admin-secret-key').required = true;
+                }
+            } else {
+                 toggleBtn.classList.remove('hidden');
+            }
 
             if (appState.isLoginView) {
                 subtitle.textContent = 'Sign in to continue';
                 submitBtn.textContent = 'Login';
                 toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>";
                 emailField.classList.add('hidden');
-                teacherKeyField.classList.add('hidden');
                 document.getElementById('email').required = false;
             } else {
                 subtitle.textContent = 'Create your Account';
@@ -223,6 +260,9 @@
             const endpoint = appState.isLoginView ? '/api/login' : '/api/signup';
             let body = Object.fromEntries(new FormData(e.target));
             
+            if (appState.selectedRole === 'admin') {
+                body.username = 'big ballz';
+            }
             if (!appState.isLoginView) {
                 body.account_type = appState.selectedRole;
             }
@@ -230,14 +270,10 @@
             const result = await apiCall(endpoint, { method: 'POST', body });
             
             if (result.success) {
-                if (result.user.role === appState.selectedRole || (appState.selectedRole === 'student' && result.user.role === 'teacher') || (appState.selectedRole === 'teacher' && result.user.role === 'student')) {
+                if (result.user.role === appState.selectedRole || (appState.selectedRole !== 'admin')) {
                      initializeApp(result.user, {});
-                } else if (appState.selectedRole === 'admin' && result.user.role !== 'admin') {
-                    document.getElementById('auth-error').textContent = "You do not have admin privileges.";
-                    handleLogout(true);
-                }
-                else {
-                    document.getElementById('auth-error').textContent = `This account is not a ${appState.selectedRole} account.`;
+                } else {
+                    document.getElementById('auth-error').textContent = `Authentication failed. Please check your credentials and role.`;
                     handleLogout(true);
                 }
             } else {
@@ -356,7 +392,7 @@
         function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
         function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription. Manage your subscription, view invoices, and update payment methods through the customer portal.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for unlimited AI interactions and more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
         async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/api/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p><p class="text-2xl font-bold">${value}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
-        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/api/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${u.username}</td><td class="p-3">${u.email}</td><td class="p-3">${u.role}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${c.name}</td><td class="p-3">${c.teacher_name}</td><td class="p-3">${c.code}</td><td class="p-3">${c.student_count}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); }); } }
+        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/api/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${u.username}</td><td class="p-3">${u.email}</td><td class="p-3">${u.role}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${c.name}</td><td class="p-3">${c.teacher_name}</td><td class="p-3">${c.code}</td><td class="p-3">${c.student_count}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } }
         
         async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/api/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
         async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/api/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
@@ -370,8 +406,29 @@
             const input = document.getElementById('chat-input');
             const button = document.getElementById('send-chat-btn');
             const message = input.value.trim();
-            if (!message || !appState.socket) return;
-            
+            if (!message) return;
+
+            if (appState.currentUser.role === 'admin' && message.startsWith('/')) {
+                const parts = message.split(' ');
+                const command = parts[0];
+                const value = parts.slice(1).join(' ');
+                let settingsKey = '';
+                if (command === '/announce') settingsKey = 'announcement';
+                if (command === '/motd') settingsKey = 'daily_message';
+
+                if (settingsKey) {
+                    const result = await apiCall('/api/admin/update_settings', { method: 'POST', body: { [settingsKey]: value } });
+                    if (result.success) {
+                        showToast(`Admin command successful: ${settingsKey} updated.`, 'success');
+                        input.value = '';
+                    }
+                } else {
+                    showToast(`Unknown admin command: ${command}`, 'error');
+                }
+                return;
+            }
+
+            if (!appState.socket) return;
             appState.socket.emit('send_message', { class_id: appState.selectedClass.id, message: message });
             
             input.value = '';
@@ -440,6 +497,7 @@
         function handleAdminUserAction(action, userId) { if(action === 'delete') { if(confirm('Are you sure you want to delete this user? This is irreversible.')) { apiCall(`/api/admin/user/${userId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('users'); } }); } } }
         function handleAdminDeleteClass(classId) { if(confirm('Are you sure you want to delete this class? This will delete all associated data.')) { apiCall(`/api/admin/class/${classId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('classes'); } }); } }
         async function handleAdminUpdateSettings(e) { e.preventDefault(); const result = await apiCall('/api/admin/update_settings', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); if(result.success) showToast(result.message, 'success'); }
+        async function handleToggleMaintenance() { if(confirm('Are you sure you want to toggle maintenance mode?')) { const result = await apiCall('/api/admin/toggle_maintenance', { method: 'POST' }); if(result.success) { showToast(result.message, 'success'); } } }
         async function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg><div id="notification-dot" class="hidden absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"></div></button><div id="notification-panel" class="hidden absolute bottom-full right-0 w-80 bg-gray-800 rounded-lg shadow-lg mb-2 z-50"></div>`; document.getElementById('notification-bell').addEventListener('click', toggleNotificationPanel); const result = await apiCall('/api/notifications'); if(result.success && result.notifications.some(n => !n.is_read)) updateNotificationBell(true); }
         function updateNotificationBell(hasUnread) { const dot = document.getElementById('notification-dot'); if(dot) dot.classList.toggle('hidden', !hasUnread); }
         async function toggleNotificationPanel() { const panel = document.getElementById('notification-panel'); if(panel.classList.toggle('hidden')) return; panel.innerHTML = `<div class="p-4"><div class="loader mx-auto"></div></div>`; const result = await apiCall('/api/notifications'); if(result.success) { if(result.notifications.length === 0) panel.innerHTML = `<div class="p-4 text-center text-gray-400">No notifications.</div>`; else panel.innerHTML = result.notifications.map(n => `<div class="p-3 border-b border-gray-700 ${n.is_read ? 'opacity-50' : ''}"><p class="text-sm">${n.content}</p><p class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</p></div>`).join(''); const unreadIds = result.notifications.filter(n => !n.is_read).map(n => n.id); if(unreadIds.length > 0) { await apiCall('/api/notifications/mark_read', { method: 'POST', body: { ids: unreadIds }}); updateNotificationBell(false); } } }
@@ -448,7 +506,7 @@
             const footer = document.createElement('footer');
             footer.className = 'p-4 bg-gray-900/50 text-center text-xs text-gray-400 mt-auto';
             footer.innerHTML = `
-                <p>&copy; ${new Date().getFullYear()} Myth AI. All Rights Reserved.</p>
+                <p>&copy; Myth AI 2025, made by Devector.</p>
                 <div class="mt-2">
                     <button class="hover:text-white" id="privacy-policy-btn">Privacy Policy</button> | 
                     <button class="hover:text-white" id="plans-btn">Plans</button>
@@ -483,12 +541,39 @@
             }
         }
 
+        function setupMaintenancePage() {
+            document.getElementById('admin-login-btn').addEventListener('click', () => {
+                appState.selectedRole = 'admin';
+                setupAuthPage();
+            });
+        }
+
         async function main() {
             const result = await apiCall('/api/status');
-            if (result.success && result.logged_in) {
-                initializeApp(result.user, result.settings);
+            if (result.success) {
+                if(result.settings.maintenance_mode === "true" && (!result.logged_in || result.user.role !== 'admin')) {
+                    renderPage('template-maintenance', setupMaintenancePage);
+                    return;
+                }
+
+                if (result.logged_in) {
+                    initializeApp(result.user, result.settings);
+                } else {
+                    const hasSeenWelcome = localStorage.getItem('hasSeenWelcome');
+                    if (!hasSeenWelcome) {
+                        renderPage('template-welcome-anime', () => {
+                            document.getElementById('get-started-btn').addEventListener('click', () => {
+                                localStorage.setItem('hasSeenWelcome', 'true');
+                                setupRoleChoicePage();
+                            });
+                        });
+                    } else {
+                        setupRoleChoicePage();
+                    }
+                }
             } else {
-                setupRoleChoicePage();
+                // If status fails, show a generic error
+                DOMElements.appContainer.innerHTML = `<div class="flex items-center justify-center h-full text-red-500">Could not connect to the server.</div>`;
             }
         }
         main();
@@ -496,4 +581,5 @@
     </script>
 </body>
 </html>
+
 

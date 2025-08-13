@@ -135,6 +135,12 @@ class Profile(db.Model):
     avatar = db.Column(db.String(500), nullable=True)
     user = db.relationship('User', back_populates='profile')
 
+    def to_dict(self):
+        return {
+            'bio': self.bio or '',
+            'avatar': self.avatar or ''
+        }
+
 class Team(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(100), nullable=False)
@@ -1201,7 +1207,15 @@ def generate_ai_response():
         msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
         db.session.add(msg)
         db.session.commit()
-        socketio.emit('new_message', {'class_id': data['class_id'], 'message': ai_response}, room=f'class_{data["class_id"]}')
+        socketio.emit('new_message', {
+            'id': msg.id,
+            'class_id': msg.class_id,
+            'sender_id': None,
+            'sender_name': 'AI Assistant',
+            'sender_avatar': 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI',
+            'content': msg.content,
+            'timestamp': msg.timestamp.isoformat()
+        }, room=f'class_{data["class_id"]}')
         return jsonify(success=True)
     except Exception as e:
         db.session.rollback()

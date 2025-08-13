@@ -34,6 +34,7 @@ allowed_origins = [
     "https://reallymythai.netlify.app",
     "https://mythproal.netlify.app",
     "https://myth-ai.onrender.com",
+    "https://myth-ai.onrender.com",
     "http://127.0.0.1:5000",
     "http://localhost:5000",
     "http://127.0.0.1:5500",

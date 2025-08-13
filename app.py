@@ -65,6 +65,11 @@ app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_SENDER')
 mail = Mail(app)
 
+# Add this teardown function to ensure the session is always cleaned up.
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    db.session.remove()
+
 # ==============================================================================
 # --- 2. DATABASE MODELS ---
 # ==============================================================================
@@ -363,7 +368,7 @@ HTML_CONTENT = """
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
     <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div></template>
-    <template id="template-teacher-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Class</h4><div class="flex items-center gap-2"><input type="text" id="new-class-name" placeholder="New class name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></template>
+    <template id="template-teacher-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Class</h4><div class="flex items-center gap-2"><input type="text" id="new-class-name" name="name" placeholder="New class name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></template>
     <template id="template-team-actions"><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a Team</h4><div class="flex items-center gap-2"><input type="text" id="team-code" placeholder="Enter team code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Team</h4><div class="flex items-center gap-2"><input type="text" id="new-team-name" placeholder="New team name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></div></template>
     <template id="template-selected-class-view"><div class="glassmorphism p-6 rounded-lg"><div class="flex justify-between items-start"><h4 class="text-2xl font-bold text-white mb-4">Class: <span id="selected-class-name"></span></h4><button id="back-to-classes-btn" class="text-sm text-blue-400 hover:text-blue-300">&larr; Back to All Classes</button></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="chat">Chat</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="assignments">Assignments</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="quizzes">Quizzes</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="students">Students</button></div><div id="class-view-content"></div></div></template>
     <template id="template-class-chat-view"><div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-96 overflow-y-auto mb-4 border border-gray-700 flex flex-col gap-4"></div><form id="chat-form" class="flex items-center gap-2"><input type="text" id="chat-input" placeholder="Ask the AI assistant or type an admin command..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button type="submit" id="send-chat-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Send</button></form></template>
@@ -1100,9 +1105,15 @@ def get_class_messages(class_id):
 @login_required
 def generate_ai_response():
     data = request.json
-    # Implement AI response generation using GEMINI_API_KEY
-    # For placeholder:
-    ai_response = "AI response to: " + data['prompt']
+    prompt = data.get('prompt', '').lower()
+
+    if any(q in prompt for q in ['who made you', 'who created you', 'who is your creator']):
+        ai_response = "I was created by DeVHossein."
+    else:
+        # Implement AI response generation using GEMINI_API_KEY
+        # For placeholder:
+        ai_response = f"AI response to: {data['prompt']}"
+
     try:
         msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
         db.session.add(msg)
@@ -1354,6 +1365,48 @@ def admin_toggle_maintenance():
         db.session.rollback()
         logging.error(f"Error toggling maintenance: {str(e)}")
         return jsonify(error='Could not toggle maintenance mode.'), 500
+
+@app.route('/api/admin/bugfix', methods=['POST'])
+@admin_required
+def admin_bugfix():
+    # Placeholder for a bug-fixing script
+    logging.info("Admin initiated bugfix script.")
+    try:
+        # Example of a bugfix: re-creating missing profiles
+        users_without_profile = User.query.filter(~User.profile.has()).all()
+        for user in users_without_profile:
+            profile = Profile(user_id=user.id)
+            db.session.add(profile)
+        db.session.commit()
+        logging.info(f"Fixed {len(users_without_profile)} missing profiles.")
+        return jsonify(success=True, message=f"Bugfix script ran successfully. Fixed {len(users_without_profile)} missing profiles.")
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Bugfix script failed: {str(e)}")
+        return jsonify(success=False, error=f"Bugfix failed: {str(e)}"), 500
+
+@app.route('/api/admin/set_ai_persona', methods=['POST'])
+@admin_required
+def admin_set_ai_persona():
+    data = request.json
+    persona = data.get('persona', '')
+    if not persona:
+        return jsonify(success=False, error='Persona content cannot be empty.'), 400
+    
+    try:
+        setting = SiteSettings.query.filter_by(key='ai_persona').first()
+        if not setting:
+            setting = SiteSettings(key='ai_persona', value=persona)
+            db.session.add(setting)
+        else:
+            setting.value = persona
+        db.session.commit()
+        return jsonify(success=True, message='AI persona updated successfully.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error setting AI persona: {str(e)}")
+        return jsonify(success=False, error='Failed to set AI persona.'), 500
+
 
 @app.route('/api/request-password-reset', methods=['POST'])
 def request_password_reset():

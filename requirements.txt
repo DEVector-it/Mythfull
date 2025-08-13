@@ -4,12 +4,11 @@ Flask-SQLAlchemy
 Flask-SocketIO
 Flask-Mail
 Flask-Talisman
+Flask-Cors
 python-dotenv
 stripe
 werkzeug
 itsdangerous
 gunicorn
 eventlet
-sqlalchemy.engine 
-from flask_socketio 
-from flask_cors
+requests

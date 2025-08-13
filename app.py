@@ -30,18 +30,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
-# Correctly configure CORS for your frontend origins
-allowed_origins = [
-    "https://reallymythai.netlify.app",
-    "https://mythproal.netlify.app",
-    "https://myth-ai.onrender.com",
-    "http://127.0.0.1:5000",
-    "http://localhost:5000",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "null"
-]
-CORS(app, supports_credentials=True, origins=allowed_origins)
+# Allow all origins for CORS
+CORS(app, supports_credentials=True, origins="*")
 Talisman(app, content_security_policy=None) # Add Talisman for security headers
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
@@ -65,7 +55,7 @@ SITE_CONFIG = {
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
 password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins) # Restrict SocketIO origins
+socketio = SocketIO(app, cors_allowed_origins="*") # Allow all origins for SocketIO
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
@@ -830,8 +820,6 @@ HTML_CONTENT = """
                         setupRoleChoicePage();
                     }
                 }
-            } else {
-                DOMElements.appContainer.innerHTML = `<div class="flex items-center justify-center h-full text-red-500">Could not connect to the server.</div>`;
             }
         }
         main();
@@ -1513,6 +1501,7 @@ if __name__ == '__main__':
     initialize_app_database()
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=True)
+
 
 
 

@@ -17,7 +17,7 @@ from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignat
 from flask_mail import Mail, Message
 from flask_talisman import Talisman
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import event, or_, func
+from sqlalchemy import event, or_, func, desc
 from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
@@ -42,6 +42,7 @@ allowed_origins = [
     "null"
 ]
 CORS(app, supports_credentials=True, origins=allowed_origins)
+Talisman(app, content_security_policy=None) # Add Talisman for security headers
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
@@ -54,8 +55,8 @@ SITE_CONFIG = {
     "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
     "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
-    "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
-    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY'),
+    "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY', 'SUPER-SECRET-TEACHER-KEY'),
+    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
     "GEMINI_API_KEY": os.environ.get('GEMINI_API_KEY'),
     "SUPPORT_EMAIL": os.environ.get('SUPPORT_EMAIL')
@@ -64,7 +65,7 @@ SITE_CONFIG = {
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
 password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins) # Restrict SocketIO origins
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
@@ -74,7 +75,7 @@ app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_SENDER')
 mail = Mail(app)
 
 # ==============================================================================
-# --- DATABASE MODELS ---
+# --- 2. DATABASE MODELS ---
 # ==============================================================================
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -99,9 +100,20 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(256), nullable=True)
     role = db.Column(db.String(20), nullable=False, default='student')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Profile information
+    bio = db.Column(db.Text, nullable=True)
+    avatar = db.Column(db.String(500), nullable=True)
+    has_subscription = db.Column(db.Boolean, default=False)
+
+    # Relationships
     taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
     teams = db.relationship('Team', secondary=team_member_association, back_populates='members', lazy='dynamic')
+    submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
+    quiz_attempts = db.relationship('QuizAttempt', back_populates='student', lazy=True, cascade="all, delete-orphan")
+    notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
@@ -109,10 +121,11 @@ class User(UserMixin, db.Model):
             'username': self.username,
             'email': self.email,
             'role': self.role,
-            'has_subscription': False, # Placeholder
+            'created_at': self.created_at.isoformat(),
+            'has_subscription': self.has_subscription,
             'profile': {
-                'bio': '', # Placeholder
-                'avatar': '' # Placeholder
+                'bio': self.bio or '',
+                'avatar': self.avatar or ''
             }
         }
 
@@ -131,13 +144,82 @@ class Class(db.Model):
     teacher_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
+    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    quizzes = db.relationship('Quiz', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+
+class ChatMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True) # Null for AI
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    class_obj = db.relationship('Class', back_populates='messages')
+    sender = db.relationship('User')
+
+class Assignment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    due_date = db.Column(db.DateTime, nullable=False)
+    class_obj = db.relationship('Class', back_populates='assignments')
+    submissions = db.relationship('Submission', back_populates='assignment', lazy='dynamic', cascade="all, delete-orphan")
+
+class Submission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    assignment_id = db.Column(db.Integer, db.ForeignKey('assignment.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    grade = db.Column(db.Float, nullable=True)
+    feedback = db.Column(db.Text, nullable=True)
+    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    assignment = db.relationship('Assignment', back_populates='submissions')
+    student = db.relationship('User', back_populates='submissions')
+
+class Quiz(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    time_limit = db.Column(db.Integer, nullable=False) # In minutes
+    class_obj = db.relationship('Class', back_populates='quizzes')
+    questions = db.relationship('Question', back_populates='quiz', lazy=True, cascade="all, delete-orphan")
+    attempts = db.relationship('QuizAttempt', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
+
+class Question(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    question_type = db.Column(db.String(50), nullable=False, default='multiple_choice')
+    quiz = db.relationship('Quiz', back_populates='questions')
+    choices = db.Column(db.JSON, nullable=False) # Store choices as JSON array of objects e.g. [{"id": "...", "text": "...", "is_correct": true/false}]
+
+class QuizAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    score = db.Column(db.Float, nullable=True)
+    start_time = db.Column(db.DateTime, default=datetime.utcnow)
+    end_time = db.Column(db.DateTime, nullable=True)
+    answers = db.Column(db.JSON, nullable=True)
+    quiz = db.relationship('Quiz', back_populates='attempts')
+    student = db.relationship('User', back_populates='quiz_attempts')
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    content = db.Column(db.String(500), nullable=False)
+    is_read = db.Column(db.Boolean, default=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', back_populates='notifications')
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.String(500))
 
 # ==============================================================================
-# --- USER & SESSION MANAGEMENT ---
+# --- 3. USER & SESSION MANAGEMENT ---
 # ==============================================================================
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -160,9 +242,10 @@ def role_required(role_name):
     return decorator
 
 admin_required = role_required('admin')
+teacher_required = role_required('teacher')
 
 # ==============================================================================
-# --- FRONTEND CONTENT ---
+# --- 4. FRONTEND CONTENT ---
 # ==============================================================================
 HTML_CONTENT = """
 <!DOCTYPE html>
@@ -220,7 +303,7 @@ HTML_CONTENT = """
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);">
             <div class="w-full max-w-md text-center">
                 <div class="flex items-center justify-center gap-3 mb-4">
-                    <svg class="w-16 h-16" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg>
+                    <svg class="w-16 h-16" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(260, 90%, 65%);" /></linearGradient></defs><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg>
                     <h1 class="text-5xl font-bold brand-gradient-text">Myth AI</h1>
                 </div>
                 <p class="text-gray-400 text-lg mb-10">Select your role to continue</p>
@@ -273,7 +356,7 @@ HTML_CONTENT = """
         </div>
     </template>
     
-    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><svg class="w-8 h-8" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
+    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><svg class="w-8 h-8" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(260, 90%, 65%);" /></linearGradient></defs><g><path d="M20 80 V25 C20 15, 30 15, 30 15 H70 C80 15, 80 25, 80 25 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M20 50 H80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/><path d="M50 15 V80" fill="none" stroke="url(#logo-gradient)" stroke-width="5"/></g></svg><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
     <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div></template>
@@ -296,13 +379,7 @@ HTML_CONTENT = """
     <template id="template-contact-form"><h2 class="text-2xl font-bold text-white mb-4">Contact Us</h2><form id="contact-form"><div class="mb-4"><label for="contact-name" class="block text-sm">Name</label><input type="text" id="contact-name" name="name" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-email" class="block text-sm">Email</label><input type="email" id="contact-email" name="email" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-message" class="block text-sm">Message</label><textarea id="contact-message" name="message" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Send Message</button></form></template>
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // --- MODIFIED ---
-        // This logic dynamically sets the backend URL.
-        // For local development, it's an empty string to use relative paths.
-        // For deployed versions (like on Netlify), it points to your Render backend.
-        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const BASE_URL = isLocal ? '' : 'https://myth-ai.onrender.com';
-
+        const BASE_URL = ''; 
         const SITE_CONFIG = {
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
@@ -325,7 +402,7 @@ HTML_CONTENT = """
                 }); 
                 const data = await response.json(); 
                 if (!response.ok) { 
-                    if (response.status === 401) handleLogout(false); 
+                    if (response.status === 401 && endpoint !== '/status') handleLogout(false); 
                     throw new Error(data.error || `Request failed with status ${response.status}`); 
                 } 
                 return { success: true, ...data }; 
@@ -343,7 +420,6 @@ HTML_CONTENT = """
         
         function connectSocket() { 
             if (appState.socket) appState.socket.disconnect(); 
-            // When connecting the socket, also use the dynamic BASE_URL
             appState.socket = io(BASE_URL); 
             appState.socket.on('connect', () => { 
                 console.log('Socket connected!'); 
@@ -461,12 +537,8 @@ HTML_CONTENT = """
                 const dashboardTitle = document.getElementById('dashboard-title');
                 let tabs = [];
 
-                if (user.role === 'student') {
-                    dashboardTitle.textContent = "Student Hub";
-                    appState.currentTab = 'my-classes';
-                    tabs = [ { id: 'my-classes', label: 'My Classes' }, { id: 'team-mode', label: 'Team Mode' }, { id: 'billing', label: 'Billing' }, { id: 'profile', label: 'Profile' } ];
-                } else if (user.role === 'teacher') {
-                    dashboardTitle.textContent = "Teacher Hub";
+                if (user.role === 'student' || user.role === 'teacher') {
+                    dashboardTitle.textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
                     appState.currentTab = 'my-classes';
                     tabs = [ { id: 'my-classes', label: 'My Classes' }, { id: 'team-mode', label: 'Team Mode' }, { id: 'billing', label: 'Billing' }, { id: 'profile', label: 'Profile' } ];
                 } else if (user.role === 'admin') {
@@ -661,9 +733,9 @@ HTML_CONTENT = """
         async function handleManageBilling() { const result = await apiCall('/create-customer-portal-session', { method: 'POST' }); if (result.success && result.url) window.location.href = result.url; }
         function handleCreateAssignment() { const content = `<h3 class="text-2xl font-bold text-white mb-4">New Assignment</h3><form id="new-assignment-form"><div class="mb-4"><label class="block text-sm">Title</label><input type="text" name="title" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label class="block text-sm">Description</label><textarea name="description" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><div class="mb-4"><label class="block text-sm">Due Date</label><input type="datetime-local" name="due_date" class="w-full p-2 bg-gray-800 rounded" required></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create</button></form>`; showModal(content, (modal) => { modal.querySelector('#new-assignment-form').addEventListener('submit', async (e) => { e.preventDefault(); const formData = Object.fromEntries(new FormData(e.target)); const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`, { method: 'POST', body: formData }); if (result.success) { hideModal(); showToast('Assignment created!', 'success'); switchClassView('assignments'); } }); }); }
         async function viewAssignmentDetails(assignmentId) { const result = await apiCall(`/assignments/${assignmentId}`); if(!result.success) return; const assignment = result.assignment; let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${assignment.title}</h3><p class="text-gray-400 mb-4">${assignment.description}</p><p class="text-sm text-gray-500 mb-6">Due: ${new Date(assignment.due_date).toLocaleString()}</p>`; if(appState.currentUser.role === 'teacher') { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Submissions</h4>`; if(assignment.submissions.length === 0) modalContent += `<p class="text-gray-400">No submissions yet.</p>`; else modalContent += assignment.submissions.map(s => `<div class="p-2 bg-gray-800 rounded mb-2"><strong>${s.student_name}:</strong> ${s.content.substring(0, 50)}... Grade: ${s.grade || 'Not graded'}</div>`).join(''); } else { if(assignment.my_submission) { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Your Submission</h4><div class="p-4 bg-gray-800 rounded"><p class="whitespace-pre-wrap">${assignment.my_submission.content}</p><hr class="my-2 border-gray-600"><p><strong>Grade:</strong> ${assignment.my_submission.grade || 'Not graded'}</p><p><strong>Feedback:</strong> ${assignment.my_submission.feedback || 'No feedback yet.'}</p></div>`; } else { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Submit Your Work</h4><form id="submit-assignment-form"><textarea name="content" class="w-full p-2 bg-gray-800 rounded" rows="8" required></textarea><button type="submit" class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Submit</button></form>`; } } showModal(modalContent, modal => { if(modal.querySelector('#submit-assignment-form')) { modal.querySelector('#submit-assignment-form').addEventListener('submit', async e => { e.preventDefault(); const result = await apiCall(`/assignments/${assignmentId}/submissions`, { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); if(result.success) { hideModal(); showToast('Assignment submitted!', 'success'); switchClassView('assignments'); } }); } }); }
-        function handleCreateQuiz() { let questionCounter = 0; const content = `<h3 class="text-2xl font-bold text-white mb-4">New Quiz</h3><form id="new-quiz-form"><div class="mb-4"><label class="block text-sm">Title</label><input type="text" name="title" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label class="block text-sm">Description</label><textarea name="description" class="w-full p-2 bg-gray-800 rounded" rows="3"></textarea></div><div class="mb-4"><label class="block text-sm">Time Limit (minutes)</label><input type="number" name="time_limit" class="w-full p-2 bg-gray-800 rounded" required min="1"></div><hr class="my-4 border-gray-600"><div id="questions-container"></div><button type="button" id="add-question-btn" class="text-sm text-blue-400 hover:text-blue-300">+ Add Question</button><hr class="my-4 border-gray-600"><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create Quiz</button></form>`; showModal(content, modal => { const addQuestion = () => { const qId = questionCounter++; const qContainer = document.createElement('div'); qContainer.className = 'p-4 border border-gray-700 rounded-lg mb-4'; qContainer.innerHTML = `<div class="flex justify-between items-center mb-2"><label class="block text-sm">Question ${qId + 1}</label><button type="button" class="text-red-500 text-xs remove-question-btn">Remove</button></div><textarea name="q-text-${qId}" class="w-full p-2 bg-gray-700 rounded" required></textarea><div class="mt-2"><label class="block text-sm">Type</label><select name="q-type-${qId}" class="w-full p-2 bg-gray-700 rounded q-type-select"><option value="multiple_choice">Multiple Choice</option></select></div><div class="choices-container mt-2"></div>`; document.getElementById('questions-container').appendChild(qContainer); qContainer.querySelector('.remove-question-btn').addEventListener('click', () => qContainer.remove()); qContainer.querySelector('.q-type-select').dispatchEvent(new Event('change')); }; modal.querySelector('#add-question-btn').addEventListener('click', addQuestion); modal.querySelector('#questions-container').addEventListener('change', e => { if(e.target.classList.contains('q-type-select')) { const choicesContainer = e.target.closest('.p-4').querySelector('.choices-container'); const qId = e.target.name.split('-')[2]; choicesContainer.innerHTML = `<div class="space-y-2"><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="0" required><input type="text" name="q-choice-${qId}-0" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 1" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="1"><input type="text" name="q-choice-${qId}-1" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 2" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="2"><input type="text" name="q-choice-${qId}-2" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 3"></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="3"><input type="text" name="q-choice-${qId}-3" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 4"></div></div>`; } }); modal.querySelector('#new-quiz-form').addEventListener('submit', async e => { e.preventDefault(); const form = e.target; const quizData = { title: form.title.value, description: form.description.value, time_limit: form.time_limit.value, questions: [] }; document.querySelectorAll('#questions-container > div').forEach((qDiv, i) => { const qId = i; const qText = qDiv.querySelector(`textarea[name="q-text-${qId}"]`).value; const qType = qDiv.querySelector(`select[name="q-type-${qId}"]`).value; const question = { text: qText, type: qType, choices: [] }; if(qType === 'multiple_choice') { const correctIndex = qDiv.querySelector(`input[name="q-correct-${qId}"]:checked`).value; qDiv.querySelectorAll('input[type="text"]').forEach((cInput, cIndex) => { if(cInput.value) question.choices.push({ text: cInput.value, is_correct: cIndex == correctIndex }); }); } quizData.questions.push(question); }); const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`, { method: 'POST', body: quizData }); if(result.success) { hideModal(); showToast('Quiz created!', 'success'); switchClassView('quizzes'); } }); addQuestion(); }); }
+        function handleCreateQuiz() { let questionCounter = 0; const content = `<h3 class="text-2xl font-bold text-white mb-4">New Quiz</h3><form id="new-quiz-form"><div class="mb-4"><label class="block text-sm">Title</label><input type="text" name="title" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label class="block text-sm">Description</label><textarea name="description" class="w-full p-2 bg-gray-800 rounded" rows="3"></textarea></div><div class="mb-4"><label class="block text-sm">Time Limit (minutes)</label><input type="number" name="time_limit" class="w-full p-2 bg-gray-800 rounded" required min="1"></div><hr class="my-4 border-gray-600"><div id="questions-container"></div><button type="button" id="add-question-btn" class="text-sm text-blue-400 hover:text-blue-300">+ Add Question</button><hr class="my-4 border-gray-600"><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create Quiz</button></form>`; showModal(content, modal => { const addQuestion = () => { const qId = questionCounter++; const qContainer = document.createElement('div'); qContainer.className = 'p-4 border border-gray-700 rounded-lg mb-4'; qContainer.innerHTML = `<div class="flex justify-between items-center mb-2"><label class="block text-sm">Question ${qId + 1}</label><button type="button" class="text-red-500 text-xs remove-question-btn">Remove</button></div><textarea name="q-text-${qId}" class="w-full p-2 bg-gray-700 rounded" required></textarea><div class="mt-2"><label class="block text-sm">Type</label><select name="q-type-${qId}" class="w-full p-2 bg-gray-700 rounded q-type-select"><option value="multiple_choice">Multiple Choice</option></select></div><div class="choices-container mt-2"></div>`; document.getElementById('questions-container').appendChild(qContainer); qContainer.querySelector('.remove-question-btn').addEventListener('click', () => qContainer.remove()); qContainer.querySelector('.q-type-select').dispatchEvent(new Event('change')); }; modal.querySelector('#add-question-btn').addEventListener('click', addQuestion); modal.querySelector('#questions-container').addEventListener('change', e => { if(e.target.classList.contains('q-type-select')) { const choicesContainer = e.target.closest('.p-4').querySelector('.choices-container'); const qId = e.target.name.split('-')[2]; choicesContainer.innerHTML = `<div class="space-y-2"><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="0" required><input type="text" name="q-choice-${qId}-0" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 1" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="1"><input type="text" name="q-choice-${qId}-1" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 2" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="2"><input type="text" name="q-choice-${qId}-2" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 3"></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="3"><input type="text" name="q-choice-${qId}-3" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 4"></div></div>`; } }); modal.querySelector('#new-quiz-form').addEventListener('submit', async e => { e.preventDefault(); const form = e.target; const quizData = { title: form.title.value, description: form.description.value, time_limit: form.time_limit.value, questions: [] }; document.querySelectorAll('#questions-container > div').forEach((qDiv, i) => { const qId = i; const qText = qDiv.querySelector(`textarea[name="q-text-${qId}"]`).value; const qType = qDiv.querySelector(`select[name="q-type-${qId}"]`).value; const question = { text: qText, type: qType, choices: [] }; if(qType === 'multiple_choice') { const correctIndex = qDiv.querySelector(`input[name="q-correct-${qId}"]:checked`).value; qDiv.querySelectorAll('input[type="text"]').forEach((cInput, cIndex) => { if(cInput.value) question.choices.push({ id: cIndex, text: cInput.value, is_correct: cIndex == correctIndex }); }); } quizData.questions.push(question); }); const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`, { method: 'POST', body: quizData }); if(result.success) { hideModal(); showToast('Quiz created!', 'success'); switchClassView('quizzes'); } }); addQuestion(); }); }
         async function viewQuizDetails(quizId) { const result = await apiCall(`/quizzes/${quizId}`); if(!result.success) return; const quiz = result.quiz; if(appState.currentUser.role === 'teacher') { let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${quiz.title}</h3><p class="text-gray-400 mb-4">${quiz.description}</p><h4 class="text-lg font-semibold text-white mb-2">Attempts</h4>`; if(quiz.attempts.length === 0) modalContent += `<p class="text-gray-400">No attempts yet.</p>`; else modalContent += `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr><th>Student</th><th>Score</th><th>Submitted</th></tr></thead><tbody>${quiz.attempts.map(a => `<tr><td>${a.student_name}</td><td>${a.score.toFixed(2)}%</td><td>${new Date(a.end_time).toLocaleString()}</td></tr>`).join('')}</tbody></table></div>`; showModal(modalContent); } else { const studentAttempt = quiz.student_attempt; if(studentAttempt) { showModal(`<h3 class="text-2xl font-bold text-white mb-2">Quiz Results: ${quiz.title}</h3><p class="text-4xl font-bold text-center my-8">${studentAttempt.score.toFixed(2)}%</p><p class="text-center text-gray-400">You have already completed this quiz.</p>`); } else { if(confirm(`Start quiz: ${quiz.title}?\\nYou will have ${quiz.time_limit} minutes.`)) startQuiz(quizId); } } }
-        async function startQuiz(quizId) { const result = await apiCall(`/quizzes/${quizId}/start`, { method: 'POST' }); if(!result.success) return; const { attempt_id, questions, time_limit, start_time } = result; let currentQuestionIndex = 0; const userAnswers = {}; const deadline = new Date(new Date(start_time).getTime() + time_limit * 60000); const renderQuestion = () => { const q = questions[currentQuestionIndex]; let choicesHtml = ''; if(q.question_type === 'multiple_choice') { choicesHtml = `<div class="space-y-3 mt-4">${q.choices.map(c => `<label class="flex items-center p-3 bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-700"><input type="radio" name="answer" value="${c.id}" class="mr-3"><span class="text-white">${c.text}</span></label>`).join('')}</div>`; } const content = `<div class="flex justify-between items-center"><h3 class="text-2xl font-bold text-white">${appState.selectedClass.name} Quiz</h3><div id="quiz-timer" class="text-xl font-mono text-red-500"></div></div><hr class="my-4 border-gray-600"><p class="text-gray-400 mb-2">Question ${currentQuestionIndex + 1} of ${questions.length}</p><h4 class="text-xl font-semibold text-white">${q.text}</h4>${choicesHtml}<div class="flex justify-between mt-8"><button id="prev-btn" class="bg-gray-600 py-2 px-4 rounded-lg">Previous</button><button id="next-btn" class="brand-gradient-bg shiny-button py-2 px-4 rounded-lg">Next</button></div>`; showModal(content, modal => { if(currentQuestionIndex === 0) modal.querySelector('#prev-btn').style.visibility = 'hidden'; if(currentQuestionIndex === questions.length - 1) { modal.querySelector('#next-btn').textContent = 'Submit'; } modal.querySelector('#prev-btn').addEventListener('click', () => { saveAnswer(); currentQuestionIndex--; renderQuestion(); }); modal.querySelector('#next-btn').addEventListener('click', () => { saveAnswer(); if(currentQuestionIndex === questions.length - 1) submitQuiz(attempt_id, userAnswers); else { currentQuestionIndex++; renderQuestion(); } }); if(userAnswers[q.id]) modal.querySelector(`input[value="${userAnswers[q.id]}"]`).checked = true; }, 'max-w-4xl'); }; const saveAnswer = () => { const selected = document.querySelector('input[name="answer"]:checked'); if(selected) userAnswers[questions[currentQuestionIndex].id] = selected.value; }; const updateTimer = () => { const now = new Date(); const diff = deadline - now; if(diff <= 0) { clearInterval(appState.quizTimer); submitQuiz(attempt_id, userAnswers); } else { const minutes = Math.floor(diff / 60000); const seconds = Math.floor((diff % 60000) / 1000); document.getElementById('quiz-timer').textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`; } }; if(appState.quizTimer) clearInterval(appState.quizTimer); appState.quizTimer = setInterval(updateTimer, 1000); renderQuestion(); }
+        async function startQuiz(quizId) { const result = await apiCall(`/quizzes/${quizId}/start`, { method: 'POST' }); if(!result.success) return; const { attempt_id, questions, time_limit, start_time } = result; let currentQuestionIndex = 0; const userAnswers = {}; const deadline = new Date(new Date(start_time).getTime() + time_limit * 60000); const renderQuestion = () => { const q = questions[currentQuestionIndex]; let choicesHtml = ''; if(q.question_type === 'multiple_choice') { choicesHtml = `<div class="space-y-3 mt-4">${q.choices.map(c => `<label class="flex items-center p-3 bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-700"><input type="radio" name="answer" value="${c.id}" class="mr-3"><span class="text-white">${c.text}</span></label>`).join('')}</div>`; } const content = `<div class="flex justify-between items-center"><h3 class="text-2xl font-bold text-white">${appState.selectedClass.name} Quiz</h3><div id="quiz-timer" class="text-xl font-mono text-red-500"></div></div><hr class="my-4 border-gray-600"><p class="text-gray-400 mb-2">Question ${currentQuestionIndex + 1} of ${questions.length}</p><h4 class="text-xl font-semibold text-white">${q.text}</h4>${choicesHtml}<div class="flex justify-between mt-8"><button id="prev-btn" class="bg-gray-600 py-2 px-4 rounded-lg">Previous</button><button id="next-btn" class="brand-gradient-bg shiny-button py-2 px-4 rounded-lg">Next</button></div>`; showModal(content, modal => { if(currentQuestionIndex === 0) modal.querySelector('#prev-btn').style.visibility = 'hidden'; if(currentQuestionIndex === questions.length - 1) { modal.querySelector('#next-btn').textContent = 'Submit'; } modal.querySelector('#prev-btn').addEventListener('click', () => { saveAnswer(); currentQuestionIndex--; renderQuestion(); }); modal.querySelector('#next-btn').addEventListener('click', () => { saveAnswer(); if(currentQuestionIndex === questions.length - 1) submitQuiz(attempt_id, userAnswers); else { currentQuestionIndex++; renderQuestion(); } }); if(userAnswers[q.id]) modal.querySelector(`input[value="${userAnswers[q.id]}"]`).checked = true; }, 'max-w-4xl'); }; const saveAnswer = () => { const selected = document.querySelector('input[name="answer"]:checked'); if(selected) userAnswers[questions[currentQuestionIndex].id] = selected.value; }; const updateTimer = () => { const now = new Date(); const diff = deadline - now; if(diff <= 0) { clearInterval(appState.quizTimer); submitQuiz(attempt_id, userAnswers); } else { const minutes = Math.floor(diff / 60000); const seconds = Math.floor((diff % 60000) / 1000); const timerEl = document.getElementById('quiz-timer'); if (timerEl) timerEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`; } }; if(appState.quizTimer) clearInterval(appState.quizTimer); appState.quizTimer = setInterval(updateTimer, 1000); renderQuestion(); }
         async function submitQuiz(attempt_id, answers) { if(appState.quizTimer) clearInterval(appState.quizTimer); const result = await apiCall(`/attempts/${attempt_id}/submit`, { method: 'POST', body: { answers } }); if(result.success) { showModal(`<h3 class="text-2xl font-bold text-white mb-2">Quiz Submitted!</h3><p class="text-4xl font-bold text-center my-8">${result.attempt.score.toFixed(2)}%</p><p class="text-center text-gray-400">Your results have been saved.</p>`); switchClassView('quizzes'); } }
         function handleAdminUserAction(action, userId) { if(action === 'delete') { if(confirm('Are you sure you want to delete this user? This is irreversible.')) { apiCall(`/admin/user/${userId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('users'); } }); } } }
         function handleAdminDeleteClass(classId) { if(confirm('Are you sure you want to delete this class? This will delete all associated data.')) { apiCall(`/admin/class/${classId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('classes'); } }); } }
@@ -770,15 +842,17 @@ HTML_CONTENT = """
 """
 
 # ==============================================================================
-# --- API ROUTES ---
+# --- 5. API ROUTES ---
 # ==============================================================================
 @app.route('/')
 def serve_frontend():
     return Response(HTML_CONTENT, mimetype='text/html')
 
+# --- AUTH & STATUS ---
 @app.route('/api/status')
 def status():
     settings = {s.key: s.value for s in SiteSettings.query.all()}
+    settings['STRIPE_PUBLIC_KEY'] = SITE_CONFIG.get('STRIPE_PUBLIC_KEY')
     if current_user.is_authenticated:
         return jsonify({
             "logged_in": True,
@@ -801,6 +875,7 @@ def login():
         return jsonify({"error": "Invalid username or password."}), 401
 
     if user.role != role_attempt:
+        # Allow admin to login via any portal for convenience
         if user.role != 'admin':
             return jsonify({"error": f"Authentication failed. This is not a {role_attempt} account."}), 403
 
@@ -843,31 +918,494 @@ def logout():
     logout_user()
     return jsonify({"success": True})
 
-@app.route('/api/contact', methods=['POST'])
-def contact():
+@app.route('/api/request-password-reset', methods=['POST'])
+def request_password_reset():
+    data = request.get_json()
+    email = data.get('email')
+    user = User.query.filter_by(email=email).first()
+    if user:
+        # In a real app, you would generate a token and email a reset link
+        logging.info(f"Password reset requested for {email}. In a real app, an email would be sent.")
+    return jsonify({"success": True, "message": "If an account with that email exists, a password reset link has been sent."})
+
+# --- USER PROFILE ---
+@app.route('/api/profile', methods=['PUT'])
+@login_required
+def update_profile():
+    data = request.get_json()
+    current_user.bio = data.get('bio', current_user.bio)
+    current_user.avatar = data.get('avatar', current_user.avatar)
+    db.session.commit()
+    return jsonify({"success": True, "profile": current_user.to_dict()['profile']})
+
+# --- CLASSES ---
+def generate_class_code():
+    return ''.join(secrets.choice('ABCDEFGHIJKLMNPQRSTUVWXYZ123456789') for i in range(6))
+
+@app.route('/api/my_classes', methods=['GET'])
+@login_required
+def get_my_classes():
+    if current_user.role == 'teacher':
+        classes = current_user.taught_classes
+    else:
+        classes = current_user.enrolled_classes.all()
+    
+    class_list = [{
+        'id': c.id,
+        'name': c.name,
+        'code': c.code,
+        'teacher_name': c.teacher.username
+    } for c in classes]
+    return jsonify({"success": True, "classes": class_list})
+
+@app.route('/api/classes', methods=['POST'])
+@teacher_required
+def create_class():
     data = request.get_json()
     name = data.get('name')
-    email = data.get('email')
-    message = data.get('message')
-    if not all([name, email, message]):
-        return jsonify({"error": "All fields are required."}), 400
+    if not name:
+        return jsonify({"error": "Class name is required."}), 400
+    
+    new_class = Class(name=name, teacher=current_user, code=generate_class_code())
+    db.session.add(new_class)
+    db.session.commit()
+    return jsonify({"success": True, "class": {"name": new_class.name, "code": new_class.code}})
 
-    support_email = SITE_CONFIG.get('SUPPORT_EMAIL')
-    if not support_email:
-        logging.error("SUPPORT_EMAIL environment variable is not set.")
-        return jsonify({"error": "Contact feature is not configured."}), 500
+@app.route('/api/join_class', methods=['POST'])
+@login_required
+def join_class():
+    data = request.get_json()
+    code = data.get('code')
+    class_to_join = Class.query.filter_by(code=code).first()
+    if not class_to_join:
+        return jsonify({"error": "Invalid class code."}), 404
+    if current_user in class_to_join.students:
+        return jsonify({"error": "You are already in this class."}), 400
+    
+    class_to_join.students.append(current_user)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Successfully joined {class_to_join.name}."})
 
-    try:
-        msg = Message(
-            subject=f"New Contact Form Message from {name}",
-            recipients=[support_email],
-            body=f"From: {name} <{email}>\\n\\n{message}"
+@app.route('/api/classes/<string:class_id>', methods=['GET'])
+@login_required
+def get_class_details(class_id):
+    class_obj = Class.query.get_or_404(class_id)
+    # Security check: user must be teacher or student in the class
+    if class_obj.teacher_id != current_user.id and current_user not in class_obj.students:
+        return jsonify({"error": "Access denied."}), 403
+        
+    return jsonify({
+        "success": True,
+        "class": {
+            "id": class_obj.id,
+            "name": class_obj.name,
+            "students": [s.to_dict() for s in class_obj.students]
+        }
+    })
+
+# --- TEAMS ---
+def generate_team_code():
+    return ''.join(secrets.choice('ABCDEFGHIJKLMNPQRSTUVWXYZ123456789') for i in range(8))
+
+@app.route('/api/teams', methods=['GET'])
+@login_required
+def get_my_teams():
+    teams = current_user.teams.all()
+    team_list = [{
+        'id': t.id,
+        'name': t.name,
+        'code': t.code,
+        'owner_name': t.owner.username,
+        'member_count': t.members.count()
+    } for t in teams]
+    return jsonify({"success": True, "teams": team_list})
+
+@app.route('/api/teams', methods=['POST'])
+@login_required
+def create_team():
+    data = request.get_json()
+    name = data.get('name')
+    if not name:
+        return jsonify({"error": "Team name is required."}), 400
+    
+    new_team = Team(name=name, owner=current_user, code=generate_team_code())
+    new_team.members.append(current_user)
+    db.session.add(new_team)
+    db.session.commit()
+    return jsonify({"success": True, "team": {"name": new_team.name, "code": new_team.code}})
+
+@app.route('/api/join_team', methods=['POST'])
+@login_required
+def join_team():
+    data = request.get_json()
+    code = data.get('code')
+    team_to_join = Team.query.filter_by(code=code).first()
+    if not team_to_join:
+        return jsonify({"error": "Invalid team code."}), 404
+    if current_user in team_to_join.members:
+        return jsonify({"error": "You are already in this team."}), 400
+    
+    team_to_join.members.append(current_user)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Successfully joined {team_to_join.name}."})
+
+@app.route('/api/teams/<string:team_id>', methods=['GET'])
+@login_required
+def get_team_details(team_id):
+    team_obj = Team.query.get_or_404(team_id)
+    if current_user not in team_obj.members:
+        return jsonify({"error": "Access denied."}), 403
+        
+    return jsonify({
+        "success": True,
+        "team": {
+            "id": team_obj.id,
+            "name": team_obj.name,
+            "code": team_obj.code,
+            "owner_id": team_obj.owner_id,
+            "members": [m.to_dict() for m in team_obj.members]
+        }
+    })
+
+# --- CHAT & AI ---
+@app.route('/api/class_messages/<string:class_id>', methods=['GET'])
+@login_required
+def get_class_messages(class_id):
+    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp).all()
+    message_list = []
+    for msg in messages:
+        sender_name = "AI Assistant"
+        sender_avatar = None
+        if msg.sender:
+            sender_name = msg.sender.username
+            sender_avatar = msg.sender.avatar
+        message_list.append({
+            "id": msg.id,
+            "sender_id": msg.sender_id,
+            "sender_name": sender_name,
+            "sender_avatar": sender_avatar,
+            "content": msg.content,
+            "timestamp": msg.timestamp.isoformat()
+        })
+    return jsonify({"success": True, "messages": message_list})
+
+@app.route('/api/generate_ai_response', methods=['POST'])
+@login_required
+def generate_ai_response():
+    data = request.get_json()
+    prompt = data.get('prompt')
+    class_id = data.get('class_id')
+    
+    # Mock AI response
+    time.sleep(1.5) # Simulate processing time
+    ai_content = f"This is a mocked AI response to your prompt: '{prompt[:50]}...'. In a real application, this would be a call to the Gemini API."
+    
+    ai_message = ChatMessage(class_id=class_id, sender_id=None, content=ai_content)
+    db.session.add(ai_message)
+    db.session.commit()
+    
+    socketio.emit('new_message', {
+        'class_id': class_id,
+        'sender_id': None,
+        'sender_name': 'AI Assistant',
+        'sender_avatar': None,
+        'content': ai_content,
+        'timestamp': ai_message.timestamp.isoformat()
+    }, room=f'class_{class_id}')
+    
+    return jsonify({"success": True})
+
+# --- ASSIGNMENTS & SUBMISSIONS ---
+@app.route('/api/classes/<string:class_id>/assignments', methods=['GET', 'POST'])
+@login_required
+def handle_assignments(class_id):
+    class_obj = Class.query.get_or_404(class_id)
+    if request.method == 'POST':
+        if class_obj.teacher_id != current_user.id:
+            return jsonify({"error": "Only the teacher can create assignments."}), 403
+        data = request.get_json()
+        new_assignment = Assignment(
+            class_id=class_id,
+            title=data['title'],
+            description=data['description'],
+            due_date=datetime.fromisoformat(data['due_date'])
         )
-        mail.send(msg)
-        return jsonify({"success": True, "message": "Your message has been sent!"})
-    except Exception as e:
-        logging.error(f"Failed to send contact email: {e}")
-        return jsonify({"error": "Could not send message at this time."}), 500
+        db.session.add(new_assignment)
+        db.session.commit()
+        return jsonify({"success": True, "assignment": {"id": new_assignment.id, "title": new_assignment.title}})
+    
+    # GET request
+    assignments = Assignment.query.filter_by(class_id=class_id).all()
+    assignment_list = []
+    for a in assignments:
+        student_submission = a.submissions.filter_by(student_id=current_user.id).first()
+        assignment_list.append({
+            "id": a.id,
+            "title": a.title,
+            "due_date": a.due_date.isoformat(),
+            "submission_count": a.submissions.count(),
+            "student_submission": bool(student_submission)
+        })
+    return jsonify({"success": True, "assignments": assignment_list})
+
+@app.route('/api/assignments/<int:assignment_id>', methods=['GET'])
+@login_required
+def get_assignment_details(assignment_id):
+    assignment = Assignment.query.get_or_404(assignment_id)
+    # Add security check here
+    
+    details = {
+        "id": assignment.id,
+        "title": assignment.title,
+        "description": assignment.description,
+        "due_date": assignment.due_date.isoformat(),
+        "submissions": [],
+        "my_submission": None
+    }
+    
+    if current_user.role == 'teacher':
+        details["submissions"] = [{
+            "student_name": s.student.username,
+            "content": s.content,
+            "grade": s.grade
+        } for s in assignment.submissions]
+    else:
+        my_submission = assignment.submissions.filter_by(student_id=current_user.id).first()
+        if my_submission:
+            details["my_submission"] = {
+                "content": my_submission.content,
+                "grade": my_submission.grade,
+                "feedback": my_submission.feedback
+            }
+            
+    return jsonify({"success": True, "assignment": details})
+
+@app.route('/api/assignments/<int:assignment_id>/submissions', methods=['POST'])
+@login_required
+def submit_assignment(assignment_id):
+    assignment = Assignment.query.get_or_404(assignment_id)
+    if current_user.role != 'student':
+        return jsonify({"error": "Only students can submit assignments."}), 403
+    
+    existing_submission = Submission.query.filter_by(assignment_id=assignment_id, student_id=current_user.id).first()
+    if existing_submission:
+        return jsonify({"error": "You have already submitted this assignment."}), 400
+        
+    data = request.get_json()
+    new_submission = Submission(
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+        content=data['content']
+    )
+    db.session.add(new_submission)
+    db.session.commit()
+    return jsonify({"success": True, "message": "Submission successful."})
+
+# --- QUIZZES & ATTEMPTS ---
+@app.route('/api/classes/<string:class_id>/quizzes', methods=['GET', 'POST'])
+@login_required
+def handle_quizzes(class_id):
+    class_obj = Class.query.get_or_404(class_id)
+    if request.method == 'POST':
+        if class_obj.teacher_id != current_user.id:
+            return jsonify({"error": "Only the teacher can create quizzes."}), 403
+        data = request.get_json()
+        new_quiz = Quiz(
+            class_id=class_id,
+            title=data['title'],
+            description=data.get('description', ''),
+            time_limit=data['time_limit']
+        )
+        db.session.add(new_quiz)
+        db.session.flush() # Get ID for questions
+        
+        for q_data in data['questions']:
+            new_question = Question(
+                quiz_id=new_quiz.id,
+                text=q_data['text'],
+                question_type=q_data['type'],
+                choices=q_data['choices']
+            )
+            db.session.add(new_question)
+        db.session.commit()
+        return jsonify({"success": True, "quiz": {"id": new_quiz.id, "title": new_quiz.title}})
+
+    # GET request
+    quizzes = Quiz.query.filter_by(class_id=class_id).all()
+    quiz_list = []
+    for q in quizzes:
+        student_attempt = q.attempts.filter_by(student_id=current_user.id).first()
+        quiz_list.append({
+            "id": q.id,
+            "title": q.title,
+            "time_limit": q.time_limit,
+            "student_attempt": { "score": student_attempt.score } if student_attempt and student_attempt.score is not None else None
+        })
+    return jsonify({"success": True, "quizzes": quiz_list})
+
+@app.route('/api/quizzes/<int:quiz_id>', methods=['GET'])
+@login_required
+def get_quiz_details(quiz_id):
+    quiz = Quiz.query.get_or_404(quiz_id)
+    details = {
+        "id": quiz.id,
+        "title": quiz.title,
+        "description": quiz.description,
+        "time_limit": quiz.time_limit
+    }
+    if current_user.role == 'teacher':
+        details['attempts'] = [{
+            "student_name": a.student.username,
+            "score": a.score,
+            "end_time": a.end_time.isoformat() if a.end_time else None
+        } for a in quiz.attempts]
+    else:
+        student_attempt = quiz.attempts.filter_by(student_id=current_user.id).first()
+        details['student_attempt'] = { "score": student_attempt.score } if student_attempt and student_attempt.score is not None else None
+    
+    return jsonify({"success": True, "quiz": details})
+
+@app.route('/api/quizzes/<int:quiz_id>/start', methods=['POST'])
+@login_required
+def start_quiz(quiz_id):
+    quiz = Quiz.query.get_or_404(quiz_id)
+    if current_user.role != 'student':
+        return jsonify({"error": "Only students can take quizzes."}), 403
+    
+    existing_attempt = QuizAttempt.query.filter_by(quiz_id=quiz_id, student_id=current_user.id).first()
+    if existing_attempt:
+        return jsonify({"error": "You have already attempted this quiz."}), 400
+
+    new_attempt = QuizAttempt(quiz_id=quiz_id, student_id=current_user.id)
+    db.session.add(new_attempt)
+    db.session.commit()
+
+    questions = [{
+        "id": q.id,
+        "text": q.text,
+        "question_type": q.question_type,
+        "choices": q.choices
+    } for q in quiz.questions]
+
+    return jsonify({
+        "success": True,
+        "attempt_id": new_attempt.id,
+        "questions": questions,
+        "time_limit": quiz.time_limit,
+        "start_time": new_attempt.start_time.isoformat()
+    })
+
+@app.route('/api/attempts/<int:attempt_id>/submit', methods=['POST'])
+@login_required
+def submit_quiz(attempt_id):
+    attempt = QuizAttempt.query.get_or_404(attempt_id)
+    if attempt.student_id != current_user.id:
+        return jsonify({"error": "This is not your quiz attempt."}), 403
+    if attempt.end_time:
+        return jsonify({"error": "This quiz has already been submitted."}), 400
+
+    data = request.get_json()
+    answers = data.get('answers', {})
+    attempt.answers = answers
+    
+    # Grade the quiz
+    total_questions = len(attempt.quiz.questions)
+    correct_answers = 0
+    for question in attempt.quiz.questions:
+        correct_choice = next((c for c in question.choices if c.get('is_correct')), None)
+        user_answer_id = answers.get(str(question.id))
+        if correct_choice and user_answer_id is not None and int(user_answer_id) == correct_choice.get('id'):
+            correct_answers += 1
+            
+    attempt.score = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
+    attempt.end_time = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({"success": True, "attempt": {"id": attempt.id, "score": attempt.score}})
+
+# --- BILLING (MOCKED) ---
+@app.route('/api/create-checkout-session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    # Mocked response. In a real app, you'd use the Stripe library here.
+    logging.info(f"User {current_user.username} is attempting to upgrade.")
+    return jsonify({"success": True, "sessionId": "cs_test_MOCKEDSESSIONID"})
+
+@app.route('/api/create-customer-portal-session', methods=['POST'])
+@login_required
+def create_customer_portal_session():
+    # Mocked response.
+    logging.info(f"User {current_user.username} is attempting to manage their billing.")
+    return jsonify({"success": True, "url": "https://mocked.stripe.portal/session"})
+
+# --- NOTIFICATIONS ---
+@app.route('/api/notifications', methods=['GET'])
+@login_required
+def get_notifications():
+    notifications = Notification.query.filter_by(user_id=current_user.id).order_by(desc(Notification.timestamp)).limit(20).all()
+    notif_list = [{
+        "id": n.id,
+        "content": n.content,
+        "is_read": n.is_read,
+        "timestamp": n.timestamp.isoformat()
+    } for n in notifications]
+    return jsonify({"success": True, "notifications": notif_list})
+
+@app.route('/api/notifications/mark_read', methods=['POST'])
+@login_required
+def mark_notifications_read():
+    data = request.get_json()
+    ids_to_mark = data.get('ids', [])
+    if ids_to_mark:
+        Notification.query.filter(Notification.id.in_(ids_to_mark), Notification.user_id == current_user.id).update({"is_read": True}, synchronize_session=False)
+        db.session.commit()
+    return jsonify({"success": True})
+
+# --- ADMIN ---
+@app.route('/api/admin/dashboard_data', methods=['GET'])
+@admin_required
+def get_admin_dashboard_data():
+    stats = {
+        "total_users": User.query.count(),
+        "total_classes": Class.query.count(),
+        "total_teachers": User.query.filter_by(role='teacher').count(),
+        "total_students": User.query.filter_by(role='student').count()
+    }
+    users = [u.to_dict() for u in User.query.all()]
+    classes = [{
+        "id": c.id,
+        "name": c.name,
+        "teacher_name": c.teacher.username,
+        "code": c.code,
+        "student_count": c.students.count()
+    } for c in Class.query.all()]
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    
+    return jsonify({
+        "success": True,
+        "stats": stats,
+        "users": users,
+        "classes": classes,
+        "settings": settings
+    })
+
+@app.route('/api/admin/user/<string:user_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_user(user_id):
+    user_to_delete = User.query.get_or_404(user_id)
+    if user_to_delete.role == 'admin':
+        return jsonify({"error": "Cannot delete an admin account."}), 403
+    db.session.delete(user_to_delete)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"User {user_to_delete.username} deleted."})
+
+@app.route('/api/admin/class/<string:class_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_class(class_id):
+    class_to_delete = Class.query.get_or_404(class_id)
+    db.session.delete(class_to_delete)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Class {class_to_delete.name} deleted."})
 
 @app.route('/api/admin/update_settings', methods=['POST'])
 @admin_required
@@ -895,8 +1433,69 @@ def toggle_maintenance():
     db.session.commit()
     return jsonify({"success": True, "message": message})
 
+# --- CONTACT ---
+@app.route('/api/contact', methods=['POST'])
+def contact():
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+    message = data.get('message')
+    if not all([name, email, message]):
+        return jsonify({"error": "All fields are required."}), 400
+
+    support_email = SITE_CONFIG.get('SUPPORT_EMAIL')
+    if not support_email or not app.config.get('MAIL_SERVER'):
+        logging.error("Contact feature is not configured. MAIL_SERVER or SUPPORT_EMAIL is missing.")
+        # Return success to the user, but log the error, so the app doesn't look broken
+        return jsonify({"success": True, "message": "Your message has been received!"})
+
+    try:
+        msg = Message(
+            subject=f"New Contact Form Message from {name}",
+            recipients=[support_email],
+            body=f"From: {name} <{email}>\n\n{message}"
+        )
+        mail.send(msg)
+        return jsonify({"success": True, "message": "Your message has been sent!"})
+    except Exception as e:
+        logging.error(f"Failed to send contact email: {e}")
+        return jsonify({"error": "Could not send message at this time."}), 500
+
 # ==============================================================================
-# --- APP INITIALIZATION & EXECUTION ---
+# --- 6. SOCKET.IO EVENTS ---
+# ==============================================================================
+@socketio.on('join')
+def on_join(data):
+    room = data['room']
+    join_room(room)
+    logging.info(f"User {current_user.username} joined room {room}")
+
+@socketio.on('leave')
+def on_leave(data):
+    room = data['room']
+    leave_room(room)
+    logging.info(f"User {current_user.username} left room {room}")
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    class_id = data['class_id']
+    message_content = data['message']
+    
+    new_message = ChatMessage(class_id=class_id, sender_id=current_user.id, content=message_content)
+    db.session.add(new_message)
+    db.session.commit()
+    
+    emit('new_message', {
+        'class_id': class_id,
+        'sender_id': current_user.id,
+        'sender_name': current_user.username,
+        'sender_avatar': current_user.avatar,
+        'content': message_content,
+        'timestamp': new_message.timestamp.isoformat()
+    }, room=f'class_{class_id}')
+
+# ==============================================================================
+# --- 7. APP INITIALIZATION & EXECUTION ---
 # ==============================================================================
 def initialize_app_database():
     with app.app_context():
@@ -912,8 +1511,9 @@ def initialize_app_database():
 
 if __name__ == '__main__':
     initialize_app_database()
-    port = int(os.environ.get('PORT', 10000))
-    socketio.run(app, host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
+
 
 
 

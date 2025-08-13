@@ -12,3 +12,4 @@ itsdangerous
 gunicorn
 eventlet
 requests
+SQLAlchemy

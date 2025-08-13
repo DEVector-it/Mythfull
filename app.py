@@ -108,6 +108,7 @@ class User(UserMixin, db.Model):
     submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
     quiz_attempts = db.relationship('QuizAttempt', back_populates='student', lazy=True, cascade="all, delete-orphan")
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
+    ai_persona = db.Column(db.String(500), nullable=True)
 
     def to_dict(self):
         profile_data = {
@@ -134,12 +135,6 @@ class Profile(db.Model):
     bio = db.Column(db.Text, nullable=True)
     avatar = db.Column(db.String(500), nullable=True)
     user = db.relationship('User', back_populates='profile')
-
-    def to_dict(self):
-        return {
-            'bio': self.bio or '',
-            'avatar': self.avatar or ''
-        }
 
 class Team(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -732,259 +727,270 @@ HTML_CONTENT = """
         async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
         function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(a.submission_count)} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(q.time_limit)} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); }); } }
-        
-        async function handleSendChat(e) {
-            e.preventDefault();
-            const input = document.getElementById('chat-input');
-            const button = document.getElementById('send-chat-btn');
-            const message = input.value.trim();
-            if (!message) return;
+        
+        async function handleSendChat(e) {
+            e.preventDefault();
+            const input = document.getElementById('chat-input');
+            const button = document.getElementById('send-chat-btn');
+            const message = input.value.trim();
+            if (!message) return;
 
-            if (appState.currentUser.role === 'admin' && message.startsWith('/')) {
-                const parts = message.split(' ');
-                const command = parts[0];
-                const value = parts.slice(1).join(' ');
-                let settingsKey = '';
-                if (command === '/announce') settingsKey = 'announcement';
-                if (command === '/motd') settingsKey = 'daily_message';
-                if (command === '/persona') settingsKey = 'ai_persona';
+            if (appState.currentUser.role === 'admin' && message.startsWith('/')) {
+                const parts = message.split(' ');
+                const command = parts[0];
+                const value = parts.slice(1).join(' ');
+                let settingsKey = '';
+                if (command === '/announce') settingsKey = 'announcement';
+                if (command === '/motd') settingsKey = 'daily_message';
+                if (command === '/persona') settingsKey = 'ai_persona';
 
-                if (settingsKey) {
-                    const endpoint = settingsKey === 'ai_persona' ? '/admin/set_ai_persona' : '/admin/update_settings';
-                    const body = settingsKey === 'ai_persona' ? { persona: value } : { [settingsKey]: value };
-                    
-                    const result = await apiCall(endpoint, { method: 'POST', body });
-                    if (result.success) {
-                        showToast(`Admin command successful: ${settingsKey} updated.`, 'success');
-                        input.value = '';
-                    }
-                } else {
-                    showToast(`Unknown admin command: ${command}`, 'error');
-                }
-                return;
-            }
+                if (settingsKey) {
+                    const endpoint = settingsKey === 'ai_persona' ? '/admin/set_ai_persona' : '/admin/update_settings';
+                    const body = settingsKey === 'ai_persona' ? { persona: value } : { [settingsKey]: value };
+                    
+                    const result = await apiCall(endpoint, { method: 'POST', body });
+                    if (result.success) {
+                        showToast(`Admin command successful: ${settingsKey} updated.`, 'success');
+                        input.value = '';
+                    }
+                } else {
+                    showToast(`Unknown admin command: ${command}`, 'error');
+                }
+                return;
+            }
 
-            if (!appState.socket) return;
-            appState.socket.emit('send_message', { class_id: appState.selectedClass.id, message: message });
-            
-            input.value = '';
-            input.disabled = true;
-            button.disabled = true;
-            button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>';
+            if (!appState.socket) return;
+            
+            // Add user message to chat immediately
+            const userMessage = {
+                id: 'user-' + Date.now(),
+                class_id: appState.selectedClass.id,
+                sender_id: appState.currentUser.id,
+                sender_name: appState.currentUser.username,
+                sender_avatar: appState.currentUser.profile.avatar,
+                content: message,
+                timestamp: new Date().toISOString()
+            };
+            appendChatMessage(userMessage);
 
-            const result = await apiCall('/generate_ai_response', {
-                method: 'POST',
-                body: { prompt: message, class_id: appState.selectedClass.id }
-            });
+            input.value = '';
+            input.disabled = true;
+            button.disabled = true;
+            button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>';
 
-            if (result.success) {
-                // Since the AI response is sent via socket.io, we only need to re-enable the form here
-                // The `new_message` event handler will append the message to the chat.
-                input.disabled = false;
-                button.disabled = false;
-                button.innerHTML = 'Send';
-                input.focus();
-            } else {
-                const errorMsg = {
-                    id: 'error-' + Date.now(),
-                    class_id: appState.selectedClass.id,
-                    sender_id: null,
-                    sender_name: "System",
-                    content: "Sorry, the AI assistant is currently unavailable.",
-                    timestamp: new Date().toISOString()
-                };
-                appendChatMessage(errorMsg);
-                input.disabled = false;
-                button.disabled = false;
-                button.innerHTML = 'Send';
-                input.focus();
-            }
-        }
+            const result = await apiCall('/generate_ai_response', {
+                method: 'POST',
+                body: { prompt: message, class_id: appState.selectedClass.id }
+            });
 
-        function appendChatMessage(message) {
-            const messagesDiv = document.getElementById('chat-messages');
-            if (!messagesDiv) return;
-            const isCurrentUser = message.sender_id === appState.currentUser.id;
-            const isAI = message.sender_id === null;
-            
-            const msgWrapper = document.createElement('div');
-            msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`;
-            
-            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`;
-            
-            const bubble = `
-                <div class="flex flex-col">
-                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span>
-                    <div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">
-                        ${escapeHtml(message.content)}
-                    </div>
-                    <span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span>
-                </div>
-            `;
-            
-            msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble;
-            messagesDiv.appendChild(msgWrapper);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
+            if (result.success) {
+                // Since the AI response is sent via socket.io, we only need to re-enable the form here
+                // The `new_message` event handler will append the message to the chat.
+                input.disabled = false;
+                button.disabled = false;
+                button.innerHTML = 'Send';
+                input.focus();
+            } else {
+                const errorMsg = {
+                    id: 'error-' + Date.now(),
+                    class_id: appState.selectedClass.id,
+                    sender_id: null,
+                    sender_name: "System",
+                    content: result.error || "Sorry, the AI assistant is currently unavailable.",
+                    timestamp: new Date().toISOString()
+                };
+                appendChatMessage(errorMsg);
+                input.disabled = false;
+                button.disabled = false;
+                button.innerHTML = 'Send';
+                input.focus();
+            }
+        }
 
-        async function initializeApp(user, settings) {
-            appState.currentUser = user;
-            setupDashboard();
-        }
+        function appendChatMessage(message) {
+            const messagesDiv = document.getElementById('chat-messages');
+            if (!messagesDiv) return;
+            const isCurrentUser = message.sender_id === appState.currentUser.id;
+            const isAI = message.sender_id === null;
+            
+            const msgWrapper = document.createElement('div');
+            msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`;
+            
+            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`;
+            
+            const bubble = `
+                <div class="flex flex-col">
+                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span>
+                    <div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">
+                        ${escapeHtml(message.content)}
+                    </div>
+                    <span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span>
+                </div>
+            `;
+            
+            msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble;
+            messagesDiv.appendChild(msgWrapper);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
 
-        async function main() {
-            showFullScreenLoader('Connecting to server...');
-            const status = await apiCall('/status');
-            hideFullScreenLoader();
+        async function initializeApp(user, settings) {
+            appState.currentUser = user;
+            setupDashboard();
+        }
 
-            if (status.success && status.user) {
-                initializeApp(status.user, status.settings);
-            } else {
-                renderPage('template-welcome-anime', () => {
-                    const getStartedBtn = document.getElementById('get-started-btn');
-                    if (getStartedBtn) {
-                        getStartedBtn.addEventListener('click', () => {
-                            setupRoleChoicePage();
-                        });
-                    }
-                    playAudio('welcome-audio');
-                });
-            }
-        }
+        async function main() {
+            showFullScreenLoader('Connecting to server...');
+            const status = await apiCall('/status');
+            hideFullScreenLoader();
 
-        function setupNotificationBell() {
-            const container = document.getElementById('notification-bell-container');
-            container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`;
-            document.getElementById('notification-bell').addEventListener('click', handleNotifications);
-            updateNotificationBell();
-        }
+            if (status.success && status.user) {
+                initializeApp(status.user, status.settings);
+            } else {
+                renderPage('template-welcome-anime', () => {
+                    const getStartedBtn = document.getElementById('get-started-btn');
+                    if (getStartedBtn) {
+                        getStartedBtn.addEventListener('click', () => {
+                            setupRoleChoicePage();
+                        });
+                    }
+                    playAudio('welcome-audio');
+                });
+            }
+        }
 
-        async function updateNotificationBell(hasUnread = false) {
-            const dot = document.getElementById('notification-dot');
-            if (hasUnread) dot.classList.remove('hidden');
-            else {
-                const result = await apiCall('/notifications/unread_count');
-                if (result.success && result.count > 0) dot.classList.remove('hidden');
-                else dot.classList.add('hidden');
-            }
-        }
+        function setupNotificationBell() {
+            const container = document.getElementById('notification-bell-container');
+            container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`;
+            document.getElementById('notification-bell').addEventListener('click', handleNotifications);
+            updateNotificationBell();
+        }
 
-        async function handleNotifications() {
-            const result = await apiCall('/notifications');
-            if (!result.success) return;
-            const modalContent = document.createElement('div');
-            modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`;
-            showModal(modalContent);
-            await apiCall('/notifications/mark_read', { method: 'POST' });
-            updateNotificationBell();
-        }
+        async function updateNotificationBell(hasUnread = false) {
+            const dot = document.getElementById('notification-dot');
+            if (hasUnread) dot.classList.remove('hidden');
+            else {
+                const result = await apiCall('/notifications/unread_count');
+                if (result.success && result.count > 0) dot.classList.remove('hidden');
+                else dot.classList.add('hidden');
+            }
+        }
 
-        async function handleUpdateProfile(e) {
-            e.preventDefault();
-            const form = e.target;
-            const body = Object.fromEntries(new FormData(form));
-            const result = await apiCall('/update_profile', { method: 'POST', body });
-            if (result.success) {
-                appState.currentUser.profile = result.profile;
-                showToast('Profile updated!', 'success');
-            }
-        }
+        async function handleNotifications() {
+            const result = await apiCall('/notifications');
+            if (!result.success) return;
+            const modalContent = document.createElement('div');
+            modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`;
+            showModal(modalContent);
+            await apiCall('/notifications/mark_read', { method: 'POST' });
+            updateNotificationBell();
+        }
 
-        async function handleUpgrade() {
-            const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY);
-            const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } });
-            if (result.success) {
-                stripe.redirectToCheckout({ sessionId: result.session_id });
-            }
-        }
+        async function handleUpdateProfile(e) {
+            e.preventDefault();
+            const form = e.target;
+            const body = Object.fromEntries(new FormData(form));
+            const result = await apiCall('/update_profile', { method: 'POST', body });
+            if (result.success) {
+                appState.currentUser.profile = result.profile;
+                showToast('Profile updated!', 'success');
+            }
+        }
 
-        async function handleManageBilling() {
-            const result = await apiCall('/create-portal-session', { method: 'POST' });
-            if (result.success) {
-                window.location.href = result.url;
-            }
-        }
+        async function handleUpgrade() {
+            const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY);
+            const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } });
+            if (result.success) {
+                stripe.redirectToCheckout({ sessionId: result.session_id });
+            }
+        }
 
-        async function handleAdminUserAction(action, userId) {
-            if (action === 'delete') {
-                if (!confirm('Delete this user?')) return;
-                const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' });
-                if (result.success) {
-                    showToast('User deleted.', 'success');
-                    switchAdminView('users');
-                }
-            } else if (action === 'edit') {
-                // Implement edit modal if needed
-            }
-        }
+        async function handleManageBilling() {
+            const result = await apiCall('/create-portal-session', { method: 'POST' });
+            if (result.success) {
+                window.location.href = result.url;
+            }
+        }
 
-        async function handleAdminDeleteClass(classId) {
-            if (!confirm('Delete this class?')) return;
-            const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' });
-            if (result.success) {
-                showToast('Class deleted.', 'success');
-                    switchAdminView('classes');
-            }
-        }
+        async function handleAdminUserAction(action, userId) {
+            if (action === 'delete') {
+                if (!confirm('Delete this user?')) return;
+                const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' });
+                if (result.success) {
+                    showToast('User deleted.', 'success');
+                    switchAdminView('users');
+                }
+            } else if (action === 'edit') {
+                // Implement edit modal if needed
+            }
+        }
 
-        async function handleAdminUpdateSettings(e) {
-            e.preventDefault();
-            const form = e.target;
-            const body = Object.fromEntries(new FormData(form));
-            
-            // Check if the AI persona field has a value, and create a separate call for it.
-            if (body.ai_persona !== undefined) {
-                const personaResult = await apiCall('/admin/set_ai_persona', { method: 'POST', body: { persona: body.ai_persona } });
-                if (!personaResult.success) {
-                    showToast(personaResult.error, 'error');
-                    return;
-                }
-            }
-            
-            // Handle other settings updates
-            const updateBody = { ...body };
-            delete updateBody.ai_persona;
+        async function handleAdminDeleteClass(classId) {
+            if (!confirm('Delete this class?')) return;
+            const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' });
+            if (result.success) {
+                showToast('Class deleted.', 'success');
+                    switchAdminView('classes');
+            }
+        }
 
-            if (Object.keys(updateBody).length > 0) {
-                const settingsResult = await apiCall('/admin/update_settings', { method: 'POST', body: updateBody });
-                if (settingsResult.success) {
-                    showToast('Settings updated.', 'success');
-                } else {
-                    showToast(settingsResult.error, 'error');
-                }
-            } else if (body.ai_persona) {
-                showToast('AI persona updated.', 'success');
-            }
-        }
+        async function handleAdminUpdateSettings(e) {
+            e.preventDefault();
+            const form = e.target;
+            const body = Object.fromEntries(new FormData(form));
+            
+            // Check if the AI persona field has a value, and create a separate call for it.
+            if (body.ai_persona !== undefined) {
+                const personaResult = await apiCall('/admin/set_ai_persona', { method: 'POST', body: { persona: body.ai_persona } });
+                if (!personaResult.success) {
+                    showToast(personaResult.error, 'error');
+                    return;
+                }
+            }
+            
+            // Handle other settings updates
+            const updateBody = { ...body };
+            delete updateBody.ai_persona;
 
-        async function handleToggleMaintenance() {
-            const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' });
-            if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success');
-        }
+            if (Object.keys(updateBody).length > 0) {
+                const settingsResult = await apiCall('/admin/update_settings', { method: 'POST', body: updateBody });
+                if (settingsResult.success) {
+                    showToast('Settings updated.', 'success');
+                } else {
+                    showToast(settingsResult.error, 'error');
+                }
+            } else if (body.ai_persona) {
+                showToast('AI persona updated.', 'success');
+            }
+        }
 
-        async function handleCreateAssignment() {
-            // Implement modal for creating assignment
-            showToast('Create assignment functionality to be implemented.', 'info');
-        }
+        async function handleToggleMaintenance() {
+            const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' });
+            if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success');
+        }
 
-        async function viewAssignmentDetails(assignmentId) {
-            // Implement modal for viewing assignment details
-            showToast('View assignment details functionality to be implemented.', 'info');
-        }
+        async function handleCreateAssignment() {
+            // Implement modal for creating assignment
+            showToast('Create assignment functionality to be implemented.', 'info');
+        }
 
-        async function handleCreateQuiz() {
-            // Implement modal for creating quiz
-            showToast('Create quiz functionality to be implemented.', 'info');
-        }
+        async function viewAssignmentDetails(assignmentId) {
+            // Implement modal for viewing assignment details
+            showToast('View assignment details functionality to be implemented.', 'info');
+        }
 
-        async function viewQuizDetails(quizId) {
-            // Implement modal for viewing quiz details
-            showToast('View quiz details functionality to be implemented.', 'info');
-        }
+        async function handleCreateQuiz() {
+            // Implement modal for creating quiz
+            showToast('Create quiz functionality to be implemented.', 'info');
+        }
 
-        main();
-    });
-    </script>
+        async function viewQuizDetails(quizId) {
+            // Implement modal for viewing quiz details
+            showToast('View quiz details functionality to be implemented.', 'info');
+        }
+
+        main();
+    });
+    </script>
 </body>
 </html>
 """
@@ -1138,6 +1144,8 @@ def my_classes():
 @teacher_required
 def create_class():
     data = request.json
+    if not data or 'name' not in data:
+        return jsonify(error='Missing required fields.'), 400
     try:
         code = secrets.token_hex(4).upper()
         cls = Class(name=data['name'], code=code, teacher_id=current_user.id)
@@ -1193,6 +1201,9 @@ def get_class_messages(class_id):
 @login_required
 def generate_ai_response():
     data = request.json
+    if not data or 'class_id' not in data or 'prompt' not in data:
+        return jsonify(error='Missing required fields.'), 400
+        
     prompt = data.get('prompt', '').lower()
 
     if any(q in prompt for q in ['who made you', 'who created you', 'who is your creator']):
@@ -1200,22 +1211,14 @@ def generate_ai_response():
     else:
         # Placeholder logic based on the AI persona setting
         ai_persona_setting = SiteSettings.query.filter_by(key='ai_persona').first()
-        ai_persona = ai_persona_setting.value if ai_persona_setting else "a helpful AI assistant"
+        ai_persona = ai_persona_setting.value if ai_persona_setting and ai_persona_setting.value else "a helpful AI assistant"
         ai_response = f"As {ai_persona}, my response is: " + data.get('prompt', '')
 
     try:
         msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
         db.session.add(msg)
         db.session.commit()
-        socketio.emit('new_message', {
-            'id': msg.id,
-            'class_id': msg.class_id,
-            'sender_id': None,
-            'sender_name': 'AI Assistant',
-            'sender_avatar': 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI',
-            'content': msg.content,
-            'timestamp': msg.timestamp.isoformat()
-        }, room=f'class_{data["class_id"]}')
+        socketio.emit('new_message', {'class_id': data['class_id'], 'message': ai_response}, room=f'class_{data["class_id"]}')
         return jsonify(success=True)
     except Exception as e:
         db.session.rollback()
@@ -1238,6 +1241,8 @@ def get_teams():
 @login_required
 def create_team():
     data = request.json
+    if not data or 'name' not in data:
+        return jsonify(error='Missing required fields.'), 400
     try:
         code = secrets.token_hex(4).upper()
         team = Team(name=data['name'], code=code, owner_id=current_user.id)
@@ -1254,6 +1259,8 @@ def create_team():
 @login_required
 def join_team():
     data = request.json
+    if not data or 'code' not in data:
+        return jsonify(error='Missing required fields.'), 400
     try:
         team = Team.query.filter_by(code=data['code'].upper()).first()
         if not team:

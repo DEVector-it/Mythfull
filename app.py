@@ -30,7 +30,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
-CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
+
+# --- CORS Configuration ---
+# This is crucial for allowing the frontend to communicate with the backend.
+allowed_origins = [
+    "https://reallymythai.netlify.app", # Your new Netlify frontend
+    "https://mythproal.netlify.app",    # Previous Netlify frontend
+    "https://myth-ai.onrender.com",     # Your deployed backend
+    "http://127.0.0.1:5000",         # Common local server addresses
+    "http://localhost:5000",
+    "http://127.0.0.1:5500",         # Common live server addresses
+    "http://localhost:5500",
+    "null"                          # Allows opening the HTML file directly from your computer
+]
+CORS(app, supports_credentials=True, origins=allowed_origins)
+
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -56,7 +70,7 @@ csp = {
     'style-src': ["'self'", "https://fonts.googleapis.com", "'unsafe-inline'"],
     'font-src': ["'self'", "https://fonts.gstatic.com"],
     'img-src': ["'self'", "https://*", "data:"],
-    'connect-src': ["'self'", "https://api.stripe.com", "https://generativelanguage.googleapis.com", "https://myth-ai.onrender.com", "ws://myth-ai.onrender.com", "wss://myth-ai.onrender.com", "http://127.0.0.1:5000", "ws://127.0.0.1:5000", "wss://127.0.0.1:5000"],
+    'connect-src': ["'self'", "https://api.stripe.com", "https://generativelanguage.googleapis.com", "https://myth-ai.onrender.com", "ws://myth-ai.onrender.com", "wss://myth-ai.onrender.com", "http://127.0.0.1:5000", "ws://127.0.0.1:5000", "wss://127.0.0.1:5000", "https://mythproal.netlify.app", "https://reallymythai.netlify.app"],
 }
 Talisman(app, content_security_policy=csp)
 
@@ -535,8 +549,3 @@ if __name__ == '__main__':
     initialize_app_database()
     port = int(os.environ.get('PORT', 10000))
     socketio.run(app, host='0.0.0.0', port=port)
-
-
-
-
-

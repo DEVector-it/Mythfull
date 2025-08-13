@@ -91,13 +91,10 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(256), nullable=True)
     role = db.Column(db.String(20), nullable=False, default='student')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    # Profile information
-    bio = db.Column(db.Text, nullable=True)
-    avatar = db.Column(db.String(500), nullable=True)
     has_subscription = db.Column(db.Boolean, default=False)
-
+    
     # Relationships
+    profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
     taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
     teams = db.relationship('Team', secondary=team_member_association, back_populates='members', lazy='dynamic')
@@ -106,6 +103,14 @@ class User(UserMixin, db.Model):
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
+        profile_data = {
+            'bio': '',
+            'avatar': ''
+        }
+        if self.profile:
+            profile_data['bio'] = self.profile.bio or ''
+            profile_data['avatar'] = self.profile.avatar or ''
+
         return {
             'id': self.id,
             'username': self.username,
@@ -113,11 +118,15 @@ class User(UserMixin, db.Model):
             'role': self.role,
             'created_at': self.created_at.isoformat(),
             'has_subscription': self.has_subscription,
-            'profile': {
-                'bio': self.bio or '',
-                'avatar': self.avatar or ''
-            }
+            'profile': profile_data
         }
+
+class Profile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    bio = db.Column(db.Text, nullable=True)
+    avatar = db.Column(db.String(500), nullable=True)
+    user = db.relationship('User', back_populates='profile')
 
 class Team(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -605,7 +614,7 @@ HTML_CONTENT = """
                 <p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${team.code}</span></p>
                 <h4 class="text-lg font-semibold text-white mb-2">Members</h4>
                 <ul class="space-y-2">
-                    ${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`}" class="w-8 h-8 rounded-full"><span>${m.username} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}
+                    ${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${m.profile.avatar || \`https://i.pravatar.cc/40?u=\${m.id}\`}" class="w-8 h-8 rounded-full"><span>${m.username} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}
                 </ul>`;
             showModal(modalContent);
         }
@@ -640,7 +649,7 @@ HTML_CONTENT = """
         async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = appState.selectedClass.name; document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
-        function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${a.title}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${a.submission_count} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${q.title}</h6><span class="text-sm text-gray-400">${q.time_limit} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${q.student_attempt.score.toFixed(2)}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`}" class="w-8 h-8 rounded-full"><span>${s.username}</span></li>`).join(''); }); } }
+        function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${a.title}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${a.submission_count} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${q.title}</h6><span class="text-sm text-gray-400">${q.time_limit} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${q.student_attempt.score.toFixed(2)}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${s.profile.avatar || \`https://i.pravatar.cc/40?u=\${s.id}\`}" class="w-8 h-8 rounded-full"><span>${s.username}</span></li>`).join(''); }); } }
         
         async function handleSendChat(e) {
             e.preventDefault();
@@ -709,127 +718,145 @@ HTML_CONTENT = """
             const msgWrapper = document.createElement('div');
             msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`;
             
-            const avatar = `<img src="${message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`)}" class="w-8 h-8 rounded-full">`;
+            const avatar = `<img src="${message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : \`https://i.pravatar.cc/40?u=\${message.sender_id}\`)}" class="w-8 h-8 rounded-full">`;
             
             const bubble = `
                 <div class="flex flex-col">
-                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'} mb-1">${message.sender_name}</span>
-                    <div class="chat-bubble p-3 rounded-lg border max-w-md">
-                        <p class="text-white">${message.content}</p>
+                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${message.sender_name || (isAI ? 'AI Assistant' : 'User')}</span>
+                    <div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">
+                        ${message.content}
                     </div>
+                    <span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span>
                 </div>
             `;
             
             msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble;
-            
             messagesDiv.appendChild(msgWrapper);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        async function handleUpdateProfile(e) { e.preventDefault(); const result = await apiCall('/profile', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); if (result.success) { appState.currentUser.profile = result.profile; showToast('Profile updated!', 'success'); } }
-        async function handleUpgrade(e) { const priceId = e.target.dataset.priceId; const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: priceId } }); if (result.success && result.sessionId) { const stripe = Stripe(appState.stripePublicKey); stripe.redirectToCheckout({ sessionId: result.sessionId }); } }
-        async function handleManageBilling() { const result = await apiCall('/create-customer-portal-session', { method: 'POST' }); if (result.success && result.url) window.location.href = result.url; }
-        function handleCreateAssignment() { const content = `<h3 class="text-2xl font-bold text-white mb-4">New Assignment</h3><form id="new-assignment-form"><div class="mb-4"><label class="block text-sm">Title</label><input type="text" name="title" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label class="block text-sm">Description</label><textarea name="description" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><div class="mb-4"><label class="block text-sm">Due Date</label><input type="datetime-local" name="due_date" class="w-full p-2 bg-gray-800 rounded" required></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create</button></form>`; showModal(content, (modal) => { modal.querySelector('#new-assignment-form').addEventListener('submit', async (e) => { e.preventDefault(); const formData = Object.fromEntries(new FormData(e.target)); const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`, { method: 'POST', body: formData }); if (result.success) { hideModal(); showToast('Assignment created!', 'success'); switchClassView('assignments'); } }); }); }
-        async function viewAssignmentDetails(assignmentId) { const result = await apiCall(`/assignments/${assignmentId}`); if(!result.success) return; const assignment = result.assignment; let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${assignment.title}</h3><p class="text-gray-400 mb-4">${assignment.description}</p><p class="text-sm text-gray-500 mb-6">Due: ${new Date(assignment.due_date).toLocaleString()}</p>`; if(appState.currentUser.role === 'teacher') { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Submissions</h4>`; if(assignment.submissions.length === 0) modalContent += `<p class="text-gray-400">No submissions yet.</p>`; else modalContent += assignment.submissions.map(s => `<div class="p-2 bg-gray-800 rounded mb-2"><strong>${s.student_name}:</strong> ${s.content.substring(0, 50)}... Grade: ${s.grade || 'Not graded'}</div>`).join(''); } else { if(assignment.my_submission) { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Your Submission</h4><div class="p-4 bg-gray-800 rounded"><p class="whitespace-pre-wrap">${assignment.my_submission.content}</p><hr class="my-2 border-gray-600"><p><strong>Grade:</strong> ${assignment.my_submission.grade || 'Not graded'}</p><p><strong>Feedback:</strong> ${assignment.my_submission.feedback || 'No feedback yet.'}</p></div>`; } else { modalContent += `<h4 class="text-lg font-semibold text-white mb-2">Submit Your Work</h4><form id="submit-assignment-form"><textarea name="content" class="w-full p-2 bg-gray-800 rounded" rows="8" required></textarea><button type="submit" class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Submit</button></form>`; } } showModal(modalContent, modal => { if(modal.querySelector('#submit-assignment-form')) { modal.querySelector('#submit-assignment-form').addEventListener('submit', async e => { e.preventDefault(); const result = await apiCall(`/assignments/${assignmentId}/submissions`, { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); if(result.success) { hideModal(); showToast('Assignment submitted!', 'success'); switchClassView('assignments'); } }); } }); }
-        function handleCreateQuiz() { let questionCounter = 0; const content = `<h3 class="text-2xl font-bold text-white mb-4">New Quiz</h3><form id="new-quiz-form"><div class="mb-4"><label class="block text-sm">Title</label><input type="text" name="title" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label class="block text-sm">Description</label><textarea name="description" class="w-full p-2 bg-gray-800 rounded" rows="3"></textarea></div><div class="mb-4"><label class="block text-sm">Time Limit (minutes)</label><input type="number" name="time_limit" class="w-full p-2 bg-gray-800 rounded" required min="1"></div><hr class="my-4 border-gray-600"><div id="questions-container"></div><button type="button" id="add-question-btn" class="text-sm text-blue-400 hover:text-blue-300">+ Add Question</button><hr class="my-4 border-gray-600"><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create Quiz</button></form>`; showModal(content, modal => { const addQuestion = () => { const qId = questionCounter++; const qContainer = document.createElement('div'); qContainer.className = 'p-4 border border-gray-700 rounded-lg mb-4'; qContainer.innerHTML = `<div class="flex justify-between items-center mb-2"><label class="block text-sm">Question ${qId + 1}</label><button type="button" class="text-red-500 text-xs remove-question-btn">Remove</button></div><textarea name="q-text-${qId}" class="w-full p-2 bg-gray-700 rounded" required></textarea><div class="mt-2"><label class="block text-sm">Type</label><select name="q-type-${qId}" class="w-full p-2 bg-gray-700 rounded q-type-select"><option value="multiple_choice">Multiple Choice</option></select></div><div class="choices-container mt-2"></div>`; document.getElementById('questions-container').appendChild(qContainer); qContainer.querySelector('.remove-question-btn').addEventListener('click', () => qContainer.remove()); qContainer.querySelector('.q-type-select').dispatchEvent(new Event('change')); }; modal.querySelector('#add-question-btn').addEventListener('click', addQuestion); modal.querySelector('#questions-container').addEventListener('change', e => { if(e.target.classList.contains('q-type-select')) { const choicesContainer = e.target.closest('.p-4').querySelector('.choices-container'); const qId = e.target.name.split('-')[2]; choicesContainer.innerHTML = `<div class="space-y-2"><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="0" required><input type="text" name="q-choice-${qId}-0" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 1" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="1"><input type="text" name="q-choice-${qId}-1" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 2" required></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="2"><input type="text" name="q-choice-${qId}-2" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 3"></div><div class="flex items-center gap-2"><input type="radio" name="q-correct-${qId}" value="3"><input type="text" name="q-choice-${qId}-3" class="flex-grow p-1 bg-gray-600 rounded" placeholder="Choice 4"></div></div>`; } }); modal.querySelector('#new-quiz-form').addEventListener('submit', async e => { e.preventDefault(); const form = e.target; const quizData = { title: form.title.value, description: form.description.value, time_limit: form.time_limit.value, questions: [] }; document.querySelectorAll('#questions-container > div').forEach((qDiv, i) => { const qId = i; const qText = qDiv.querySelector(`textarea[name="q-text-${qId}"]`).value; const qType = qDiv.querySelector(`select[name="q-type-${qId}"]`).value; const question = { text: qText, type: qType, choices: [] }; if(qType === 'multiple_choice') { const correctIndex = qDiv.querySelector(`input[name="q-correct-${qId}"]:checked`).value; qDiv.querySelectorAll('input[type="text"]').forEach((cInput, cIndex) => { if(cInput.value) question.choices.push({ id: cIndex, text: cInput.value, is_correct: cIndex == correctIndex }); }); } quizData.questions.push(question); }); const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`, { method: 'POST', body: quizData }); if(result.success) { hideModal(); showToast('Quiz created!', 'success'); switchClassView('quizzes'); } }); addQuestion(); }); }
-        async function viewQuizDetails(quizId) { const result = await apiCall(`/quizzes/${quizId}`); if(!result.success) return; const quiz = result.quiz; if(appState.currentUser.role === 'teacher') { let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${quiz.title}</h3><p class="text-gray-400 mb-4">${quiz.description}</p><h4 class="text-lg font-semibold text-white mb-2">Attempts</h4>`; if(quiz.attempts.length === 0) modalContent += `<p class="text-gray-400">No attempts yet.</p>`; else modalContent += `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr><th>Student</th><th>Score</th><th>Submitted</th></tr></thead><tbody>${quiz.attempts.map(a => `<tr><td>${a.student_name}</td><td>${a.score.toFixed(2)}%</td><td>${new Date(a.end_time).toLocaleString()}</td></tr>`).join('')}</tbody></table></div>`; showModal(modalContent); } else { const studentAttempt = quiz.student_attempt; if(studentAttempt) { showModal(`<h3 class="text-2xl font-bold text-white mb-2">Quiz Results: ${quiz.title}</h3><p class="text-4xl font-bold text-center my-8">${studentAttempt.score.toFixed(2)}%</p><p class="text-center text-gray-400">You have already completed this quiz.</p>`); } else { if(confirm(`Start quiz: ${quiz.title}?\\nYou will have ${quiz.time_limit} minutes.`)) startQuiz(quizId); } } }
-        async function startQuiz(quizId) { const result = await apiCall(`/quizzes/${quizId}/start`, { method: 'POST' }); if(!result.success) return; const { attempt_id, questions, time_limit, start_time } = result; let currentQuestionIndex = 0; const userAnswers = {}; const deadline = new Date(new Date(start_time).getTime() + time_limit * 60000); const renderQuestion = () => { const q = questions[currentQuestionIndex]; let choicesHtml = ''; if(q.question_type === 'multiple_choice') { choicesHtml = `<div class="space-y-3 mt-4">${q.choices.map(c => `<label class="flex items-center p-3 bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-700"><input type="radio" name="answer" value="${c.id}" class="mr-3"><span class="text-white">${c.text}</span></label>`).join('')}</div>`; } const content = `<div class="flex justify-between items-center"><h3 class="text-2xl font-bold text-white">${appState.selectedClass.name} Quiz</h3><div id="quiz-timer" class="text-xl font-mono text-red-500"></div></div><hr class="my-4 border-gray-600"><p class="text-gray-400 mb-2">Question ${currentQuestionIndex + 1} of ${questions.length}</p><h4 class="text-xl font-semibold text-white">${q.text}</h4>${choicesHtml}<div class="flex justify-between mt-8"><button id="prev-btn" class="bg-gray-600 py-2 px-4 rounded-lg">Previous</button><button id="next-btn" class="brand-gradient-bg shiny-button py-2 px-4 rounded-lg">Next</button></div>`; showModal(content, modal => { if(currentQuestionIndex === 0) modal.querySelector('#prev-btn').style.visibility = 'hidden'; if(currentQuestionIndex === questions.length - 1) { modal.querySelector('#next-btn').textContent = 'Submit'; } modal.querySelector('#prev-btn').addEventListener('click', () => { saveAnswer(); currentQuestionIndex--; renderQuestion(); }); modal.querySelector('#next-btn').addEventListener('click', () => { saveAnswer(); if(currentQuestionIndex === questions.length - 1) submitQuiz(attempt_id, userAnswers); else { currentQuestionIndex++; renderQuestion(); } }); if(userAnswers[q.id]) modal.querySelector(`input[value="${userAnswers[q.id]}"]`).checked = true; }, 'max-w-4xl'); }; const saveAnswer = () => { const selected = document.querySelector('input[name="answer"]:checked'); if(selected) userAnswers[questions[currentQuestionIndex].id] = selected.value; }; const updateTimer = () => { const now = new Date(); const diff = deadline - now; if(diff <= 0) { clearInterval(appState.quizTimer); submitQuiz(attempt_id, userAnswers); } else { const minutes = Math.floor(diff / 60000); const seconds = Math.floor((diff % 60000) / 1000); const timerEl = document.getElementById('quiz-timer'); if (timerEl) timerEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`; } }; if(appState.quizTimer) clearInterval(appState.quizTimer); appState.quizTimer = setInterval(updateTimer, 1000); renderQuestion(); }
-        async function submitQuiz(attempt_id, answers) { if(appState.quizTimer) clearInterval(appState.quizTimer); const result = await apiCall(`/attempts/${attempt_id}/submit`, { method: 'POST', body: { answers } }); if(result.success) { showModal(`<h3 class="text-2xl font-bold text-white mb-2">Quiz Submitted!</h3><p class="text-4xl font-bold text-center my-8">${result.attempt.score.toFixed(2)}%</p><p class="text-center text-gray-400">Your results have been saved.</p>`); switchClassView('quizzes'); } }
-        function handleAdminUserAction(action, userId) { if(action === 'delete') { if(confirm('Are you sure you want to delete this user? This is irreversible.')) { apiCall(`/admin/user/${userId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('users'); } }); } } }
-        function handleAdminDeleteClass(classId) { if(confirm('Are you sure you want to delete this class? This will delete all associated data.')) { apiCall(`/admin/class/${classId}`, { method: 'DELETE' }).then(res => { if(res.success) { showToast(res.message, 'success'); switchAdminView('classes'); } }); } }
-        async function handleAdminUpdateSettings(e) { e.preventDefault(); const result = await apiCall('/admin/update_settings', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); if(result.success) showToast(result.message, 'success'); }
-        async function handleToggleMaintenance() { if(confirm('Are you sure you want to toggle maintenance mode?')) { const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' }); if(result.success) { showToast(result.message, 'success'); } } }
-        async function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg><div id="notification-dot" class="hidden absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"></div></button><div id="notification-panel" class="hidden absolute bottom-full right-0 w-80 bg-gray-800 rounded-lg shadow-lg mb-2 z-50"></div>`; document.getElementById('notification-bell').addEventListener('click', toggleNotificationPanel); const result = await apiCall('/notifications'); if(result.success && result.notifications.some(n => !n.is_read)) updateNotificationBell(true); }
-        function updateNotificationBell(hasUnread) { const dot = document.getElementById('notification-dot'); if(dot) dot.classList.toggle('hidden', !hasUnread); }
-        async function toggleNotificationPanel() { const panel = document.getElementById('notification-panel'); if(panel.classList.toggle('hidden')) return; panel.innerHTML = `<div class="p-4"><div class="loader mx-auto"></div></div>`; const result = await apiCall('/notifications'); if(result.success) { if(result.notifications.length === 0) panel.innerHTML = `<div class="p-4 text-center text-gray-400">No notifications.</div>`; else panel.innerHTML = result.notifications.map(n => `<div class="p-3 border-b border-gray-700 ${n.is_read ? 'opacity-50' : ''}"><p class="text-sm">${n.content}</p><p class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</p></div>`).join(''); const unreadIds = result.notifications.filter(n => !n.is_read).map(n => n.id); if(unreadIds.length > 0) { await apiCall('/notifications/mark_read', { method: 'POST', body: { ids: unreadIds }}); updateNotificationBell(false); } } }
-        
-        function setupFooter() {
-            const footer = document.createElement('footer');
-            footer.className = 'p-4 bg-gray-900/50 text-center text-xs text-gray-400 mt-auto';
-            footer.innerHTML = `
-                <p>&copy; Myth AI 2025, made by Devector.</p>
-                <div class="mt-2">
-                    <button class="hover:text-white" id="privacy-policy-btn">Privacy Policy</button> | 
-                    <button class="hover:text-white" id="plans-btn">Plans</button> |
-                    <button class="hover:text-white" id="contact-btn">Contact Us</button>
-                </div>
-            `;
-            DOMElements.appContainer.appendChild(footer);
-            document.getElementById('privacy-policy-btn').addEventListener('click', () => {
-                const content = document.getElementById('template-privacy-policy').content.cloneNode(true);
-                showModal(content);
-            });
-            document.getElementById('plans-btn').addEventListener('click', () => {
-                const content = document.getElementById('template-plans').content.cloneNode(true);
-                showModal(content, (modal) => {
-                    modal.querySelector('#upgrade-from-modal-btn')?.addEventListener('click', (e) => {
-                        handleUpgrade(e);
-                    });
-                });
-            });
-            document.getElementById('contact-btn').addEventListener('click', () => {
-                const content = document.getElementById('template-contact-form').content.cloneNode(true);
-                showModal(content, (modal) => {
-                    modal.querySelector('#contact-form').addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const result = await apiCall('/contact', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
-                        if(result.success) {
-                            hideModal();
-                            showToast(result.message, 'success');
-                        }
-                    });
-                });
-            });
-        }
-
-        function initializeApp(user, settings) {
+        async function initializeApp(user, settings) {
             appState.currentUser = user;
-            appState.stripePublicKey = settings.STRIPE_PUBLIC_KEY;
-            
             setupDashboard();
-            setupFooter();
-
-            const dailyMessageBanner = document.getElementById('daily-message-banner');
-            if (settings && settings.daily_message) {
-                dailyMessageBanner.textContent = settings.daily_message;
-                dailyMessageBanner.classList.remove('hidden');
-            }
-        }
-
-        function setupMaintenancePage() {
-            renderPage('template-maintenance', () => {
-                document.getElementById('admin-login-btn').addEventListener('click', () => {
-                    appState.selectedRole = 'admin';
-                    setupAuthPage();
-                });
-            });
         }
 
         async function main() {
-            const result = await apiCall('/status');
-            if (result.success) {
-                if(result.settings.maintenance_mode === "true" && (!result.logged_in || result.user.role !== 'admin')) {
-                    setupMaintenancePage();
-                    return;
-                }
-
-                if (result.logged_in) {
-                    initializeApp(result.user, result.settings);
-                } else {
-                    const hasSeenWelcome = localStorage.getItem('hasSeenWelcome');
-                    if (!hasSeenWelcome) {
-                        renderPage('template-welcome-anime', () => {
-                            document.getElementById('get-started-btn').addEventListener('click', () => {
-                                localStorage.setItem('hasSeenWelcome', 'true');
-                                setupRoleChoicePage();
-                            });
-                        });
-                    } else {
-                        setupRoleChoicePage();
-                    }
-                }
+            const status = await apiCall('/status');
+            if (status.success && status.user) {
+                initializeApp(status.user, status.settings);
+            } else {
+                setupRoleChoicePage();
             }
         }
+
+        function setupNotificationBell() {
+            const container = document.getElementById('notification-bell-container');
+            container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`;
+            document.getElementById('notification-bell').addEventListener('click', handleNotifications);
+            updateNotificationBell();
+        }
+
+        async function updateNotificationBell(hasUnread = false) {
+            const dot = document.getElementById('notification-dot');
+            if (hasUnread) dot.classList.remove('hidden');
+            else {
+                const result = await apiCall('/notifications/unread_count');
+                if (result.success && result.count > 0) dot.classList.remove('hidden');
+                else dot.classList.add('hidden');
+            }
+        }
+
+        async function handleNotifications() {
+            const result = await apiCall('/notifications');
+            if (!result.success) return;
+            const modalContent = document.createElement('div');
+            modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${n.content} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`;
+            showModal(modalContent);
+            await apiCall('/notifications/mark_read', { method: 'POST' });
+            updateNotificationBell();
+        }
+
+        async function handleUpdateProfile(e) {
+            e.preventDefault();
+            const form = e.target;
+            const body = Object.fromEntries(new FormData(form));
+            const result = await apiCall('/update_profile', { method: 'POST', body });
+            if (result.success) {
+                appState.currentUser.profile = result.profile;
+                showToast('Profile updated!', 'success');
+            }
+        }
+
+        async function handleUpgrade() {
+            const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY);
+            const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } });
+            if (result.success) {
+                stripe.redirectToCheckout({ sessionId: result.session_id });
+            }
+        }
+
+        async function handleManageBilling() {
+            const result = await apiCall('/create-portal-session', { method: 'POST' });
+            if (result.success) {
+                window.location.href = result.url;
+            }
+        }
+
+        async function handleAdminUserAction(action, userId) {
+            if (action === 'delete') {
+                if (!confirm('Delete this user?')) return;
+                const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' });
+                if (result.success) {
+                    showToast('User deleted.', 'success');
+                    switchAdminView('users');
+                }
+            } else if (action === 'edit') {
+                // Implement edit modal if needed
+            }
+        }
+
+        async function handleAdminDeleteClass(classId) {
+            if (!confirm('Delete this class?')) return;
+            const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' });
+            if (result.success) {
+                showToast('Class deleted.', 'success');
+                switchAdminView('classes');
+            }
+        }
+
+        async function handleAdminUpdateSettings(e) {
+            e.preventDefault();
+            const form = e.target;
+            const body = Object.fromEntries(new FormData(form));
+            const result = await apiCall('/admin/update_settings', { method: 'POST', body });
+            if (result.success) showToast('Settings updated.', 'success');
+        }
+
+        async function handleToggleMaintenance() {
+            const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' });
+            if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success');
+        }
+
+        async function handleCreateAssignment() {
+            // Implement modal for creating assignment
+            showToast('Create assignment functionality to be implemented.', 'info');
+        }
+
+        async function viewAssignmentDetails(assignmentId) {
+            // Implement modal for viewing assignment details
+            showToast('View assignment details functionality to be implemented.', 'info');
+        }
+
+        async function handleCreateQuiz() {
+            // Implement modal for creating quiz
+            showToast('Create quiz functionality to be implemented.', 'info');
+        }
+
+        async function viewQuizDetails(quizId) {
+            // Implement modal for viewing quiz details
+            showToast('View quiz details functionality to be implemented.', 'info');
+        }
+
         main();
     });
     </script>
@@ -837,687 +864,340 @@ HTML_CONTENT = """
 </html>
 """
 
+@app.route('/')
+def index():
+    return HTML_CONTENT
+
 # ==============================================================================
 # --- 5. API ROUTES ---
 # ==============================================================================
-@app.route('/')
-def serve_frontend():
-    return Response(HTML_CONTENT, mimetype='text/html')
 
-# --- AUTH & STATUS ---
-@app.route('/api/status')
-def status():
-    settings = {s.key: s.value for s in SiteSettings.query.all()}
-    settings['STRIPE_PUBLIC_KEY'] = SITE_CONFIG.get('STRIPE_PUBLIC_KEY')
-    if current_user.is_authenticated:
-        return jsonify({
-            "logged_in": True,
-            "user": current_user.to_dict(),
-            "settings": settings
-        })
-    return jsonify({"logged_in": False, "settings": settings})
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    username = data.get('username', '').strip()
-    password = data.get('password', '')
-    role_attempt = data.get('account_type', 'student')
-    admin_secret_key = data.get('admin_secret_key', '')
-
-    user = User.query.filter(User.username.ilike(username)).first()
-
-    if not user or not user.password_hash or not check_password_hash(user.password_hash, password):
-        return jsonify({"error": "Invalid username or password."}), 401
-
-    if user.role != role_attempt:
-        # Allow admin to login via any portal for convenience
-        if user.role != 'admin':
-            return jsonify({"error": f"Authentication failed. This is not a {role_attempt} account."}), 403
-
-    if user.role == 'admin':
-        if username.lower() != 'big ballz' or admin_secret_key != SITE_CONFIG.get('ADMIN_SECRET_KEY'):
-            return jsonify({"error": "Invalid admin credentials."}), 401
-
-    login_user(user, remember=True)
-    return jsonify({"success": True, "user": user.to_dict()})
+@app.errorhandler(Exception)
+def handle_exception(e):
+    logging.error(f"Unhandled error: {str(e)}")
+    return jsonify(error='Internal server error. Check logs.'), 500
 
 @app.route('/api/signup', methods=['POST'])
 def signup():
-    data = request.get_json()
-    username = data.get('username','').strip()
-    password = data.get('password','')
-    email = data.get('email','').strip().lower()
-    account_type = data.get('account_type', 'student')
-    secret_key = data.get('secret_key', '')
+    data = request.json
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify(error='Username taken'), 400
+    if User.query.filter_by(email=data.get('email')):
+        return jsonify(error='Email taken'), 400
 
-    if not all([username, password, email]):
-        return jsonify({"error": "Missing required fields."}), 400
-    if User.query.filter(or_(User.username.ilike(username), User.email.ilike(email))).first():
-        return jsonify({"error": "Username or email already exists."}), 409
+    if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
+        return jsonify(error='Invalid teacher key'), 403
 
-    role = 'student'
-    if account_type == 'teacher':
-        if secret_key != SITE_CONFIG.get('SECRET_TEACHER_KEY'):
-            return jsonify({"error": "Invalid teacher registration key."}), 403
-        role = 'teacher'
+    hashed_pw = generate_password_hash(data['password'])
+    user = User(
+        username=data['username'],
+        email=data['email'],
+        password_hash=hashed_pw,
+        role=data['account_type']
+    )
+    db.session.add(user)
+    db.session.flush()
 
-    new_user = User(username=username, email=email, password_hash=generate_password_hash(password), role=role)
-    db.session.add(new_user)
+    profile = Profile(user_id=user.id)
+    db.session.add(profile)
+
     db.session.commit()
-    login_user(new_user, remember=True)
-    return jsonify({"success": True, "user": new_user.to_dict()})
+
+    login_user(user)
+    return jsonify(success=True, user=user.to_dict())
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    user = User.query.filter_by(username=data['username']).first()
+    if not user or not check_password_hash(user.password_hash, data['password']):
+        return jsonify(error='Invalid credentials'), 401
+
+    if data.get('account_type') == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
+        return jsonify(error='Invalid admin key'), 403
+
+    if not user.profile:
+        profile = Profile(user_id=user.id)
+        db.session.add(profile)
+        db.session.commit()
+
+    login_user(user)
+    return jsonify(success=True, user=user.to_dict())
 
 @app.route('/api/logout')
-@login_required
 def logout():
     logout_user()
-    return jsonify({"success": True})
+    return jsonify(success=True)
 
-@app.route('/api/request-password-reset', methods=['POST'])
-def request_password_reset():
-    data = request.get_json()
-    email = data.get('email')
-    user = User.query.filter_by(email=email).first()
-    if user:
-        # In a real app, you would generate a token and email a reset link
-        logging.info(f"Password reset requested for {email}. In a real app, an email would be sent.")
-    return jsonify({"success": True, "message": "If an account with that email exists, a password reset link has been sent."})
+@app.route('/api/status')
+def status():
+    if current_user.is_authenticated:
+        return jsonify(success=True, user=current_user.to_dict(), settings={})
+    return jsonify(success=False)
 
-# --- USER PROFILE ---
-@app.route('/api/profile', methods=['PUT'])
+@app.route('/api/my_classes')
 @login_required
-def update_profile():
-    data = request.get_json()
-    current_user.bio = data.get('bio', current_user.bio)
-    current_user.avatar = data.get('avatar', current_user.avatar)
-    db.session.commit()
-    return jsonify({"success": True, "profile": current_user.to_dict()['profile']})
-
-# --- CLASSES ---
-def generate_class_code():
-    return ''.join(secrets.choice('ABCDEFGHIJKLMNPQRSTUVWXYZ123456789') for i in range(6))
-
-@app.route('/api/my_classes', methods=['GET'])
-@login_required
-def get_my_classes():
+def my_classes():
     if current_user.role == 'teacher':
         classes = current_user.taught_classes
     else:
         classes = current_user.enrolled_classes.all()
-    
-    class_list = [{
-        'id': c.id,
-        'name': c.name,
-        'code': c.code,
-        'teacher_name': c.teacher.username
-    } for c in classes]
-    return jsonify({"success": True, "classes": class_list})
+    return jsonify(success=True, classes=[{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code} for c in classes])
 
 @app.route('/api/classes', methods=['POST'])
 @teacher_required
 def create_class():
-    data = request.get_json()
-    name = data.get('name')
-    if not name:
-        return jsonify({"error": "Class name is required."}), 400
-    
-    new_class = Class(name=name, teacher=current_user, code=generate_class_code())
-    db.session.add(new_class)
+    data = request.json
+    code = secrets.token_hex(4).upper()
+    cls = Class(name=data['name'], code=code, teacher_id=current_user.id)
+    db.session.add(cls)
     db.session.commit()
-    return jsonify({"success": True, "class": {"name": new_class.name, "code": new_class.code}})
+    return jsonify(success=True, class_={'id': cls.id, 'name': cls.name, 'code': cls.code})
 
 @app.route('/api/join_class', methods=['POST'])
 @login_required
 def join_class():
-    data = request.get_json()
-    code = data.get('code')
-    class_to_join = Class.query.filter_by(code=code).first()
-    if not class_to_join:
-        return jsonify({"error": "Invalid class code."}), 404
-    if current_user in class_to_join.students:
-        return jsonify({"error": "You are already in this class."}), 400
-    
-    class_to_join.students.append(current_user)
+    data = request.json
+    cls = Class.query.filter_by(code=data['code'].upper()).first()
+    if not cls:
+        return jsonify(error='Invalid class code'), 404
+    current_user.enrolled_classes.append(cls)
     db.session.commit()
-    return jsonify({"success": True, "message": f"Successfully joined {class_to_join.name}."})
+    return jsonify(success=True, message='Joined class')
 
-@app.route('/api/classes/<string:class_id>', methods=['GET'])
+@app.route('/api/classes/<class_id>')
 @login_required
-def get_class_details(class_id):
-    class_obj = Class.query.get_or_404(class_id)
-    # Security check: user must be teacher or student in the class
-    if class_obj.teacher_id != current_user.id and current_user not in class_obj.students:
-        return jsonify({"error": "Access denied."}), 403
-        
-    return jsonify({
-        "success": True,
-        "class": {
-            "id": class_obj.id,
-            "name": class_obj.name,
-            "students": [s.to_dict() for s in class_obj.students]
-        }
+def get_class(class_id):
+    cls = Class.query.get_or_404(class_id)
+    # Add authorization check if needed
+    return jsonify(success=True, class_={
+        'id': cls.id,
+        'name': cls.name,
+        'students': [{'id': s.id, 'username': s.username, 'profile': s.profile.to_dict() if s.profile else {}} for s in cls.students]
     })
 
-# --- TEAMS ---
-def generate_team_code():
-    return ''.join(secrets.choice('ABCDEFGHIJKLMNPQRSTUVWXYZ123456789') for i in range(8))
-
-@app.route('/api/teams', methods=['GET'])
+@app.route('/api/class_messages/<class_id>')
 @login_required
-def get_my_teams():
+def get_class_messages(class_id):
+    # Fetch messages, add authorization
+    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp).all()
+    return jsonify(success=True, messages=[{
+        'id': m.id,
+        'sender_id': m.sender_id,
+        'sender_name': m.sender.username if m.sender else 'AI',
+        'sender_avatar': m.sender.profile.avatar if m.sender and m.sender.profile else None,
+        'content': m.content,
+        'timestamp': m.timestamp.isoformat()
+    } for m in messages])
+
+@app.route('/api/generate_ai_response', methods=['POST'])
+@login_required
+def generate_ai_response():
+    data = request.json
+    # Implement AI response generation using GEMINI_API_KEY
+    # For placeholder:
+    ai_response = "AI response to: " + data['prompt']
+    msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
+    db.session.add(msg)
+    db.session.commit()
+    socketio.emit('new_message', {'class_id': data['class_id'], 'message': ai_response}, room=f'class_{data["class_id"]}')
+    return jsonify(success=True)
+
+@app.route('/api/teams')
+@login_required
+def get_teams():
     teams = current_user.teams.all()
-    team_list = [{
+    return jsonify(success=True, teams=[{
         'id': t.id,
         'name': t.name,
         'code': t.code,
         'owner_name': t.owner.username,
         'member_count': t.members.count()
-    } for t in teams]
-    return jsonify({"success": True, "teams": team_list})
+    } for t in teams])
 
 @app.route('/api/teams', methods=['POST'])
 @login_required
 def create_team():
-    data = request.get_json()
-    name = data.get('name')
-    if not name:
-        return jsonify({"error": "Team name is required."}), 400
-    
-    new_team = Team(name=name, owner=current_user, code=generate_team_code())
-    new_team.members.append(current_user)
-    db.session.add(new_team)
+    data = request.json
+    code = secrets.token_hex(4).upper()
+    team = Team(name=data['name'], code=code, owner_id=current_user.id)
+    db.session.add(team)
+    team.members.append(current_user)
     db.session.commit()
-    return jsonify({"success": True, "team": {"name": new_team.name, "code": new_team.code}})
+    return jsonify(success=True, team={'id': team.id, 'name': team.name, 'code': team.code})
 
 @app.route('/api/join_team', methods=['POST'])
 @login_required
 def join_team():
-    data = request.get_json()
-    code = data.get('code')
-    team_to_join = Team.query.filter_by(code=code).first()
-    if not team_to_join:
-        return jsonify({"error": "Invalid team code."}), 404
-    if current_user in team_to_join.members:
-        return jsonify({"error": "You are already in this team."}), 400
-    
-    team_to_join.members.append(current_user)
+    data = request.json
+    team = Team.query.filter_by(code=data['code'].upper()).first()
+    if not team:
+        return jsonify(error='Invalid team code'), 404
+    team.members.append(current_user)
     db.session.commit()
-    return jsonify({"success": True, "message": f"Successfully joined {team_to_join.name}."})
+    return jsonify(success=True, message='Joined team')
 
-@app.route('/api/teams/<string:team_id>', methods=['GET'])
+@app.route('/api/teams/<team_id>')
 @login_required
-def get_team_details(team_id):
-    team_obj = Team.query.get_or_404(team_id)
-    if current_user not in team_obj.members:
-        return jsonify({"error": "Access denied."}), 403
-        
-    return jsonify({
-        "success": True,
-        "team": {
-            "id": team_obj.id,
-            "name": team_obj.name,
-            "code": team_obj.code,
-            "owner_id": team_obj.owner_id,
-            "members": [m.to_dict() for m in team_obj.members]
-        }
+def get_team(team_id):
+    team = Team.query.get_or_404(team_id)
+    # Authorization check
+    return jsonify(success=True, team={
+        'id': team.id,
+        'name': team.name,
+        'code': team.code,
+        'owner_id': team.owner_id,
+        'members': [{'id': m.id, 'username': m.username, 'profile': m.profile.to_dict() if m.profile else {}} for m in team.members]
     })
 
-# --- CHAT & AI ---
-@app.route('/api/class_messages/<string:class_id>', methods=['GET'])
+@app.route('/api/update_profile', methods=['POST'])
 @login_required
-def get_class_messages(class_id):
-    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp).all()
-    message_list = []
-    for msg in messages:
-        sender_name = "AI Assistant"
-        sender_avatar = None
-        if msg.sender:
-            sender_name = msg.sender.username
-            sender_avatar = msg.sender.avatar
-        message_list.append({
-            "id": msg.id,
-            "sender_id": msg.sender_id,
-            "sender_name": sender_name,
-            "sender_avatar": sender_avatar,
-            "content": msg.content,
-            "timestamp": msg.timestamp.isoformat()
-        })
-    return jsonify({"success": True, "messages": message_list})
-
-@app.route('/api/generate_ai_response', methods=['POST'])
-@login_required
-def generate_ai_response():
-    data = request.get_json()
-    prompt = data.get('prompt')
-    class_id = data.get('class_id')
-    
-    # Mock AI response
-    time.sleep(1.5) # Simulate processing time
-    ai_content = f"This is a mocked AI response to your prompt: '{prompt[:50]}...'. In a real application, this would be a call to the Gemini API."
-    
-    ai_message = ChatMessage(class_id=class_id, sender_id=None, content=ai_content)
-    db.session.add(ai_message)
-    db.session.commit()
-    
-    socketio.emit('new_message', {
-        'class_id': class_id,
-        'sender_id': None,
-        'sender_name': 'AI Assistant',
-        'sender_avatar': None,
-        'content': ai_content,
-        'timestamp': ai_message.timestamp.isoformat()
-    }, room=f'class_{class_id}')
-    
-    return jsonify({"success": True})
-
-# --- ASSIGNMENTS & SUBMISSIONS ---
-@app.route('/api/classes/<string:class_id>/assignments', methods=['GET', 'POST'])
-@login_required
-def handle_assignments(class_id):
-    class_obj = Class.query.get_or_404(class_id)
-    if request.method == 'POST':
-        if class_obj.teacher_id != current_user.id:
-            return jsonify({"error": "Only the teacher can create assignments."}), 403
-        data = request.get_json()
-        new_assignment = Assignment(
-            class_id=class_id,
-            title=data['title'],
-            description=data['description'],
-            due_date=datetime.fromisoformat(data['due_date'])
-        )
-        db.session.add(new_assignment)
-        db.session.commit()
-        return jsonify({"success": True, "assignment": {"id": new_assignment.id, "title": new_assignment.title}})
-    
-    # GET request
-    assignments = Assignment.query.filter_by(class_id=class_id).all()
-    assignment_list = []
-    for a in assignments:
-        student_submission = a.submissions.filter_by(student_id=current_user.id).first()
-        assignment_list.append({
-            "id": a.id,
-            "title": a.title,
-            "due_date": a.due_date.isoformat(),
-            "submission_count": a.submissions.count(),
-            "student_submission": bool(student_submission)
-        })
-    return jsonify({"success": True, "assignments": assignment_list})
-
-@app.route('/api/assignments/<int:assignment_id>', methods=['GET'])
-@login_required
-def get_assignment_details(assignment_id):
-    assignment = Assignment.query.get_or_404(assignment_id)
-    # Add security check here
-    
-    details = {
-        "id": assignment.id,
-        "title": assignment.title,
-        "description": assignment.description,
-        "due_date": assignment.due_date.isoformat(),
-        "submissions": [],
-        "my_submission": None
-    }
-    
-    if current_user.role == 'teacher':
-        details["submissions"] = [{
-            "student_name": s.student.username,
-            "content": s.content,
-            "grade": s.grade
-        } for s in assignment.submissions]
+def update_profile():
+    data = request.json
+    if not current_user.profile:
+        profile = Profile(user_id=current_user.id)
+        db.session.add(profile)
     else:
-        my_submission = assignment.submissions.filter_by(student_id=current_user.id).first()
-        if my_submission:
-            details["my_submission"] = {
-                "content": my_submission.content,
-                "grade": my_submission.grade,
-                "feedback": my_submission.feedback
-            }
-            
-    return jsonify({"success": True, "assignment": details})
-
-@app.route('/api/assignments/<int:assignment_id>/submissions', methods=['POST'])
-@login_required
-def submit_assignment(assignment_id):
-    assignment = Assignment.query.get_or_404(assignment_id)
-    if current_user.role != 'student':
-        return jsonify({"error": "Only students can submit assignments."}), 403
-    
-    existing_submission = Submission.query.filter_by(assignment_id=assignment_id, student_id=current_user.id).first()
-    if existing_submission:
-        return jsonify({"error": "You have already submitted this assignment."}), 400
-        
-    data = request.get_json()
-    new_submission = Submission(
-        assignment_id=assignment_id,
-        student_id=current_user.id,
-        content=data['content']
-    )
-    db.session.add(new_submission)
+        profile = current_user.profile
+    profile.bio = data['bio']
+    profile.avatar = data['avatar']
     db.session.commit()
-    return jsonify({"success": True, "message": "Submission successful."})
+    return jsonify(success=True, profile={'bio': profile.bio, 'avatar': profile.avatar})
 
-# --- QUIZZES & ATTEMPTS ---
-@app.route('/api/classes/<string:class_id>/quizzes', methods=['GET', 'POST'])
-@login_required
-def handle_quizzes(class_id):
-    class_obj = Class.query.get_or_404(class_id)
-    if request.method == 'POST':
-        if class_obj.teacher_id != current_user.id:
-            return jsonify({"error": "Only the teacher can create quizzes."}), 403
-        data = request.get_json()
-        new_quiz = Quiz(
-            class_id=class_id,
-            title=data['title'],
-            description=data.get('description', ''),
-            time_limit=data['time_limit']
-        )
-        db.session.add(new_quiz)
-        db.session.flush() # Get ID for questions
-        
-        for q_data in data['questions']:
-            new_question = Question(
-                quiz_id=new_quiz.id,
-                text=q_data['text'],
-                question_type=q_data['type'],
-                choices=q_data['choices']
-            )
-            db.session.add(new_question)
-        db.session.commit()
-        return jsonify({"success": True, "quiz": {"id": new_quiz.id, "title": new_quiz.title}})
-
-    # GET request
-    quizzes = Quiz.query.filter_by(class_id=class_id).all()
-    quiz_list = []
-    for q in quizzes:
-        student_attempt = q.attempts.filter_by(student_id=current_user.id).first()
-        quiz_list.append({
-            "id": q.id,
-            "title": q.title,
-            "time_limit": q.time_limit,
-            "student_attempt": { "score": student_attempt.score } if student_attempt and student_attempt.score is not None else None
-        })
-    return jsonify({"success": True, "quizzes": quiz_list})
-
-@app.route('/api/quizzes/<int:quiz_id>', methods=['GET'])
-@login_required
-def get_quiz_details(quiz_id):
-    quiz = Quiz.query.get_or_404(quiz_id)
-    details = {
-        "id": quiz.id,
-        "title": quiz.title,
-        "description": quiz.description,
-        "time_limit": quiz.time_limit
-    }
-    if current_user.role == 'teacher':
-        details['attempts'] = [{
-            "student_name": a.student.username,
-            "score": a.score,
-            "end_time": a.end_time.isoformat() if a.end_time else None
-        } for a in quiz.attempts]
-    else:
-        student_attempt = quiz.attempts.filter_by(student_id=current_user.id).first()
-        details['student_attempt'] = { "score": student_attempt.score } if student_attempt and student_attempt.score is not None else None
-    
-    return jsonify({"success": True, "quiz": details})
-
-@app.route('/api/quizzes/<int:quiz_id>/start', methods=['POST'])
-@login_required
-def start_quiz(quiz_id):
-    quiz = Quiz.query.get_or_404(quiz_id)
-    if current_user.role != 'student':
-        return jsonify({"error": "Only students can take quizzes."}), 403
-    
-    existing_attempt = QuizAttempt.query.filter_by(quiz_id=quiz_id, student_id=current_user.id).first()
-    if existing_attempt:
-        return jsonify({"error": "You have already attempted this quiz."}), 400
-
-    new_attempt = QuizAttempt(quiz_id=quiz_id, student_id=current_user.id)
-    db.session.add(new_attempt)
-    db.session.commit()
-
-    questions = [{
-        "id": q.id,
-        "text": q.text,
-        "question_type": q.question_type,
-        "choices": q.choices
-    } for q in quiz.questions]
-
-    return jsonify({
-        "success": True,
-        "attempt_id": new_attempt.id,
-        "questions": questions,
-        "time_limit": quiz.time_limit,
-        "start_time": new_attempt.start_time.isoformat()
-    })
-
-@app.route('/api/attempts/<int:attempt_id>/submit', methods=['POST'])
-@login_required
-def submit_quiz(attempt_id):
-    attempt = QuizAttempt.query.get_or_404(attempt_id)
-    if attempt.student_id != current_user.id:
-        return jsonify({"error": "This is not your quiz attempt."}), 403
-    if attempt.end_time:
-        return jsonify({"error": "This quiz has already been submitted."}), 400
-
-    data = request.get_json()
-    answers = data.get('answers', {})
-    attempt.answers = answers
-    
-    # Grade the quiz
-    total_questions = len(attempt.quiz.questions)
-    correct_answers = 0
-    for question in attempt.quiz.questions:
-        correct_choice = next((c for c in question.choices if c.get('is_correct')), None)
-        user_answer_id = answers.get(str(question.id))
-        if correct_choice and user_answer_id is not None and int(user_answer_id) == correct_choice.get('id'):
-            correct_answers += 1
-            
-    attempt.score = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
-    attempt.end_time = datetime.utcnow()
-    db.session.commit()
-
-    return jsonify({"success": True, "attempt": {"id": attempt.id, "score": attempt.score}})
-
-# --- BILLING (MOCKED) ---
 @app.route('/api/create-checkout-session', methods=['POST'])
 @login_required
 def create_checkout_session():
-    # Mocked response. In a real app, you'd use the Stripe library here.
-    logging.info(f"User {current_user.username} is attempting to upgrade.")
-    return jsonify({"success": True, "sessionId": "cs_test_MOCKEDSESSIONID"})
+    data = request.json
+    session = stripe.checkout.Session.create(
+        payment_method_types=['card'],
+        line_items=[{'price': data['price_id'], 'quantity': 1}],
+        mode='subscription',
+        success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/success',
+        cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/cancel',
+        customer_email=current_user.email
+    )
+    return jsonify(success=True, session_id=session.id)
 
-@app.route('/api/create-customer-portal-session', methods=['POST'])
+@app.route('/api/create-portal-session', methods=['POST'])
 @login_required
-def create_customer_portal_session():
-    # Mocked response.
-    logging.info(f"User {current_user.username} is attempting to manage their billing.")
-    return jsonify({"success": True, "url": "https://mocked.stripe.portal/session"})
+def create_portal_session():
+    # Assume user has stripe_customer_id
+    session = stripe.billing_portal.Session.create(
+        customer=current_user.stripe_customer_id,  # Add this field to User model
+        return_url=SITE_CONFIG['YOUR_DOMAIN']
+    )
+    return jsonify(success=True, url=session.url)
 
-# --- NOTIFICATIONS ---
-@app.route('/api/notifications', methods=['GET'])
+@app.route('/api/notifications')
 @login_required
 def get_notifications():
-    notifications = Notification.query.filter_by(user_id=current_user.id).order_by(desc(Notification.timestamp)).limit(20).all()
-    notif_list = [{
-        "id": n.id,
-        "content": n.content,
-        "is_read": n.is_read,
-        "timestamp": n.timestamp.isoformat()
-    } for n in notifications]
-    return jsonify({"success": True, "notifications": notif_list})
+    notifs = current_user.notifications.order_by(Notification.timestamp.desc()).all()
+    return jsonify(success=True, notifications=[{'id': n.id, 'content': n.content, 'is_read': n.is_read, 'timestamp': n.timestamp.isoformat()} for n in notifs])
+
+@app.route('/api/notifications/unread_count')
+@login_required
+def unread_notifications_count():
+    count = current_user.notifications.filter_by(is_read=False).count()
+    return jsonify(success=True, count=count)
 
 @app.route('/api/notifications/mark_read', methods=['POST'])
 @login_required
 def mark_notifications_read():
-    data = request.get_json()
-    ids_to_mark = data.get('ids', [])
-    if ids_to_mark:
-        Notification.query.filter(Notification.id.in_(ids_to_mark), Notification.user_id == current_user.id).update({"is_read": True}, synchronize_session=False)
-        db.session.commit()
-    return jsonify({"success": True})
+    for n in current_user.notifications.filter_by(is_read=False).all():
+        n.is_read = True
+    db.session.commit()
+    return jsonify(success=True)
 
-# --- ADMIN ---
-@app.route('/api/admin/dashboard_data', methods=['GET'])
+@app.route('/api/admin/dashboard_data')
 @admin_required
-def get_admin_dashboard_data():
+def admin_dashboard_data():
     stats = {
-        "total_users": User.query.count(),
-        "total_classes": Class.query.count(),
-        "total_teachers": User.query.filter_by(role='teacher').count(),
-        "total_students": User.query.filter_by(role='student').count()
+        'total_users': User.query.count(),
+        'total_classes': Class.query.count(),
+        'total_teams': Team.query.count(),
+        'active_subscriptions': User.query.filter_by(has_subscription=True).count()
     }
-    users = [u.to_dict() for u in User.query.all()]
-    classes = [{
-        "id": c.id,
-        "name": c.name,
-        "teacher_name": c.teacher.username,
-        "code": c.code,
-        "student_count": c.students.count()
-    } for c in Class.query.all()]
+    users = [{'id': u.id, 'username': u.username, 'email': u.email, 'role': u.role, 'created_at': u.created_at.isoformat()} for u in User.query.all()]
+    classes = [{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code, 'student_count': c.students.count()} for c in Class.query.all()]
     settings = {s.key: s.value for s in SiteSettings.query.all()}
-    
-    return jsonify({
-        "success": True,
-        "stats": stats,
-        "users": users,
-        "classes": classes,
-        "settings": settings
-    })
+    return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
 
-@app.route('/api/admin/user/<string:user_id>', methods=['DELETE'])
+@app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_user(user_id):
-    user_to_delete = User.query.get_or_404(user_id)
-    if user_to_delete.role == 'admin':
-        return jsonify({"error": "Cannot delete an admin account."}), 403
-    db.session.delete(user_to_delete)
+    user = User.query.get_or_404(user_id)
+    db.session.delete(user)
     db.session.commit()
-    return jsonify({"success": True, "message": f"User {user_to_delete.username} deleted."})
+    return jsonify(success=True)
 
-@app.route('/api/admin/class/<string:class_id>', methods=['DELETE'])
+@app.route('/api/admin/classes/<class_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_class(class_id):
-    class_to_delete = Class.query.get_or_404(class_id)
-    db.session.delete(class_to_delete)
+    cls = Class.query.get_or_404(class_id)
+    db.session.delete(cls)
     db.session.commit()
-    return jsonify({"success": True, "message": f"Class {class_to_delete.name} deleted."})
+    return jsonify(success=True)
 
 @app.route('/api/admin/update_settings', methods=['POST'])
 @admin_required
 def admin_update_settings():
-    data = request.get_json()
+    data = request.json
     for key, value in data.items():
-        setting = SiteSettings.query.filter_by(key=key).first()
-        if setting:
-            setting.value = value
-        else:
-            db.session.add(SiteSettings(key=key, value=value))
+        setting = SiteSettings.query.get(key)
+        if not setting:
+            setting = SiteSettings(key=key)
+            db.session.add(setting)
+        setting.value = value
     db.session.commit()
-    return jsonify({"success": True, "message": "Settings updated."})
+    return jsonify(success=True)
 
 @app.route('/api/admin/toggle_maintenance', methods=['POST'])
 @admin_required
-def toggle_maintenance():
-    setting = SiteSettings.query.filter_by(key='maintenance_mode').first()
-    if setting:
-        setting.value = 'false' if setting.value == 'true' else 'true'
-        message = f"Maintenance mode {'disabled' if setting.value == 'false' else 'enabled'}."
-    else:
-        db.session.add(SiteSettings(key='maintenance_mode', value='true'))
-        message = "Maintenance mode enabled."
+def admin_toggle_maintenance():
+    setting = SiteSettings.query.get('maintenance')
+    if not setting:
+        setting = SiteSettings(key='maintenance', value='false')
+        db.session.add(setting)
+    setting.value = 'true' if setting.value == 'false' else 'false'
     db.session.commit()
-    return jsonify({"success": True, "message": message})
+    return jsonify(success=True, enabled=setting.value == 'true')
 
-# --- CONTACT ---
-@app.route('/api/contact', methods=['POST'])
-def contact():
-    data = request.get_json()
-    name = data.get('name')
-    email = data.get('email')
-    message = data.get('message')
-    if not all([name, email, message]):
-        return jsonify({"error": "All fields are required."}), 400
-
-    support_email = SITE_CONFIG.get('SUPPORT_EMAIL')
-    if not support_email or not app.config.get('MAIL_SERVER'):
-        logging.error("Contact feature is not configured. MAIL_SERVER or SUPPORT_EMAIL is missing.")
-        # Return success to the user, but log the error, so the app doesn't look broken
-        return jsonify({"success": True, "message": "Your message has been received!"})
-
-    try:
-        msg = Message(
-            subject=f"New Contact Form Message from {name}",
-            recipients=[support_email],
-            body=f"From: {name} <{email}>\n\n{message}"
-        )
+@app.route('/api/request-password-reset', methods=['POST'])
+def request_password_reset():
+    data = request.json
+    user = User.query.filter_by(email=data['email']).first()
+    if user:
+        token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
+        msg = Message('Password Reset Request', recipients=[user.email])
+        msg.body = f'Click here to reset: {SITE_CONFIG["YOUR_DOMAIN"]}/reset/{token}'
         mail.send(msg)
-        return jsonify({"success": True, "message": "Your message has been sent!"})
-    except Exception as e:
-        logging.error(f"Failed to send contact email: {e}")
-        return jsonify({"error": "Could not send message at this time."}), 500
+    return jsonify(success=True, message='If an account exists, a reset email has been sent.')
 
-# ==============================================================================
-# --- 6. SOCKET.IO EVENTS ---
-# ==============================================================================
+# SocketIO events
 @socketio.on('join')
 def on_join(data):
-    room = data['room']
-    join_room(room)
-    logging.info(f"User {current_user.username} joined room {room}")
+    join_room(data['room'])
 
 @socketio.on('leave')
 def on_leave(data):
-    room = data['room']
-    leave_room(room)
-    logging.info(f"User {current_user.username} left room {room}")
+    leave_room(data['room'])
 
 @socketio.on('send_message')
-def handle_send_message(data):
-    class_id = data['class_id']
-    message_content = data['message']
-    
-    new_message = ChatMessage(class_id=class_id, sender_id=current_user.id, content=message_content)
-    db.session.add(new_message)
+def on_send_message(data):
+    msg = ChatMessage(class_id=data['class_id'], sender_id=current_user.id, content=data['message'])
+    db.session.add(msg)
     db.session.commit()
-    
     emit('new_message', {
-        'class_id': class_id,
-        'sender_id': current_user.id,
+        'id': msg.id,
+        'class_id': msg.class_id,
+        'sender_id': msg.sender_id,
         'sender_name': current_user.username,
-        'sender_avatar': current_user.avatar,
-        'content': message_content,
-        'timestamp': new_message.timestamp.isoformat()
-    }, room=f'class_{class_id}')
+        'sender_avatar': current_user.profile.avatar if current_user.profile else None,
+        'content': msg.content,
+        'timestamp': msg.timestamp.isoformat()
+    }, room=f'class_{data["class_id"]}')
 
-# ==============================================================================
-# --- 7. APP INITIALIZATION & EXECUTION ---
-# ==============================================================================
-def initialize_app_database():
-    with app.app_context():
-        db.create_all()
-        if not User.query.filter_by(username='big ballz').first():
-            admin_pass = os.environ.get('ADMIN_PASSWORD', 'supersecret')
-            admin_email = os.environ.get('ADMIN_EMAIL', 'admin@myth.ai')
-            admin = User(username='big ballz', email=admin_email, password_hash=generate_password_hash(admin_pass), role='admin')
-            db.session.add(admin)
-        if not SiteSettings.query.filter_by(key='maintenance_mode').first():
-            db.session.add(SiteSettings(key='maintenance_mode', value='false'))
-        db.session.commit()
-
+# Run the app
 if __name__ == '__main__':
-    initialize_app_database()
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=True)
-
-
-
-
-
-
-
-
-
-
-
-
+    db.create_all()
+    socketio.run(app, debug=True)

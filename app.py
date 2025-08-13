@@ -380,27 +380,35 @@ HTML_CONTENT = """
         
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
         
-        async function apiCall(endpoint, options = {}) { 
-            try { 
-                if (options.body && typeof options.body === 'object') { 
-                    options.headers = { 'Content-Type': 'application/json', ...options.headers }; 
-                    options.body = JSON.stringify(options.body); 
-                } 
-                const response = await fetch(`${BASE_URL}/api${endpoint}`, { 
+        async function apiCall(endpoint, options = {}) {
+            try {
+                if (options.body && typeof options.body === 'object') {
+                    options.headers = { 'Content-Type': 'application/json', ...options.headers };
+                    options.body = JSON.stringify(options.body);
+                }
+                const response = await fetch(`${BASE_URL}/api${endpoint}`, {
                     credentials: 'include',
-                    ...options 
-                }); 
-                const data = await response.json(); 
-                if (!response.ok) { 
-                    if (response.status === 401 && endpoint !== '/status') handleLogout(false); 
-                    throw new Error(data.error || `Request failed with status ${response.status}`); 
-                } 
-                return { success: true, ...data }; 
-            } catch (error) { 
-                showToast(error.message, 'error'); 
-                console.error("API Call Error:", error); 
-                return { success: false, error: error.message }; 
-            } 
+                    ...options
+                });
+
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    const data = await response.json();
+                    if (!response.ok) {
+                        if (response.status === 401 && endpoint !== '/status') handleLogout(false);
+                        throw new Error(data.error || `Request failed with status ${response.status}`);
+                    }
+                    return { success: true, ...data };
+                } else {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`);
+                }
+
+            } catch (error) {
+                showToast(error.message, 'error');
+                console.error("API Call Error:", error);
+                return { success: false, error: error.message };
+            }
         }
 
         function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) { console.error(`Template ${templateId} not found.`); return; } const content = template.content.cloneNode(true); DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(content); if (setupFunction) setupFunction(); }
@@ -1501,6 +1509,7 @@ if __name__ == '__main__':
     initialize_app_database()
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=True)
+
 
 
 

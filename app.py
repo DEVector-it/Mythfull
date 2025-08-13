@@ -279,6 +279,16 @@ HTML_CONTENT = """
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .ai-message .chat-bubble { background-color: #2E1A47; border-color: #8B5CF6; }
         .user-message .chat-bubble { background-color: #1E40AF; border-color: #3B82F6; }
+        .full-screen-loader {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: flex; align-items: center; justify-content: center;
+            flex-direction: column;
+            z-index: 1001;
+            transition: opacity 0.3s ease;
+        }
+        .full-screen-loader .waiting-text { margin-top: 1rem; font-size: 1.5rem; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     </style>
 </head>
 <body class="text-gray-200 antialiased">
@@ -295,6 +305,14 @@ HTML_CONTENT = """
                 <p class="text-gray-300 mb-6">Your journey into AI-powered learning begins now.</p>
                 <button id="get-started-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Get Started</button>
             </div>
+        </div>
+        <audio id="welcome-audio" src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" preload="auto"></audio>
+    </template>
+    
+    <template id="template-full-screen-loader">
+        <div class="full-screen-loader fade-in">
+            <div class="loader"></div>
+            <div class="waiting-text">Preparing your adventure...</div>
         </div>
     </template>
 
@@ -398,6 +416,13 @@ HTML_CONTENT = """
         
         document.getElementById('current-year').textContent = new Date().getFullYear();
 
+        function playAudio(id) {
+            const audio = document.getElementById(id);
+            if (audio) {
+                audio.play().catch(e => console.error("Audio playback failed:", e));
+            }
+        }
+        
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
         
         function escapeHtml(text) {
@@ -447,6 +472,20 @@ HTML_CONTENT = """
         function showModal(content, setupFunction, maxWidth = 'max-w-2xl') { const template = document.getElementById('template-modal').content.cloneNode(true); const modalBody = template.querySelector('.modal-body'); if(typeof content === 'string') { modalBody.innerHTML = content; } else { modalBody.innerHTML = ''; modalBody.appendChild(content); } template.querySelector('.modal-content').classList.replace('max-w-2xl', maxWidth); template.querySelector('button').addEventListener('click', hideModal); DOMElements.modalContainer.innerHTML = ''; DOMElements.modalContainer.appendChild(template); if(setupFunction) setupFunction(DOMElements.modalContainer); }
         function hideModal() { DOMElements.modalContainer.innerHTML = ''; }
         
+        function showFullScreenLoader(message = 'Loading...') {
+            const loaderTemplate = document.getElementById('template-full-screen-loader');
+            const loaderContent = loaderTemplate.content.cloneNode(true);
+            loaderContent.querySelector('.waiting-text').textContent = message;
+            DOMElements.appContainer.innerHTML = '';
+            DOMElements.appContainer.appendChild(loaderContent);
+        }
+
+        function hideFullScreenLoader() {
+            // This is a simple hide, you might need a more complex transition
+            // depending on what's next. For now, let's just clear the container.
+            DOMElements.appContainer.innerHTML = '';
+        }
+
         function connectSocket() { 
             if (appState.socket) appState.socket.disconnect(); 
             appState.socket = io(BASE_URL); 
@@ -788,11 +827,22 @@ HTML_CONTENT = """
         }
 
         async function main() {
+            showFullScreenLoader('Connecting to server...');
             const status = await apiCall('/status');
+            hideFullScreenLoader();
+
             if (status.success && status.user) {
                 initializeApp(status.user, status.settings);
             } else {
-                setupRoleChoicePage();
+                renderPage('template-welcome-anime', () => {
+                    const getStartedBtn = document.getElementById('get-started-btn');
+                    if (getStartedBtn) {
+                        getStartedBtn.addEventListener('click', () => {
+                            setupRoleChoicePage();
+                        });
+                    }
+                    playAudio('welcome-audio');
+                });
             }
         }
 

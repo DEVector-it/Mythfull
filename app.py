@@ -6,7 +6,7 @@ import time
 import uuid
 import secrets
 import requests
-from flask import Flask, Response, request, session, jsonify, redirect, url_for
+from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from datetime import datetime, date, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -21,6 +21,7 @@ from sqlalchemy import event, or_, func, desc
 from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
@@ -49,7 +50,7 @@ SITE_CONFIG = {
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
     "GEMINI_API_KEY": os.environ.get('GEMINI_API_KEY'),
-    "SUPPORT_EMAIL": os.environ.get('SUPPORT_EMAIL')
+    "SUPPORT_EMAIL": os.environ.get('MAIL_SENDER')
 }
 
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
@@ -92,6 +93,7 @@ class User(UserMixin, db.Model):
     role = db.Column(db.String(20), nullable=False, default='student')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     has_subscription = db.Column(db.Boolean, default=False)
+    stripe_customer_id = db.Column(db.String(120), nullable=True, index=True)
     
     # Relationships
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
@@ -278,6 +280,9 @@ HTML_CONTENT = """
     <div id="app-container" class="relative h-screen w-screen overflow-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
     <div id="modal-container"></div>
+    <div class="fixed bottom-4 left-4 text-xs text-gray-500">
+        &copy; <span id="current-year"></span> Made by DeVector and Hossein
+    </div>
     <template id="template-welcome-anime">
         <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://placehold.co/1920x1080/0F172A/FFFFFF?text=Anime+Background');">
             <div class="glassmorphism p-8 rounded-xl text-center">
@@ -367,7 +372,7 @@ HTML_CONTENT = """
     <template id="template-class-students-view"><h5 class="text-xl font-semibold text-white mb-4">Enrolled Students</h5><ul id="class-students-list" class="space-y-2"></ul></template>
     <template id="template-profile"><h3 class="text-3xl font-bold text-white mb-6">Customize Profile</h3><form id="profile-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label><textarea id="bio" name="bio" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" rows="4"></textarea></div><div class="mb-4"><label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label><input type="url" id="avatar" name="avatar" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Profile</button></form></template>
     <template id="template-billing"><h3 class="text-3xl font-bold text-white mb-6">Billing & Plans</h3><div id="billing-content" class="glassmorphism p-6 rounded-lg"></div></template>
-    <template id="template-admin-dashboard"><h3 class="text-3xl font-bold text-white mb-6">Admin Panel</h3><div id="admin-stats" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="users">Users</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="classes">Classes</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="settings">Settings</button></div><div id="admin-view-content"></div></template>
+    <template id="template-admin-dashboard"><h3 class="text-3xl font-bold text-white mb-6">Admin Panel</h3><div id="admin-stats" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="users">Users</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="classes">Classes</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="settings">Settings</button></div><div id="admin-view-content"></div></main></div></template>
     <template id="template-admin-users-view"><h4 class="text-xl font-bold text-white mb-4">User Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Username</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Created At</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-user-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
     <template id="template-admin-classes-view"><h4 class="text-xl font-bold text-white mb-4">Class Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Name</th><th class="p-3">Teacher</th><th class="p-3">Code</th><th class="p-3">Students</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-class-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
     <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label class="block text-sm font-medium text-gray-300 mb-1">Maintenance Mode</label><button type="button" id="maintenance-toggle-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">Toggle Maintenance Mode</button></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
@@ -386,8 +391,21 @@ HTML_CONTENT = """
         const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null };
         const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container') };
         
+        document.getElementById('current-year').textContent = new Date().getFullYear();
+
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
         
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+        }
+
         async function apiCall(endpoint, options = {}) {
             try {
                 if (options.body && typeof options.body === 'object') {
@@ -624,11 +642,11 @@ HTML_CONTENT = """
             if (!result.success) return;
             const team = result.team;
             let modalContent = `
-                <h3 class="text-2xl font-bold text-white mb-2">${team.name}</h3>
-                <p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${team.code}</span></p>
+                <h3 class="text-2xl font-bold text-white mb-2">${escapeHtml(team.name)}</h3>
+                <p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></p>
                 <h4 class="text-lg font-semibold text-white mb-2">Members</h4>
                 <ul class="space-y-2">
-                    ${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`}" class="w-8 h-8 rounded-full"><span>${m.username} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}
+                    ${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(m.username)} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}
                 </ul>`;
             showModal(modalContent);
         }
@@ -648,22 +666,22 @@ HTML_CONTENT = """
             if (!name) return showToast('Please enter a team name.', 'error');
             const result = await apiCall('/teams', { method: 'POST', body: { name } });
             if (result.success) {
-                showToast(`Team "${result.team.name}" created!`, 'success');
+                showToast(`Team "${escapeHtml(result.team.name)}" created!`, 'success');
                 setupTeamModeTab(document.getElementById('dashboard-content'));
             }
         }
 
         function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
         function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription. Manage your subscription, view invoices, and update payment methods through the customer portal.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for unlimited AI interactions and more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
-        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p><p class="text-2xl font-bold">${value}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
-        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${u.username}</td><td class="p-3">${u.email}</td><td class="p-3">${u.role}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${c.name}</td><td class="p-3">${c.teacher_name}</td><td class="p-3">${c.code}</td><td class="p-3">${c.student_count}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } }
+        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(value)}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
+        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(c.student_count)}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } }
         
         async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
         async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
         async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
-        async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
-        async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = appState.selectedClass.name; document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
-        function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${a.title}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${a.submission_count} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${q.title}</h6><span class="text-sm text-gray-400">${q.time_limit} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${q.student_attempt.score.toFixed(2)}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`}" class="w-8 h-8 rounded-full"><span>${s.username}</span></li>`).join(''); }); } }
+        async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
+        async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
+        function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(a.submission_count)} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(q.time_limit)} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); }); } }
         
         async function handleSendChat(e) {
             e.preventDefault();
@@ -732,13 +750,13 @@ HTML_CONTENT = """
             const msgWrapper = document.createElement('div');
             msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`;
             
-            const avatar = `<img src="${message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`)}" class="w-8 h-8 rounded-full">`;
+            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`;
             
             const bubble = `
                 <div class="flex flex-col">
-                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${message.sender_name || (isAI ? 'AI Assistant' : 'User')}</span>
+                    <span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span>
                     <div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">
-                        ${message.content}
+                        ${escapeHtml(message.content)}
                     </div>
                     <span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span>
                 </div>
@@ -784,7 +802,7 @@ HTML_CONTENT = """
             const result = await apiCall('/notifications');
             if (!result.success) return;
             const modalContent = document.createElement('div');
-            modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${n.content} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`;
+            modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`;
             showModal(modalContent);
             await apiCall('/notifications/mark_read', { method: 'POST' });
             updateNotificationBell();
@@ -882,6 +900,49 @@ HTML_CONTENT = """
 def index():
     return HTML_CONTENT
 
+@app.route('/reset/<token>')
+def reset_password_page(token):
+    try:
+        # Check if the token is valid and not expired
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)
+    except (SignatureExpired, BadTimeSignature):
+        return render_template_string("<h1>Password reset link is expired or invalid.</h1><p>Please request a new one.</p>")
+
+    # Return a simple page with a form to reset the password
+    return render_template_string(f"""
+        <h1>Reset Your Password</h1>
+        <form id="reset-form">
+            <input type="hidden" name="token" value="{token}">
+            <input type="password" name="password" placeholder="New Password" required>
+            <input type="password" name="confirm_password" placeholder="Confirm Password" required>
+            <button type="submit">Reset Password</button>
+        </form>
+        <div id="message"></div>
+        <script>
+            document.getElementById('reset-form').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const password = form.password.value;
+                const confirm_password = form.confirm_password.value;
+                const token = form.token.value;
+
+                if (password !== confirm_password) {{
+                    document.getElementById('message').textContent = 'Passwords do not match.';
+                    return;
+                }}
+
+                const response = await fetch('/api/reset-password', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ token, password }})
+                }});
+                const result = await response.json();
+                document.getElementById('message').textContent = result.message || result.error;
+            }});
+        </script>
+    """)
+
+
 # ==============================================================================
 # --- 5. API ROUTES ---
 # ==============================================================================
@@ -905,24 +966,31 @@ def signup():
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         return jsonify(error='Invalid teacher key'), 403
     
-    # New check for admin signup
     if data['account_type'] == 'admin':
         return jsonify(error='Admin accounts cannot be created via signup.'), 403
 
-    hashed_pw = generate_password_hash(data['password'])
-    user = User(
-        username=data['username'],
-        email=data['email'],
-        password_hash=hashed_pw,
-        role=data['account_type']
-    )
-    db.session.add(user)
-    db.session.flush()
+    try:
+        hashed_pw = generate_password_hash(data['password'])
+        user = User(
+            username=data['username'],
+            email=data['email'],
+            password_hash=hashed_pw,
+            role=data['account_type']
+        )
+        db.session.add(user)
+        db.session.flush()
 
-    profile = Profile(user_id=user.id)
-    db.session.add(profile)
+        profile = Profile(user_id=user.id)
+        db.session.add(profile)
 
-    db.session.commit()
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify(error='A user with that username or email already exists.'), 409
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error during signup: {str(e)}")
+        return jsonify(error='An error occurred during account creation. Please try again.'), 500
 
     login_user(user)
     return jsonify(success=True, user=user.to_dict())
@@ -941,9 +1009,14 @@ def login():
         return jsonify(error='Invalid admin key'), 403
 
     if not user.profile:
-        profile = Profile(user_id=user.id)
-        db.session.add(profile)
-        db.session.commit()
+        try:
+            profile = Profile(user_id=user.id)
+            db.session.add(profile)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Error creating profile on login: {str(e)}")
+            return jsonify(error='An internal server error occurred.'), 500
 
     login_user(user)
     return jsonify(success=True, user=user.to_dict())
@@ -972,27 +1045,37 @@ def my_classes():
 @teacher_required
 def create_class():
     data = request.json
-    code = secrets.token_hex(4).upper()
-    cls = Class(name=data['name'], code=code, teacher_id=current_user.id)
-    db.session.add(cls)
-    db.session.commit()
-    return jsonify(success=True, class_={'id': cls.id, 'name': cls.name, 'code': cls.code})
+    try:
+        code = secrets.token_hex(4).upper()
+        cls = Class(name=data['name'], code=code, teacher_id=current_user.id)
+        db.session.add(cls)
+        db.session.commit()
+        return jsonify(success=True, class_={'id': cls.id, 'name': cls.name, 'code': cls.code})
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error creating class: {str(e)}")
+        return jsonify(error='Could not create class.'), 500
 
 @app.route('/api/join_class', methods=['POST'])
 @login_required
 def join_class():
     data = request.json
-    cls = Class.query.filter_by(code=data['code'].upper()).first()
-    if not cls:
-        return jsonify(error='Invalid class code'), 404
-    current_user.enrolled_classes.append(cls)
-    db.session.commit()
-    return jsonify(success=True, message='Joined class')
+    try:
+        cls = Class.query.filter_by(code=data['code'].upper()).first()
+        if not cls:
+            return jsonify(error='Invalid class code'), 404
+        current_user.enrolled_classes.append(cls)
+        db.session.commit()
+        return jsonify(success=True, message='Joined class')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error joining class: {str(e)}")
+        return jsonify(error='Could not join class.'), 500
 
 @app.route('/api/classes/<class_id>')
 @login_required
 def get_class(class_id):
-    cls = Class.query.get_or_404(class_id)
+    cls = Class.query.options(db.joinedload(Class.students).subqueryload(User.profile)).get_or_404(class_id)
     # Add authorization check if needed
     return jsonify(success=True, class_={
         'id': cls.id,
@@ -1003,7 +1086,6 @@ def get_class(class_id):
 @app.route('/api/class_messages/<class_id>')
 @login_required
 def get_class_messages(class_id):
-    # Fetch messages, add authorization
     messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp).all()
     return jsonify(success=True, messages=[{
         'id': m.id,
@@ -1021,11 +1103,16 @@ def generate_ai_response():
     # Implement AI response generation using GEMINI_API_KEY
     # For placeholder:
     ai_response = "AI response to: " + data['prompt']
-    msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
-    db.session.add(msg)
-    db.session.commit()
-    socketio.emit('new_message', {'class_id': data['class_id'], 'message': ai_response}, room=f'class_{data["class_id"]}')
-    return jsonify(success=True)
+    try:
+        msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
+        db.session.add(msg)
+        db.session.commit()
+        socketio.emit('new_message', {'class_id': data['class_id'], 'message': ai_response}, room=f'class_{data["class_id"]}')
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error generating AI response: {str(e)}")
+        return jsonify(error='Could not generate AI response.'), 500
 
 @app.route('/api/teams')
 @login_required
@@ -1043,28 +1130,38 @@ def get_teams():
 @login_required
 def create_team():
     data = request.json
-    code = secrets.token_hex(4).upper()
-    team = Team(name=data['name'], code=code, owner_id=current_user.id)
-    db.session.add(team)
-    team.members.append(current_user)
-    db.session.commit()
-    return jsonify(success=True, team={'id': team.id, 'name': team.name, 'code': team.code})
+    try:
+        code = secrets.token_hex(4).upper()
+        team = Team(name=data['name'], code=code, owner_id=current_user.id)
+        db.session.add(team)
+        team.members.append(current_user)
+        db.session.commit()
+        return jsonify(success=True, team={'id': team.id, 'name': team.name, 'code': team.code})
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error creating team: {str(e)}")
+        return jsonify(error='Could not create team.'), 500
 
 @app.route('/api/join_team', methods=['POST'])
 @login_required
 def join_team():
     data = request.json
-    team = Team.query.filter_by(code=data['code'].upper()).first()
-    if not team:
-        return jsonify(error='Invalid team code'), 404
-    team.members.append(current_user)
-    db.session.commit()
-    return jsonify(success=True, message='Joined team')
+    try:
+        team = Team.query.filter_by(code=data['code'].upper()).first()
+        if not team:
+            return jsonify(error='Invalid team code'), 404
+        current_user.members.append(team)
+        db.session.commit()
+        return jsonify(success=True, message='Joined team')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error joining team: {str(e)}")
+        return jsonify(error='Could not join team.'), 500
 
 @app.route('/api/teams/<team_id>')
 @login_required
 def get_team(team_id):
-    team = Team.query.get_or_404(team_id)
+    team = Team.query.options(db.joinedload(Team.members).subqueryload(User.profile)).get_or_404(team_id)
     # Authorization check
     return jsonify(success=True, team={
         'id': team.id,
@@ -1078,39 +1175,86 @@ def get_team(team_id):
 @login_required
 def update_profile():
     data = request.json
-    if not current_user.profile:
-        profile = Profile(user_id=current_user.id)
-        db.session.add(profile)
-    else:
-        profile = current_user.profile
-    profile.bio = data['bio']
-    profile.avatar = data['avatar']
-    db.session.commit()
-    return jsonify(success=True, profile={'bio': profile.bio, 'avatar': profile.avatar})
+    try:
+        if not current_user.profile:
+            profile = Profile(user_id=current_user.id)
+            db.session.add(profile)
+        else:
+            profile = current_user.profile
+        profile.bio = data['bio']
+        profile.avatar = data['avatar']
+        db.session.commit()
+        return jsonify(success=True, profile={'bio': profile.bio, 'avatar': profile.avatar})
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error updating profile: {str(e)}")
+        return jsonify(error='Could not update profile.'), 500
 
 @app.route('/api/create-checkout-session', methods=['POST'])
 @login_required
 def create_checkout_session():
     data = request.json
-    session = stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=[{'price': data['price_id'], 'quantity': 1}],
-        mode='subscription',
-        success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/success',
-        cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/cancel',
-        customer_email=current_user.email
-    )
-    return jsonify(success=True, session_id=session.id)
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{'price': data['price_id'], 'quantity': 1}],
+            mode='subscription',
+            success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/success',
+            cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/cancel',
+            customer_email=current_user.email
+        )
+        return jsonify(success=True, session_id=session.id)
+    except Exception as e:
+        logging.error(f"Stripe Checkout Session Error: {str(e)}")
+        return jsonify(error='Could not create checkout session.'), 500
 
 @app.route('/api/create-portal-session', methods=['POST'])
 @login_required
 def create_portal_session():
-    # Assume user has stripe_customer_id
-    session = stripe.billing_portal.Session.create(
-        customer=current_user.stripe_customer_id,  # Add this field to User model
-        return_url=SITE_CONFIG['YOUR_DOMAIN']
-    )
-    return jsonify(success=True, url=session.url)
+    if not current_user.stripe_customer_id:
+        return jsonify(error='User does not have a Stripe customer ID.'), 400
+    
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=current_user.stripe_customer_id,
+            return_url=SITE_CONFIG['YOUR_DOMAIN']
+        )
+        return jsonify(success=True, url=session.url)
+    except Exception as e:
+        logging.error(f"Stripe Portal Session Error: {str(e)}")
+        return jsonify(error='Could not create billing portal session.'), 500
+
+@app.route('/stripe_webhooks', methods=['POST'])
+def stripe_webhooks():
+    # Placeholder for a complete Stripe webhook handler
+    # This is a critical security feature and needs to be fully implemented
+    #
+    # event = None
+    # payload = request.data
+    # sig_header = request.headers['STRIPE_SIGNATURE']
+    #
+    # try:
+    #     event = stripe.Webhook.construct_event(
+    #         payload, sig_header, SITE_CONFIG['STRIPE_WEBHOOK_SECRET']
+    #     )
+    # except ValueError as e:
+    #     return 'Invalid payload', 400
+    # except stripe.error.SignatureVerificationError as e:
+    #     return 'Invalid signature', 400
+    #
+    # # Handle the event based on its type
+    # if event['type'] == 'checkout.session.completed':
+    #     session = event['data']['object']
+    #     customer_email = session.get('customer_details', {}).get('email')
+    #     customer_id = session.get('customer')
+    #     user = User.query.filter_by(email=customer_email).first()
+    #     if user:
+    #         user.has_subscription = True
+    #         user.stripe_customer_id = customer_id
+    #         db.session.commit()
+    #     # ... handle other events like subscription.updated, etc.
+    # return jsonify(success=True)
+    return jsonify(success=True)
 
 @app.route('/api/notifications')
 @login_required
@@ -1127,10 +1271,15 @@ def unread_notifications_count():
 @app.route('/api/notifications/mark_read', methods=['POST'])
 @login_required
 def mark_notifications_read():
-    for n in current_user.notifications.filter_by(is_read=False).all():
-        n.is_read = True
-    db.session.commit()
-    return jsonify(success=True)
+    try:
+        for n in current_user.notifications.filter_by(is_read=False).all():
+            n.is_read = True
+        db.session.commit()
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error marking notifications as read: {str(e)}")
+        return jsonify(error='Could not update notifications.'), 500
 
 @app.route('/api/admin/dashboard_data')
 @admin_required
@@ -1149,41 +1298,62 @@ def admin_dashboard_data():
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_user(user_id):
-    user = User.query.get_or_404(user_id)
-    db.session.delete(user)
-    db.session.commit()
-    return jsonify(success=True)
+    try:
+        user = User.query.get_or_404(user_id)
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error deleting user: {str(e)}")
+        return jsonify(error='Could not delete user.'), 500
 
 @app.route('/api/admin/classes/<class_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_class(class_id):
-    cls = Class.query.get_or_404(class_id)
-    db.session.delete(cls)
-    db.session.commit()
-    return jsonify(success=True)
+    try:
+        cls = Class.query.get_or_404(class_id)
+        db.session.delete(cls)
+        db.session.commit()
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error deleting class: {str(e)}")
+        return jsonify(error='Could not delete class.'), 500
 
 @app.route('/api/admin/update_settings', methods=['POST'])
 @admin_required
 def admin_update_settings():
     data = request.json
-    for key, value in data.items():
-        setting = SiteSettings.query.get(key)
-        if not setting:
-            setting = SiteSettings(key=key)
-            db.session.add(setting)
-        setting.value = value
-    db.session.commit()
-    return jsonify(success=True)
+    try:
+        for key, value in data.items():
+            setting = SiteSettings.query.get(key)
+            if not setting:
+                setting = SiteSettings(key=key)
+                db.session.add(setting)
+            setting.value = value
+        db.session.commit()
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error updating settings: {str(e)}")
+        return jsonify(error='Could not update settings.'), 500
 
 @app.route('/api/admin/toggle_maintenance', methods=['POST'])
 @admin_required
 def admin_toggle_maintenance():
-    setting = SiteSettings.query.get('maintenance')
-    if not setting:
-        setting = SiteSettings(key='maintenance', value='false')
-    setting.value = 'true' if setting.value == 'false' else 'false'
-    db.session.commit()
-    return jsonify(success=True, enabled=setting.value == 'true')
+    try:
+        setting = SiteSettings.query.get('maintenance')
+        if not setting:
+            setting = SiteSettings(key='maintenance', value='false')
+            db.session.add(setting)
+        setting.value = 'true' if setting.value == 'false' else 'false'
+        db.session.commit()
+        return jsonify(success=True, enabled=setting.value == 'true')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error toggling maintenance: {str(e)}")
+        return jsonify(error='Could not toggle maintenance mode.'), 500
 
 @app.route('/api/request-password-reset', methods=['POST'])
 def request_password_reset():
@@ -1195,6 +1365,33 @@ def request_password_reset():
         msg.body = f'Click here to reset: {SITE_CONFIG["YOUR_DOMAIN"]}/reset/{token}'
         mail.send(msg)
     return jsonify(success=True, message='If an account exists, a reset email has been sent.')
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    data = request.json
+    token = data.get('token')
+    new_password = data.get('password')
+    
+    if not token or not new_password:
+        return jsonify(error='Missing token or new password.'), 400
+
+    try:
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)
+    except (SignatureExpired, BadTimeSignature):
+        return jsonify(error='The password reset link is invalid or has expired.'), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify(error='User not found.'), 404
+    
+    try:
+        user.password_hash = generate_password_hash(new_password)
+        db.session.commit()
+        return jsonify(success=True, message='Password reset successfully.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error resetting password: {str(e)}")
+        return jsonify(error='Could not reset password. Please try again.'), 500
 
 # SocketIO events
 @socketio.on('join')

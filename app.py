@@ -333,8 +333,8 @@ HTML_CONTENT = """
             --text-secondary-color: #475569;
         }
         .glassmorphism { background: rgba(31, 41, 55, 0.5); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
-        .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(260, 90%, 65%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .brand-gradient-bg { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 55%), hsl(260, 90%, 60%)); }
+        .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(var(--brand-hue), 90%, 65%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .brand-gradient-bg { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 55%), hsl(var(--brand-hue), 90%, 60%)); }
         .shiny-button { transition: all 0.3s ease; box-shadow: 0 0 5px rgba(0,0,0,0.5), 0 0 10px var(--glow-color, #fff) inset; }
         .shiny-button:hover { transform: translateY(-2px); box-shadow: 0 4px 15px hsla(var(--brand-hue), 80%, 50%, 0.4), 0 0 5px var(--glow-color, #fff) inset; }
         .fade-in { animation: fadeIn 0.5s ease-out forwards; } @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
@@ -376,7 +376,7 @@ HTML_CONTENT = """
     <audio id="background-music" loop autoplay></audio>
 
     <template id="template-welcome-anime">
-        <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1920');">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://images.unsplash.com/photo-1557682250-33bd709cbe85?q=80&w=1920');">
             <div class="glassmorphism p-8 rounded-xl text-center">
                 <img src="https://i.ibb.co/pnpb6M3/Myth-AI-Logo-v2.png" alt="Myth AI Logo" class="mx-auto mb-4 h-24 w-auto">
                 <h1 class="text-4xl font-bold text-white mb-4">Welcome to Myth AI!</h1>
@@ -491,22 +491,13 @@ HTML_CONTENT = """
         };
         
         const themes = {
-            dark: {
-                '--bg-dark': '#0F172A',
-                '--bg-med': '#1E293B',
-                '--bg-light': '#334155',
-                '--glow-color': 'hsl(220, 100%, 70%)',
-                '--text-color': '#E2E8F0',
-                '--text-secondary-color': '#94A3B8'
-            },
-            light: {
-                '--bg-dark': '#F1F5F9',
-                '--bg-med': '#E2E8F0',
-                '--bg-light': '#CBD5E1',
-                '--glow-color': 'hsl(200, 90%, 50%)',
-                '--text-color': '#1E293B',
-                '--text-secondary-color': '#475569'
-            },
+            dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
+            light: { '--brand-hue': 200, '--bg-dark': '#F1F5F9', '--bg-med': '#E2E8F0', '--bg-light': '#CBD5E1', '--text-color': '#1E293B', '--text-secondary-color': '#475569' },
+            blue: { '--brand-hue': 210, '--bg-dark': '#0c1d3a', '--bg-med': '#1a2c4e', '--bg-light': '#2e4570', '--text-color': '#dbe8ff', '--text-secondary-color': '#a0b3d1' },
+            purple: { '--brand-hue': 260, '--bg-dark': '#1e1b3b', '--bg-med': '#2d2852', '--bg-light': '#453f78', '--text-color': '#e6e3ff', '--text-secondary-color': '#b8b4d9' },
+            yellow: { '--brand-hue': 45, '--bg-dark': '#3b2f0a', '--bg-med': '#524314', '--bg-light': '#7a6829', '--text-color': '#fffbe6', '--text-secondary-color': '#d9cba5' },
+            orange: { '--brand-hue': 25, '--bg-dark': '#421e08', '--bg-med': '#5c2b0e', '--bg-light': '#8a461e', '--text-color': '#fff2e6', '--text-secondary-color': '#d9bda5' },
+            'date-night': { '--brand-hue': 330, '--bg-dark': '#2b0f20', '--bg-med': '#421c32', '--bg-light': '#63314e', '--text-color': '#ffe3f4', '--text-secondary-color': '#d9b3c9' }
         };
 
         const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null };
@@ -1960,5 +1951,6 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
+
 
 

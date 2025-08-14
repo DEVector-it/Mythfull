@@ -31,11 +31,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
-
-' , and I want you to fix it.
-
+# NOTE: Allowing all origins ('*') is convenient for development but should be
+# restricted to your frontend's actual domain in a production environment for security.
 CORS(app, supports_credentials=True, origins="*")
+
+# NOTE: Disabling the Content Security Policy (CSP) is not recommended for production.
+# A proper CSP should be configured to mitigate risks like Cross-Site Scripting (XSS).
 Talisman(app, content_security_policy=None)
+
 
 # --- Database and App Configuration ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
@@ -111,7 +114,7 @@ class User(UserMixin, db.Model):
     stripe_customer_id = db.Column(db.String(120), nullable=True, index=True)
     ai_persona = db.Column(db.String(500), nullable=True, default=None)
     theme_preference = db.Column(db.String(50), nullable=True, default='dark')
-    
+
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
     taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
@@ -119,7 +122,7 @@ class User(UserMixin, db.Model):
     submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
     quiz_attempts = db.relationship('QuizAttempt', back_populates='student', lazy=True, cascade="all, delete-orphan")
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
-    
+
     def __repr__(self):
         return f'<User {self.username}>'
 
@@ -142,12 +145,12 @@ class User(UserMixin, db.Model):
 
 class Profile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
     bio = db.Column(db.Text, nullable=True)
     avatar = db.Column(db.String(500), nullable=True)
     user = db.relationship('User', back_populates='profile')
     def __repr__(self):
-        return f'<Profile {self.user_id}>'
+        return f'<Profile for User {self.user_id}>'
 
 class Team(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -175,13 +178,13 @@ class Class(db.Model):
 class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
-    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True)
+    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True) # Null for AI messages
     content = db.Column(db.Text, nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     class_obj = db.relationship('Class', back_populates='messages')
     sender = db.relationship('User')
     def __repr__(self):
-        return f'<Message from {self.sender_id}>'
+        return f'<Message from {self.sender_id or "AI"}>'
 
 class Assignment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -212,7 +215,7 @@ class Quiz(db.Model):
     class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    time_limit = db.Column(db.Integer, nullable=False)
+    time_limit = db.Column(db.Integer, nullable=False) # Time in minutes
     class_obj = db.relationship('Class', back_populates='quizzes')
     questions = db.relationship('Question', back_populates='quiz', lazy=True, cascade="all, delete-orphan")
     attempts = db.relationship('QuizAttempt', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
@@ -279,7 +282,7 @@ def load_user(user_id):
 
 @login_manager.unauthorized_handler
 def unauthorized():
-    """Handle unauthorized access."""
+    """Handle unauthorized access for API routes."""
     return jsonify({"error": "Login required.", "logged_in": False}), 401
 
 # --- Decorators for Role-Based Access Control ---
@@ -647,10 +650,16 @@ HTML_CONTENT = """
             usernameInput.value = '';
 
             if (appState.selectedRole === 'admin') {
+                // **NOTE:** Behavior restored as per user request.
+                // The admin username is pre-filled and the field is disabled.
                 usernameInput.value = 'big ballz';
                 usernameInput.disabled = true;
+
+                // Admin accounts cannot be created from the UI, so hide the sign-up toggle.
                 toggleBtn.classList.add('hidden');
+                
                 if(appState.isLoginView) {
+                    // Show the secret key field required for admin login.
                     adminKeyField.classList.remove('hidden');
                     document.getElementById('admin-secret-key').required = true;
                 }
@@ -664,7 +673,7 @@ HTML_CONTENT = """
                 toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>";
                 emailField.classList.add('hidden');
                 document.getElementById('email').required = false;
-            } else {
+            } else { // Signup view
                 subtitle.textContent = 'Create your Account';
                 submitBtn.textContent = 'Sign Up';
                 toggleBtn.innerHTML = "Already have an account? <span class='font-semibold'>Login</span>";
@@ -818,10 +827,7 @@ HTML_CONTENT = """
                 themeSelect.id = 'theme-select';
                 themeSelect.name = 'theme_preference';
                 themeSelect.className = 'w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600';
-                themeSelect.innerHTML = `
-                    <option value="dark">Dark</option>
-                    <option value="light">Light</option>
-                `;
+                themeSelect.innerHTML = Object.keys(themes).map(themeName => `<option value="${themeName}">${themeName.charAt(0).toUpperCase() + themeName.slice(1)}</option>`).join('');
                 themeSelect.value = appState.currentUser.theme_preference || 'dark';
 
                 const themeControl = document.createElement('div');
@@ -853,7 +859,7 @@ HTML_CONTENT = """
             renderSubTemplate(container, 'template-admin-dashboard', async () => {
                 const result = await apiCall('/admin/dashboard_data');
                 if (result.success) { 
-                    document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(value)}</p></div>`).join('');
+                    document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join('');
                 }
                 document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); 
                 switchAdminView('users'); 
@@ -874,13 +880,14 @@ HTML_CONTENT = """
                 }); 
             } else if (view === 'classes') { 
                 renderSubTemplate(container, 'template-admin-classes-view', () => { 
-                    document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(c.student_count)}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); 
+                    document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); 
                     document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); 
                 }); 
             } else if (view === 'settings') { 
                 renderSubTemplate(container, 'template-admin-settings-view', () => { 
                     document.getElementById('setting-announcement').value = result.settings.announcement || ''; 
                     document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; 
+                    document.getElementById('ai-persona-input').value = result.settings.ai_persona || '';
                     document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); 
                     document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); 
                 }); 
@@ -906,7 +913,7 @@ HTML_CONTENT = """
             }
         }
         
-        async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
+        async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
         async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
         async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
@@ -936,7 +943,7 @@ HTML_CONTENT = """
                     const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); 
                     if(result.success) { 
                         if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; 
-                        else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(a.submission_count)} Submissions</span>`}</div>`).join(''); 
+                        else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(String(a.submission_count))} Submissions</span>`}</div>`).join(''); 
                         list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); 
                     } 
                 });
@@ -951,7 +958,7 @@ HTML_CONTENT = """
                     const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); 
                     if(result.success) { 
                         if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; 
-                        else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(q.time_limit)} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); 
+                        else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(String(q.time_limit))} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); 
                         list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); 
                     } 
                 });
@@ -979,9 +986,7 @@ HTML_CONTENT = """
                 if (command === '/persona') settingsKey = 'ai_persona';
 
                 if (settingsKey) {
-                    const endpoint = settingsKey === 'ai_persona' ? '/admin/set_ai_persona' : '/admin/update_settings';
-                    const body = settingsKey === 'ai_persona' ? { persona: value } : { [settingsKey]: value };
-                    const result = await apiCall(endpoint, { method: 'POST', body });
+                    const result = await apiCall('/admin/update_settings', { method: 'POST', body: { [settingsKey]: value } });
                     if (result.success) {
                         showToast(`Admin command successful: ${settingsKey} updated.`, 'success');
                         input.value = '';
@@ -992,29 +997,22 @@ HTML_CONTENT = """
                 return;
             }
 
-            if (!appState.socket) return;
-            
-            const userMessage = {
-                id: 'user-' + Date.now(),
-                class_id: appState.selectedClass.id,
-                sender_id: appState.currentUser.id,
-                sender_name: appState.currentUser.username,
-                sender_avatar: appState.currentUser.profile.avatar,
-                content: message,
-                timestamp: new Date().toISOString()
-            };
-            appendChatMessage(userMessage);
-
             input.value = '';
             input.disabled = true;
             button.disabled = true;
             button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>';
 
-            const result = await apiCall('/generate_ai_response', {
+            // **FIX:** The user message is NO LONGER added to the chat here.
+            // The server will save it and broadcast it back via WebSocket,
+            // which prevents duplicate messages and ensures it's the single source of truth.
+
+            const result = await apiCall('/chat/send', {
                 method: 'POST',
                 body: { prompt: message, class_id: appState.selectedClass.id }
             });
 
+            // The 'new_message' socket events will handle adding messages to the UI.
+            // This block just handles resetting the input field on success or showing an error.
             if (result.success) {
                 input.disabled = false;
                 button.disabled = false;
@@ -1025,8 +1023,8 @@ HTML_CONTENT = """
                     id: 'error-' + Date.now(),
                     class_id: appState.selectedClass.id,
                     sender_id: null,
-                    sender_name: "System",
-                    content: result.error || "Sorry, the AI assistant is currently unavailable.",
+                    sender_name: "System Error",
+                    content: result.error || "Could not send message.",
                     timestamp: new Date().toISOString()
                 };
                 appendChatMessage(errorMsg);
@@ -1046,7 +1044,7 @@ HTML_CONTENT = """
             const msgWrapper = document.createElement('div');
             msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`;
             
-            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? 'https://placehold.co/40x40/8B5CF6/FFFFFF?text=AI' : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`;
+            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? 'https://i.ibb.co/pnpb6M3/Myth-AI-Logo-v2.png' : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`;
             
             const bubble = `
                 <div class="flex flex-col">
@@ -1078,7 +1076,7 @@ HTML_CONTENT = """
 
         async function initializeApp(user, settings) {
             appState.currentUser = user;
-            applyTheme(user.theme_preference);
+            applyTheme(user.theme_preference || 'dark');
             setupDashboard(user, settings);
         }
 
@@ -1109,8 +1107,10 @@ HTML_CONTENT = """
 
         async function updateNotificationBell(hasUnread = false) {
             const dot = document.getElementById('notification-dot');
-            if (hasUnread) dot.classList.remove('hidden');
-            else {
+            if(!dot) return;
+            if (hasUnread) {
+                 dot.classList.remove('hidden');
+            } else {
                 const result = await apiCall('/notifications/unread_count');
                 if (result.success && result.count > 0) dot.classList.remove('hidden');
                 else dot.classList.add('hidden');
@@ -1128,33 +1128,39 @@ HTML_CONTENT = """
         }
 
         async function handleUpgrade() {
+            if (!window.Stripe) {
+                showToast('Stripe.js has not loaded. Please check your connection.', 'error');
+                return;
+            }
             const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY);
             const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } });
-            if (result.success) {
+            if (result.success && result.session_id) {
                 stripe.redirectToCheckout({ sessionId: result.session_id });
             }
         }
 
         async function handleManageBilling() {
             const result = await apiCall('/create-portal-session', { method: 'POST' });
-            if (result.success) {
+            if (result.success && result.url) {
                 window.location.href = result.url;
             }
         }
 
         async function handleAdminUserAction(action, userId) {
             if (action === 'delete') {
-                if (!confirm('Delete this user?')) return;
+                if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) return;
                 const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' });
                 if (result.success) {
                     showToast('User deleted.', 'success');
                     switchAdminView('users');
                 }
-            } else if (action === 'edit') {}
+            } else if (action === 'edit') {
+                 showToast('Edit user functionality to be implemented.', 'info');
+            }
         }
 
         async function handleAdminDeleteClass(classId) {
-            if (!confirm('Delete this class?')) return;
+            if (!confirm('Are you sure you want to delete this class? This will remove all associated data.')) return;
             const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' });
             if (result.success) {
                 showToast('Class deleted.', 'success');
@@ -1166,27 +1172,9 @@ HTML_CONTENT = """
             e.preventDefault();
             const form = e.target;
             const body = Object.fromEntries(new FormData(form));
-            
-            if (body.ai_persona !== undefined) {
-                const personaResult = await apiCall('/admin/set_ai_persona', { method: 'POST', body: { persona: body.ai_persona } });
-                if (!personaResult.success) {
-                    showToast(personaResult.error, 'error');
-                    return;
-                }
-            }
-            
-            const updateBody = { ...body };
-            delete updateBody.ai_persona;
-
-            if (Object.keys(updateBody).length > 0) {
-                const settingsResult = await apiCall('/admin/update_settings', { method: 'POST', body: updateBody });
-                if (settingsResult.success) {
-                    showToast('Settings updated.', 'success');
-                } else {
-                    showToast(settingsResult.error, 'error');
-                }
-            } else if (body.ai_persona) {
-                showToast('AI persona updated.', 'success');
+            const result = await apiCall('/admin/update_settings', { method: 'POST', body });
+            if (result.success) {
+                showToast('Settings updated successfully.', 'success');
             }
         }
 
@@ -1215,12 +1203,10 @@ HTML_CONTENT = """
             }
         }
 
+        // --- Placeholder functions for unimplemented features ---
         async function handleCreateAssignment() { showToast('Create assignment functionality to be implemented.', 'info'); }
-
         async function viewAssignmentDetails(assignmentId) { showToast('View assignment details functionality to be implemented.', 'info'); }
-
         async function handleCreateQuiz() { showToast('Create quiz functionality to be implemented.', 'info'); }
-
         async function viewQuizDetails(quizId) { showToast('View quiz details functionality to be implemented.', 'info'); }
 
         main();
@@ -1279,7 +1265,8 @@ def reset_password_page(token):
 def handle_exception(e):
     """Generic error handler to catch unhandled exceptions."""
     logging.error(f"Unhandled exception: {str(e)}", exc_info=True)
-    return jsonify(error='An internal server error occurred. Please check the logs.'), 500
+    # Avoid exposing internal details in production
+    return jsonify(error='An internal server error occurred.'), 500
 
 @app.route('/api/signup', methods=['POST'])
 def signup():
@@ -1290,9 +1277,9 @@ def signup():
         return jsonify(error='Missing required fields.'), 400
     
     if User.query.filter_by(username=data['username']).first():
-        return jsonify(error='Username is already taken.'), 400
+        return jsonify(error='Username is already taken.'), 409
     if User.query.filter_by(email=data['email']).first():
-        return jsonify(error='Email is already registered.'), 400
+        return jsonify(error='Email is already registered.'), 409
     
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         return jsonify(error='Invalid secret key for teacher account.'), 403
@@ -1301,11 +1288,17 @@ def signup():
         
     try:
         hashed_pw = generate_password_hash(data['password'])
-        new_user = User(username=data['username'], email=data['email'], password_hash=hashed_pw, role=data['account_type'])
+        new_user = User(
+            username=data['username'],
+            email=data['email'],
+            password_hash=hashed_pw,
+            role=data['account_type']
+        )
         
-        # Create the profile and associate it with the user before committing
-        new_profile = Profile()
-        new_user.profile = new_profile
+        # FIX: Correctly create and associate the Profile.
+        # SQLAlchemy handles the foreign key assignment upon flush/commit.
+        # The cascade="all, delete-orphan" on the relationship ensures the profile is added to the session.
+        new_user.profile = Profile()
         
         db.session.add(new_user)
         db.session.commit()
@@ -1313,7 +1306,7 @@ def signup():
         login_user(new_user)
         return jsonify(success=True, user=new_user.to_dict())
         
-    except IntegrityError:
+    except IntegrityError: # Should be caught by checks above, but good for race conditions
         db.session.rollback()
         return jsonify(error='A database integrity error occurred. The username or email might already exist.'), 409
     except Exception as e:
@@ -1335,11 +1328,12 @@ def login():
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         return jsonify(error='Invalid admin secret key.'), 403
         
-    # Ensure user has a profile, create one if not (for legacy users)
+    # FIX: Ensure user has a profile, creating one if missing (for legacy users).
     if not user.profile:
         try:
-            profile = Profile(user_id=user.id)
-            db.session.add(profile)
+            # Create and associate the profile in one step.
+            # This updates the 'user' object in the current session.
+            user.profile = Profile()
             db.session.commit()
         except Exception as e:
             db.session.rollback()
@@ -1371,13 +1365,13 @@ def request_password_reset():
     if user:
         try:
             token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
-            reset_url = f'{SITE_CONFIG["YOUR_DOMAIN"]}/reset/{token}'
+            reset_url = url_for('reset_password_page', token=token, _external=True)
             msg = Message('Password Reset Request for Myth AI', recipients=[user.email])
             msg.body = f'To reset your password, please click the following link: {reset_url}\n\nIf you did not request this, please ignore this email.'
             mail.send(msg)
         except Exception as e:
             logging.error(f"Failed to send password reset email: {str(e)}")
-            # Don't expose the error to the client
+            # Do not expose the error to the client
     # Always return a generic message for security
     return jsonify(success=True, message='If an account with that email exists, a password reset link has been sent.')
 
@@ -1410,6 +1404,8 @@ def reset_password():
 
 def user_has_class_access(class_id, user):
     """Helper function to check if a user has access to a class."""
+    if not class_id or not user:
+        return False
     cls = Class.query.get(class_id)
     if not cls:
         return False
@@ -1474,7 +1470,7 @@ def join_class():
         return jsonify(error='You are already enrolled in this class.'), 400
         
     try:
-        current_user.enrolled_classes.append(cls)
+        cls.students.append(current_user)
         db.session.commit()
         return jsonify(success=True, message=f'Successfully joined class: {cls.name}')
     except Exception as e:
@@ -1497,7 +1493,7 @@ def get_class_details(class_id):
         'students': [{
             'id': s.id, 
             'username': s.username, 
-            'profile': {'bio': s.profile.bio or '', 'avatar': s.profile.avatar or ''} if s.profile else {}
+            'profile': {'bio': s.profile.bio or '', 'avatar': s.profile.avatar or ''} if s.profile else {'bio': '', 'avatar': ''}
         } for s in cls.students]
     }
     return jsonify(success=True, class_=class_data)
@@ -1521,10 +1517,15 @@ def get_class_messages(class_id):
     } for m in messages]
     return jsonify(success=True, messages=message_list)
 
-@app.route('/api/generate_ai_response', methods=['POST'])
+@app.route('/api/chat/send', methods=['POST'])
 @login_required
-def generate_ai_response():
-    """Generate and post an AI response to a class chat."""
+def send_chat_and_get_ai_response():
+    """
+    FIXED: Handles a user sending a message.
+    1. Saves and broadcasts the user's message via WebSocket.
+    2. Generates, saves, and broadcasts the AI's response via WebSocket.
+    This ensures all clients in the class see the full conversation.
+    """
     data = request.json
     class_id = data.get('class_id')
     prompt = data.get('prompt')
@@ -1533,38 +1534,53 @@ def generate_ai_response():
         return jsonify(error='Missing class_id or prompt.'), 400
 
     if not user_has_class_access(class_id, current_user):
-        return jsonify(error="You do not have permission to interact with this class chat."), 403
-
-    # Simple keyword-based response for the creator question
-    if any(q in prompt.lower() for q in ['who made you', 'who created you', 'who is your creator']):
-        ai_response_text = "I was created by the collaborative efforts of DeVHossein."
-    else:
-        # Placeholder for a real AI API call
-        site_persona = SiteSettings.query.get('ai_persona')
-        default_persona = "a helpful AI assistant"
-        persona = current_user.ai_persona or (site_persona.value if site_persona else default_persona)
-        ai_response_text = f"As {persona}, I'm processing your request about: '{prompt}'"
+        return jsonify(error="Permission denied."), 403
 
     try:
-        msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
-        db.session.add(msg)
+        # 1. Save and emit user's message
+        user_msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=prompt)
+        db.session.add(user_msg)
         db.session.commit()
-        
-        # Emit the new message to all clients in the class room
+
         socketio.emit('new_message', {
-            'class_id': class_id,
+            'id': user_msg.id,
+            'class_id': user_msg.class_id,
+            'sender_id': user_msg.sender_id,
+            'sender_name': current_user.username,
+            'sender_avatar': current_user.profile.avatar if current_user.profile else None,
+            'content': user_msg.content,
+            'timestamp': user_msg.timestamp.isoformat()
+        }, room=f'class_{class_id}')
+
+        # 2. Generate, save, and emit AI response
+        if any(q in prompt.lower() for q in ['who made you', 'who created you', 'who is your creator']):
+            ai_response_text = "I was created by the collaborative efforts of DeVHossein."
+        else:
+            # Placeholder for a real AI API call (e.g., Gemini)
+            site_persona_setting = SiteSettings.query.get('ai_persona')
+            persona = current_user.ai_persona or (site_persona_setting.value if site_persona_setting else "a helpful AI assistant")
+            ai_response_text = f"As {persona}, I've received your message: '{prompt}'. I'm processing it now."
+
+        ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
+        db.session.add(ai_msg)
+        db.session.commit()
+
+        socketio.emit('new_message', {
+            'id': ai_msg.id,
+            'class_id': ai_msg.class_id,
             'sender_id': None,
             'sender_name': 'AI Assistant',
             'sender_avatar': None, # Or a default AI avatar URL
-            'content': ai_response_text,
-            'timestamp': msg.timestamp.isoformat()
+            'content': ai_msg.content,
+            'timestamp': ai_msg.timestamp.isoformat()
         }, room=f'class_{class_id}')
-        
-        return jsonify(success=True, message="AI response generated.")
+
+        return jsonify(success=True)
+
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error saving or emitting AI response: {str(e)}")
-        return jsonify(error='Could not process the AI response.'), 500
+        logging.error(f"Error in chat/AI response flow: {str(e)}", exc_info=True)
+        return jsonify(error='An internal error occurred while processing your message.'), 500
 
 # ==============================================================================
 # --- 7. API ROUTES - TEAMS ---
@@ -1624,7 +1640,7 @@ def join_team():
         return jsonify(error='You are already a member of this team.'), 400
         
     try:
-        current_user.teams.append(team)
+        team.members.append(current_user)
         db.session.commit()
         return jsonify(success=True, message=f'Successfully joined team: {team.name}')
     except Exception as e:
@@ -1741,7 +1757,7 @@ def get_notifications():
 @login_required
 def unread_notifications_count():
     """Get the count of unread notifications for the current user."""
-    count = current_user.notifications.filter_by(is_read=False).count()
+    count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
     return jsonify(success=True, count=count)
 
 @app.route('/api/notifications/mark_read', methods=['POST'])
@@ -1749,7 +1765,7 @@ def unread_notifications_count():
 def mark_notifications_read():
     """Mark all unread notifications for the current user as read."""
     try:
-        current_user.notifications.filter_by(is_read=False).update({'is_read': True})
+        Notification.query.filter_by(user_id=current_user.id, is_read=False).update({'is_read': True})
         db.session.commit()
         return jsonify(success=True)
     except Exception as e:
@@ -1817,6 +1833,8 @@ def admin_update_settings():
     data = request.json
     try:
         for key, value in data.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue # Basic validation
             setting = SiteSettings.query.get(key)
             if setting:
                 setting.value = value
@@ -1829,6 +1847,30 @@ def admin_update_settings():
         db.session.rollback()
         logging.error(f"Admin error updating settings: {str(e)}")
         return jsonify(error='Could not update settings.'), 500
+
+@app.route('/api/admin/toggle_maintenance', methods=['POST'])
+@admin_required
+def admin_toggle_maintenance():
+    """Toggle site-wide maintenance mode."""
+    try:
+        setting = SiteSettings.query.get('maintenance_mode')
+        if setting and setting.value == 'true':
+            setting.value = 'false'
+            enabled = False
+        else:
+            if not setting:
+                setting = SiteSettings(key='maintenance_mode', value='true')
+                db.session.add(setting)
+            else:
+                setting.value = 'true'
+            enabled = True
+        db.session.commit()
+        return jsonify(success=True, enabled=enabled)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Admin error toggling maintenance mode: {str(e)}")
+        return jsonify(error='Could not toggle maintenance mode.'), 500
+
 
 @app.route('/api/admin/music', methods=['GET', 'POST'])
 @admin_required
@@ -1872,46 +1914,18 @@ def admin_delete_music(music_id):
 def on_join(data):
     """Handle a client joining a room."""
     if current_user.is_authenticated:
-        join_room(data['room'])
+        # data['room'] should be like 'class_...' or 'user_...'
+        room = data.get('room')
+        if room:
+            join_room(room)
 
 @socketio.on('leave')
 def on_leave(data):
     """Handle a client leaving a room."""
     if current_user.is_authenticated:
-        leave_room(data['room'])
-
-@socketio.on('send_message')
-def on_send_message(data):
-    """Handle a user sending a message to a class chat."""
-    if not current_user.is_authenticated:
-        return
-
-    class_id = data.get('class_id')
-    message_content = data.get('message')
-
-    if not class_id or not message_content:
-        return # Or emit an error back to the sender
-
-    if not user_has_class_access(class_id, current_user):
-        return # Or emit an error back to the sender
-
-    try:
-        msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=message_content)
-        db.session.add(msg)
-        db.session.commit()
-        
-        emit('new_message', {
-            'id': msg.id,
-            'class_id': msg.class_id,
-            'sender_id': msg.sender_id,
-            'sender_name': current_user.username,
-            'sender_avatar': current_user.profile.avatar if current_user.profile else None,
-            'content': msg.content,
-            'timestamp': msg.timestamp.isoformat()
-        }, room=f'class_{class_id}')
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Socket error sending message: {str(e)}")
+        room = data.get('room')
+        if room:
+            leave_room(room)
 
 # ==============================================================================
 # --- 12. APP INITIALIZATION ---
@@ -1925,16 +1939,15 @@ def initialize_database():
         # Create default admin user if no users exist
         if not User.query.first():
             try:
+                # Restored admin username as per user request
                 admin_user = User(
                     username='big ballz', 
                     email='admin@example.com', 
                     password_hash=generate_password_hash('adminpassword'), 
                     role='admin'
                 )
+                admin_user.profile = Profile()
                 db.session.add(admin_user)
-                db.session.flush()
-                admin_profile = Profile(user_id=admin_user.id)
-                db.session.add(admin_profile)
                 db.session.commit()
                 logging.info("Default admin user created.")
             except IntegrityError:

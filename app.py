@@ -1953,6 +1953,3 @@ if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
 
-
-
-     , and I want you to fix it.

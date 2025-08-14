@@ -1275,7 +1275,7 @@ def reset_password_page(token):
 @app.errorhandler(Exception)
 def handle_exception(e):
     """Generic error handler to catch unhandled exceptions."""
-    logging.error(f"Unhandled exception: {str(e)}")
+    logging.error(f"Unhandled exception: {str(e)}", exc_info=True)
     return jsonify(error='An internal server error occurred. Please check the logs.'), 500
 
 @app.route('/api/signup', methods=['POST'])
@@ -1300,12 +1300,13 @@ def signup():
         hashed_pw = generate_password_hash(data['password'])
         new_user = User(username=data['username'], email=data['email'], password_hash=hashed_pw, role=data['account_type'])
         db.session.add(new_user)
-        db.session.flush() # Flush to get the new_user.id for the profile
-        
+        db.session.commit() # Commit the user first to get an ID
+
+        # Now create the profile for the committed user
         new_profile = Profile(user_id=new_user.id)
         db.session.add(new_profile)
-        
         db.session.commit()
+
         login_user(new_user)
         return jsonify(success=True, user=new_user.to_dict())
         
@@ -1314,7 +1315,7 @@ def signup():
         return jsonify(error='A database integrity error occurred. The username or email might already exist.'), 409
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error during signup: {str(e)}")
+        logging.error(f"Error during signup: {str(e)}", exc_info=True)
         return jsonify(error='An unexpected error occurred during account creation.'), 500
 
 @app.route('/api/login', methods=['POST'])
@@ -1951,6 +1952,7 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
+
 
 
 

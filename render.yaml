@@ -1,22 +1,21 @@
-services:
-  - type: web
-    name: myth-ai-portal
-    env: python
-    pythonVersion: '3.11'
-    plan: free # Or 'starter' for a paid tier
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn 'app:create_app()'"
-    healthCheckPath: /api/status
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11
-      - key: FLASK_ENV
-        value: production
-      # IMPORTANT: Add the rest of your environment variables from your .env file
-      # directly in the Render dashboard under the 'Environment' tab.
-      # Example:
-      # - key: SECRET_KEY
-      #   generateValue: true # Render can generate a random string for you
-      # - key: STRIPE_SECRET_KEY
-      #   sync: false # Prevents the value from being exposed in pull request previews
+- type: web
+  name: myth-ai-portal
+  env: python
+  pythonVersion: '3.11'
+  plan: free # Or 'starter' for a paid tier
+  buildCommand: "pip install -r requirements.txt"
+  startCommand: "gunicorn 'app:app'" # This is the corrected start command
+  healthCheckPath: /api/status
+  envVars:
+    - key: PYTHON_VERSION
+      value: 3.11
+    - key: FLASK_ENV
+      value: production
+    # IMPORTANT: Add the rest of your environment variables from your .env file
+    # directly in the Render dashboard under the 'Environment' tab.
+    # Example:
+    # - key: SECRET_KEY
+    #   generateValue: true # Render can generate a random string for you
+    # - key: STRIPE_SECRET_KEY
+    #   sync: false # Prevents the value from being exposed in pull request previews
 

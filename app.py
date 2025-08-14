@@ -18,6 +18,7 @@ from flask_mail import Mail, Message
 from flask_talisman import Talisman
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event, or_, func, desc
+from sqlalchemy.orm import joinedload # --- OPTIMIZATION: Import for efficient querying
 from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
@@ -326,7 +327,6 @@ HTML_CONTENT = """
     <div class="fixed bottom-4 left-4 text-xs text-gray-500">&copy; <span id="current-year"></span> Myth AI</div>
     <audio id="background-music" loop autoplay></audio>
 
-    <!-- *** REWORKED WELCOME SCREEN WITH MISSION STATEMENT *** -->
     <template id="template-welcome-anime">
         <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
             <div class="glassmorphism p-8 rounded-xl text-center max-w-2xl">
@@ -341,7 +341,6 @@ HTML_CONTENT = """
         <audio id="welcome-audio" src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3" preload="auto"></audio>
     </template>
     
-    <!-- *** REWORKED LOADER *** -->
     <template id="template-full-screen-loader">
         <div class="full-screen-loader fade-in">
             <div class="loader-dots">
@@ -385,7 +384,6 @@ HTML_CONTENT = """
                 </div>
                 <div id="nav-links" class="flex flex-col gap-2"></div>
                 <div class="mt-auto flex flex-col gap-4">
-                    <!-- *** NEW: AdSense Placeholder *** -->
                     <div id="adsense-container" class="w-full h-48 bg-gray-700/50 rounded-lg flex items-center justify-center text-gray-500 text-sm">
                         Ad Placeholder
                     </div>
@@ -399,7 +397,6 @@ HTML_CONTENT = """
         </div>
     </template>
     
-    <!-- Other templates are unchanged -->
     <template id="template-auth-form"><div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg"><div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl"><button id="back-to-roles" class="text-sm text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Role Selection</button><h1 class="text-3xl font-bold text-center brand-gradient-text mb-2" id="auth-title">Portal Login</h1><p class="text-gray-400 text-center mb-6" id="auth-subtitle">Sign in to continue</p><form id="auth-form"><input type="hidden" id="account_type" name="account_type" value="student"><div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div><div id="admin-key-field" class="hidden mb-4"><label for="admin-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Admin Key</label><input type="password" id="admin-secret-key" name="admin_secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for admin login"></div><div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div><button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button><p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p></form><div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div></div></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
@@ -1192,5 +1189,6 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+
 
 

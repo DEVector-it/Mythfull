@@ -1952,7 +1952,7 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
-"
+
 , and I want you to fix it.
 I am getting this error:
 "sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) NOT NULL constraint failed: profile.user_id

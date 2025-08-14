@@ -143,6 +143,18 @@ class User(UserMixin, db.Model):
             'theme_preference': self.theme_preference
         }
 
+# *** FIX: ADDED SQLALCHEMY EVENT LISTENER ***
+# This function ensures that whenever a new User is created and saved,
+# a corresponding Profile record is automatically created for them.
+# This prevents data inconsistency and is the most robust way to solve the root problem.
+@event.listens_for(User, 'after_insert')
+def create_profile_for_new_user(mapper, connection, target):
+    """Ensure a profile is created automatically for every new user."""
+    profile_table = Profile.__table__
+    connection.execute(
+        profile_table.insert().values(user_id=target.id)
+    )
+
 class Profile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
@@ -650,16 +662,10 @@ HTML_CONTENT = """
             usernameInput.value = '';
 
             if (appState.selectedRole === 'admin') {
-                // **NOTE:** Behavior restored as per user request.
-                // The admin username is pre-filled and the field is disabled.
                 usernameInput.value = 'big ballz';
                 usernameInput.disabled = true;
-
-                // Admin accounts cannot be created from the UI, so hide the sign-up toggle.
                 toggleBtn.classList.add('hidden');
-                
                 if(appState.isLoginView) {
-                    // Show the secret key field required for admin login.
                     adminKeyField.classList.remove('hidden');
                     document.getElementById('admin-secret-key').required = true;
                 }
@@ -741,6 +747,21 @@ HTML_CONTENT = """
             });
         }
         
+        function switchTab(tab) {
+            appState.currentTab = tab;
+            appState.selectedClass = null;
+            document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
+            const contentContainer = document.getElementById('dashboard-content');
+            const setups = { 
+                'my-classes': setupMyClassesTab, 
+                'team-mode': setupTeamModeTab,
+                'profile': setupProfileTab, 
+                'billing': setupBillingTab, 
+                'admin-dashboard': setupAdminDashboardTab 
+            };
+            if (setups[tab]) setups[tab](contentContainer);
+        }
+        
         async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'), listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); const result = await apiCall('/my_classes'); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(cls => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${cls.id}" data-name="${cls.name}"><div class="font-bold text-white text-lg">${escapeHtml(cls.name)}</div><div class="text-gray-400 text-sm">Teacher: ${escapeHtml(cls.teacher_name)}</div>${appState.currentUser.role === 'teacher' ? `<div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(cls.code)}</span></div>` : ''}</div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', (e) => selectClass(e.currentTarget.dataset.id))); } }); }
         
         async function setupTeamModeTab(container) {
@@ -760,7 +781,7 @@ HTML_CONTENT = """
                                 <div class="font-bold text-white text-lg">${escapeHtml(team.name)}</div>
                                 <div class="text-gray-400 text-sm">Owner: ${escapeHtml(team.owner_name)}</div>
                                 <div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></div>
-                                <div class="text-sm text-gray-400">${escapeHtml(team.member_count)} members</div>
+                                <div class="text-sm text-gray-400">${escapeHtml(String(team.member_count))} members</div>
                             </div>
                         `).join('');
                         listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => selectTeam(e.currentTarget.dataset.id)));
@@ -898,7 +919,7 @@ HTML_CONTENT = """
             }
         }
         
-        async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
+        async function handleForgotPassword() { const email = prompt('Please enter your account email address:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email address.', 'error'); }
         async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
         async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
@@ -987,17 +1008,11 @@ HTML_CONTENT = """
             button.disabled = true;
             button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>';
 
-            // **FIX:** The user message is NO LONGER added to the chat here.
-            // The server will save it and broadcast it back via WebSocket,
-            // which prevents duplicate messages and ensures it's the single source of truth.
-
             const result = await apiCall('/chat/send', {
                 method: 'POST',
                 body: { prompt: message, class_id: appState.selectedClass.id }
             });
 
-            // The 'new_message' socket events will handle adding messages to the UI.
-            // This block just handles resetting the input field on success or showing an error.
             if (result.success) {
                 input.disabled = false;
                 button.disabled = false;
@@ -1094,7 +1109,7 @@ HTML_CONTENT = """
             const dot = document.getElementById('notification-dot');
             if(!dot) return;
             if (hasUnread) {
-                 dot.classList.remove('hidden');
+                dot.classList.remove('hidden');
             } else {
                 const result = await apiCall('/notifications/unread_count');
                 if (result.success && result.count > 0) dot.classList.remove('hidden');
@@ -1140,7 +1155,7 @@ HTML_CONTENT = """
                     switchAdminView('users');
                 }
             } else if (action === 'edit') {
-                 showToast('Edit user functionality to be implemented.', 'info');
+                showToast('Edit user functionality to be implemented.', 'info');
             }
         }
 
@@ -1270,20 +1285,16 @@ def signup():
         return jsonify(error='Invalid secret key for teacher account.'), 403
     if data['account_type'] == 'admin':
         return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
-    
+        
     try:
         hashed_pw = generate_password_hash(data['password'])
+        # The SQLAlchemy event listener will automatically create a Profile for this user.
         new_user = User(
             username=data['username'],
             email=data['email'],
             password_hash=hashed_pw,
             role=data['account_type']
         )
-        
-        # FIX: Correctly create and associate the Profile.
-        # SQLAlchemy handles the foreign key assignment upon flush/commit.
-        # The cascade="all, delete-orphan" on the relationship ensures the profile is added to the session.
-        new_user.profile = Profile()
         
         db.session.add(new_user)
         db.session.commit()
@@ -1305,19 +1316,17 @@ def login():
     data = request.json
     if not data or 'username' not in data or 'password' not in data:
         return jsonify(error='Missing username or password.'), 400
-    
+        
     user = User.query.filter_by(username=data['username']).first()
     if not user or not check_password_hash(user.password_hash, data['password']):
         return jsonify(error='Invalid username or password.'), 401
-    
+        
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         return jsonify(error='Invalid admin secret key.'), 403
-    
-    # FIX: Ensure user has a profile, creating one if missing (for legacy users).
+        
+    # Ensure user has a profile, creating one if missing (for legacy users).
     if not user.profile:
         try:
-            # Create and associate the profile in one step.
-            # This updates the 'user' object in the current session.
             user.profile = Profile()
             db.session.commit()
         except Exception as e:
@@ -1352,7 +1361,7 @@ def request_password_reset():
             token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
             reset_url = url_for('reset_password_page', token=token, _external=True)
             msg = Message('Password Reset Request for Myth AI', recipients=[user.email])
-            msg.body = f'To reset your password, please click the following link: {reset_url}\n\nIf you did not request this, please ignore this email.'
+            msg.body = f'To reset your password, please click the following link: {reset_url}\\n\\nIf you did not request this, please ignore this email.'
             mail.send(msg)
         except Exception as e:
             logging.error(f"Failed to send password reset email: {str(e)}")
@@ -1502,14 +1511,16 @@ def get_class_messages(class_id):
     } for m in messages]
     return jsonify(success=True, messages=message_list)
 
+# *** FIX: REPLACED CHAT ROUTE WITH A MORE ROBUST VERSION ***
 @app.route('/api/chat/send', methods=['POST'])
 @login_required
 def send_chat_and_get_ai_response():
     """
-    FIXED: Handles a user sending a message.
-    1. Saves and broadcasts the user's message via WebSocket.
-    2. Generates, saves, and broadcasts the AI's response via WebSocket.
-    This ensures all clients in the class see the full conversation.
+    Handles a user sending a message.
+    1. Generates both user and AI messages first.
+    2. Saves both messages in a single database transaction.
+    3. Broadcasts both messages via WebSocket upon success.
+    This is more robust and prevents partial updates on error.
     """
     data = request.json
     class_id = data.get('class_id')
@@ -1521,12 +1532,34 @@ def send_chat_and_get_ai_response():
     if not user_has_class_access(class_id, current_user):
         return jsonify(error="Permission denied."), 403
 
+    # Safeguard: Ensure the user has a profile before proceeding.
+    if not current_user.profile:
+        try:
+            current_user.profile = Profile()
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Critical error: Failed to create profile on-the-fly for user {current_user.id}. Error: {str(e)}")
+            return jsonify(error='Could not process request due to a profile error.'), 500
+
     try:
-        # 1. Save and emit user's message
+        # --- Create message objects first, without saving ---
         user_msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=prompt)
-        db.session.add(user_msg)
+
+        if any(q in prompt.lower() for q in ['who made you', 'who created you', 'who is your creator']):
+            ai_response_text = "I was created by the collaborative efforts of DeVHossein."
+        else:
+            site_persona_setting = SiteSettings.query.get('ai_persona')
+            persona = current_user.ai_persona or (site_persona_setting.value if site_persona_setting else "a helpful AI assistant")
+            ai_response_text = f"As {persona}, I've received your message: '{prompt}'. I'm processing it now."
+
+        ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
+
+        # --- Save both messages in one transaction ---
+        db.session.add_all([user_msg, ai_msg])
         db.session.commit()
 
+        # --- Emit both messages via WebSocket AFTER successful commit ---
         socketio.emit('new_message', {
             'id': user_msg.id,
             'class_id': user_msg.class_id,
@@ -1537,25 +1570,12 @@ def send_chat_and_get_ai_response():
             'timestamp': user_msg.timestamp.isoformat()
         }, room=f'class_{class_id}')
 
-        # 2. Generate, save, and emit AI response
-        if any(q in prompt.lower() for q in ['who made you', 'who created you', 'who is your creator']):
-            ai_response_text = "I was created by the collaborative efforts of DeVHossein."
-        else:
-            # Placeholder for a real AI API call (e.g., Gemini)
-            site_persona_setting = SiteSettings.query.get('ai_persona')
-            persona = current_user.ai_persona or (site_persona_setting.value if site_persona_setting else "a helpful AI assistant")
-            ai_response_text = f"As {persona}, I've received your message: '{prompt}'. I'm processing it now."
-
-        ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
-        db.session.add(ai_msg)
-        db.session.commit()
-
         socketio.emit('new_message', {
             'id': ai_msg.id,
             'class_id': ai_msg.class_id,
             'sender_id': None,
             'sender_name': 'AI Assistant',
-            'sender_avatar': None, # Or a default AI avatar URL
+            'sender_avatar': None,
             'content': ai_msg.content,
             'timestamp': ai_msg.timestamp.isoformat()
         }, room=f'class_{class_id}')
@@ -1566,6 +1586,7 @@ def send_chat_and_get_ai_response():
         db.session.rollback()
         logging.error(f"Error in chat/AI response flow: {str(e)}", exc_info=True)
         return jsonify(error='An internal error occurred while processing your message.'), 500
+
 
 # ==============================================================================
 # --- 7. API ROUTES - TEAMS ---
@@ -1666,7 +1687,7 @@ def update_profile():
     data = request.json
     try:
         profile = current_user.profile
-        if not profile: # Should not happen with current logic, but good for robustness
+        if not profile: # Should not happen with new logic, but good for robustness
             profile = Profile(user_id=current_user.id)
             db.session.add(profile)
             
@@ -1924,14 +1945,13 @@ def initialize_database():
         # Create default admin user if no users exist
         if not User.query.first():
             try:
-                # Restored admin username as per user request
+                # The SQLAlchemy event listener will automatically create a profile.
                 admin_user = User(
                     username='big ballz', 
                     email='admin@example.com', 
                     password_hash=generate_password_hash('adminpassword'), 
                     role='admin'
                 )
-                admin_user.profile = Profile()
                 db.session.add(admin_user)
                 db.session.commit()
                 logging.info("Default admin user created.")
@@ -1953,4 +1973,3 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
-

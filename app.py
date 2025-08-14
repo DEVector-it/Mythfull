@@ -1299,12 +1299,12 @@ def signup():
     try:
         hashed_pw = generate_password_hash(data['password'])
         new_user = User(username=data['username'], email=data['email'], password_hash=hashed_pw, role=data['account_type'])
+        
+        # Create the profile and associate it with the user before committing
+        new_profile = Profile()
+        new_user.profile = new_profile
+        
         db.session.add(new_user)
-        db.session.commit() # Commit the user first to get an ID
-
-        # Now create the profile for the committed user
-        new_profile = Profile(user_id=new_user.id)
-        db.session.add(new_profile)
         db.session.commit()
 
         login_user(new_user)
@@ -1952,6 +1952,13 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
+"
+, and I want you to fix it.
+I am getting this error:
+"sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) NOT NULL constraint failed: profile.user_id
+[SQL: INSERT INTO profile (id, user_id, bio, avatar) VALUES (?, ?, ?, ?)]
+[parameters: (1, None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkp
 
 
 

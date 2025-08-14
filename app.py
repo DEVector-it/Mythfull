@@ -34,11 +34,13 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True, origins="*")
 Talisman(app, content_security_policy=None)
 
+# --- Database and App Configuration ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT', 'a-fallback-salt')
 
+# --- Site-wide Configuration Dictionary ---
 SITE_CONFIG = {
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
@@ -52,10 +54,13 @@ SITE_CONFIG = {
     "SUPPORT_EMAIL": os.environ.get('MAIL_SENDER')
 }
 
+# --- Initialize Extensions ---
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
 password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# --- Flask-Mail Configuration ---
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
@@ -66,6 +71,7 @@ mail = Mail(app)
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):
+    """Remove database session at the end of the request."""
     db.session.remove()
 
 # ==============================================================================
@@ -73,11 +79,13 @@ def shutdown_session(exception=None):
 # ==============================================================================
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Enable foreign key support for SQLite."""
     if app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
+# --- Association Tables for Many-to-Many Relationships ---
 student_class_association = db.Table('student_class_association',
     db.Column('user_id', db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True),
     db.Column('class_id', db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), primary_key=True)
@@ -88,6 +96,7 @@ team_member_association = db.Table('team_member_association',
     db.Column('team_id', db.String(36), db.ForeignKey('team.id', ondelete='CASCADE'), primary_key=True)
 )
 
+# --- Main Database Models ---
 class User(UserMixin, db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
@@ -260,19 +269,26 @@ class BackgroundMusic(db.Model):
 login_manager = LoginManager()
 login_manager.init_app(app)
 
+@login_manager.user_loader
+def load_user(user_id):
+    """Load user for Flask-Login."""
+    return User.query.get(user_id)
+
 @login_manager.unauthorized_handler
 def unauthorized():
+    """Handle unauthorized access."""
     return jsonify({"error": "Login required.", "logged_in": False}), 401
 
-@login_manager.user_loader
-def load_user(user_id): return User.query.get(user_id)
-
+# --- Decorators for Role-Based Access Control ---
 def role_required(role_name):
+    """Decorator to require a specific user role."""
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            if not current_user.is_authenticated: return jsonify({"error": "Login required."}), 401
-            if current_user.role != role_name and current_user.role != 'admin': return jsonify({"error": f"{role_name.capitalize()} access required."}), 403
+            if not current_user.is_authenticated:
+                return jsonify({"error": "Login required."}), 401
+            if current_user.role != role_name and current_user.role != 'admin':
+                return jsonify({"error": f"{role_name.capitalize()} access required."}), 403
             return f(*args, **kwargs)
         return decorated_function
     return decorator
@@ -281,7 +297,7 @@ admin_required = role_required('admin')
 teacher_required = role_required('teacher')
 
 # ==============================================================================
-# --- 4. FRONTEND CONTENT ---
+# --- 4. FRONTEND & CORE ROUTES ---
 # ==============================================================================
 HTML_CONTENT = """
 <!DOCTYPE html>
@@ -360,9 +376,9 @@ HTML_CONTENT = """
     <audio id="background-music" loop autoplay></audio>
 
     <template id="template-welcome-anime">
-        <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://placehold.co/1920x1080/0F172A/FFFFFF?text=Anime+Background');">
+        <div class="flex flex-col items-center justify-center h-full w-full bg-cover bg-center p-4 fade-in" style="background-image: url('https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1920');">
             <div class="glassmorphism p-8 rounded-xl text-center">
-                <img src="https://i.ibb.co/3sX3y6W/Myth-AI-Logo.png" alt="Myth AI Logo" class="mx-auto mb-4 rounded-full shadow-lg">
+                <img src="https://i.ibb.co/pnpb6M3/Myth-AI-Logo-v2.png" alt="Myth AI Logo" class="mx-auto mb-4 h-24 w-auto">
                 <h1 class="text-4xl font-bold text-white mb-4">Welcome to Myth AI!</h1>
                 <p class="text-gray-300 mb-6">Your journey into AI-powered learning begins now.</p>
                 <button id="get-started-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Get Started</button>
@@ -391,7 +407,7 @@ HTML_CONTENT = """
         <div class="flex flex-col items-center justify-center h-full w-full bg-gray-900 p-4 fade-in" style="background-image: radial-gradient(circle at top right, hsla(var(--brand-hue), 40%, 20%, 0.5), transparent 50%), radial-gradient(circle at bottom left, hsla(260, 40%, 20%, 0.5), transparent 50%);">
             <div class="w-full max-w-md text-center">
                 <div class="flex items-center justify-center gap-3 mb-4">
-                    <img src="https://i.ibb.co/3sX3y6W/Myth-AI-Logo.png" alt="Myth AI Logo" class="w-16 h-16">
+                    <img src="https://i.ibb.co/pnpb6M3/Myth-AI-Logo-v2.png" alt="Myth AI Logo" class="h-16 w-auto">
                     <h1 class="text-5xl font-bold brand-gradient-text">Myth AI</h1>
                 </div>
                 <p class="text-gray-400 text-lg mb-10">Select your role to continue</p>
@@ -444,7 +460,7 @@ HTML_CONTENT = """
         </div>
     </template>
     
-    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><img src="https://i.ibb.co/3sX3y6W/Myth-AI-Logo.png" alt="Myth AI Logo" class="w-8 h-8"><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
+    <template id="template-main-dashboard"><div class="flex h-full w-full bg-gray-800 fade-in"><nav class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10"><div class="flex items-center gap-2 mb-6"><img src="https://i.ibb.co/pnpb6M3/Myth-AI-Logo-v2.png" alt="Myth AI Logo" class="h-8 w-auto"><h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2></div><div id="nav-links" class="flex flex-col gap-2"></div><div class="mt-auto flex flex-col gap-4"><div id="notification-bell-container" class="relative"></div><button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button></div></nav><main class="flex-1 p-8 overflow-y-auto"><div id="daily-message-banner" class="hidden glassmorphism p-4 rounded-lg mb-6 text-center"></div><div id="dashboard-content"></div></main></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
     <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div></template>
@@ -517,6 +533,9 @@ HTML_CONTENT = """
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
         
         function escapeHtml(text) {
+            if (typeof text !== 'string') {
+                return '';
+            }
             const map = {
                 '&': '&amp;',
                 '<': '&lt;',
@@ -524,7 +543,7 @@ HTML_CONTENT = """
                 '"': '&quot;',
                 "'": '&#039;'
             };
-            return String(text).replace(/[&<>"']/g, function(m) { return map[m]; });
+            return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
 
         async function apiCall(endpoint, options = {}) {
@@ -1259,55 +1278,69 @@ def reset_password_page(token):
     """)
 
 # ==============================================================================
-# --- 5. API ROUTES ---
+# --- 5. API ROUTES - AUTHENTICATION ---
 # ==============================================================================
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    logging.error(f"Unhandled error: {str(e)}")
-    return jsonify(error='Internal server error. Check logs.'), 500
+    """Generic error handler to catch unhandled exceptions."""
+    logging.error(f"Unhandled exception: {str(e)}")
+    return jsonify(error='An internal server error occurred. Please check the logs.'), 500
 
 @app.route('/api/signup', methods=['POST'])
 def signup():
+    """Register a new user."""
     data = request.json
-    if not data or 'username' not in data or 'password' not in data or 'email' not in data or 'account_type' not in data:
+    required_fields = ['username', 'password', 'email', 'account_type']
+    if not all(field in data for field in required_fields):
         return jsonify(error='Missing required fields.'), 400
+    
     if User.query.filter_by(username=data['username']).first():
-        return jsonify(error='Username taken'), 400
+        return jsonify(error='Username is already taken.'), 400
     if User.query.filter_by(email=data['email']).first():
-        return jsonify(error='Email taken'), 400
+        return jsonify(error='Email is already registered.'), 400
+    
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
-        return jsonify(error='Invalid teacher key'), 403
+        return jsonify(error='Invalid secret key for teacher account.'), 403
     if data['account_type'] == 'admin':
-        return jsonify(error='Admin accounts cannot be created via signup.'), 403
+        return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
+        
     try:
         hashed_pw = generate_password_hash(data['password'])
-        user = User(username=data['username'], email=data['email'], password_hash=hashed_pw, role=data['account_type'])
-        db.session.add(user)
-        db.session.flush()
-        profile = Profile(user_id=user.id)
-        db.session.add(profile)
+        new_user = User(username=data['username'], email=data['email'], password_hash=hashed_pw, role=data['account_type'])
+        db.session.add(new_user)
+        db.session.flush() # Flush to get the new_user.id for the profile
+        
+        new_profile = Profile(user_id=new_user.id)
+        db.session.add(new_profile)
+        
         db.session.commit()
+        login_user(new_user)
+        return jsonify(success=True, user=new_user.to_dict())
+        
     except IntegrityError:
         db.session.rollback()
-        return jsonify(error='A user with that username or email already exists.'), 409
+        return jsonify(error='A database integrity error occurred. The username or email might already exist.'), 409
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error during signup: {str(e)}")
-        return jsonify(error='An error occurred during account creation. Please try again.'), 500
-    login_user(user)
-    return jsonify(success=True, user=user.to_dict())
+        return jsonify(error='An unexpected error occurred during account creation.'), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
+    """Authenticate and log in a user."""
     data = request.json
     if not data or 'username' not in data or 'password' not in data:
-        return jsonify(error='Missing required fields.'), 400
+        return jsonify(error='Missing username or password.'), 400
+        
     user = User.query.filter_by(username=data['username']).first()
     if not user or not check_password_hash(user.password_hash, data['password']):
-        return jsonify(error='Invalid credentials'), 401
+        return jsonify(error='Invalid username or password.'), 401
+        
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
-        return jsonify(error='Invalid admin key'), 403
+        return jsonify(error='Invalid admin secret key.'), 403
+        
+    # Ensure user has a profile, create one if not (for legacy users)
     if not user.profile:
         try:
             profile = Profile(user_id=user.id)
@@ -1315,423 +1348,518 @@ def login():
             db.session.commit()
         except Exception as e:
             db.session.rollback()
-            logging.error(f"Error creating profile on login: {str(e)}")
-            return jsonify(error='An internal server error occurred.'), 500
+            logging.error(f"Error creating profile for user {user.id} on login: {str(e)}")
+            # Log the error but don't prevent login
+            
     login_user(user)
     return jsonify(success=True, user=user.to_dict())
 
 @app.route('/api/logout')
+@login_required
 def logout():
+    """Log out the current user."""
     logout_user()
-    return jsonify(success=True)
+    return jsonify(success=True, message="You have been logged out.")
 
 @app.route('/api/status')
 def status():
+    """Check the current user's authentication status."""
     if current_user.is_authenticated:
         return jsonify(success=True, user=current_user.to_dict(), settings={})
-    return jsonify(success=False)
+    return jsonify(success=False, user=None)
+
+@app.route('/api/request-password-reset', methods=['POST'])
+def request_password_reset():
+    """Send a password reset email to a user."""
+    data = request.json
+    user = User.query.filter_by(email=data.get('email')).first()
+    if user:
+        try:
+            token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
+            reset_url = f'{SITE_CONFIG["YOUR_DOMAIN"]}/reset/{token}'
+            msg = Message('Password Reset Request for Myth AI', recipients=[user.email])
+            msg.body = f'To reset your password, please click the following link: {reset_url}\n\nIf you did not request this, please ignore this email.'
+            mail.send(msg)
+        except Exception as e:
+            logging.error(f"Failed to send password reset email: {str(e)}")
+            # Don't expose the error to the client
+    # Always return a generic message for security
+    return jsonify(success=True, message='If an account with that email exists, a password reset link has been sent.')
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    """Reset a user's password using a valid token."""
+    data = request.json
+    token = data.get('token')
+    new_password = data.get('password')
+
+    if not token or not new_password:
+        return jsonify(error='Missing token or new password.'), 400
+
+    try:
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600) # 1 hour expiry
+        user = User.query.filter_by(email=email).first_or_404()
+        user.password_hash = generate_password_hash(new_password)
+        db.session.commit()
+        return jsonify(success=True, message='Your password has been reset successfully.')
+    except (SignatureExpired, BadTimeSignature):
+        return jsonify(error='The password reset link is invalid or has expired.'), 400
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error resetting password: {str(e)}")
+        return jsonify(error='An unexpected error occurred while resetting the password.'), 500
+
+# ==============================================================================
+# --- 6. API ROUTES - CLASSES & CHAT ---
+# ==============================================================================
+
+def user_has_class_access(class_id, user):
+    """Helper function to check if a user has access to a class."""
+    cls = Class.query.get(class_id)
+    if not cls:
+        return False
+    is_teacher = user.id == cls.teacher_id
+    is_student = cls.students.filter_by(id=user.id).first() is not None
+    is_admin = user.role == 'admin'
+    return is_teacher or is_student or is_admin
 
 @app.route('/api/my_classes')
 @login_required
 def my_classes():
+    """Get all classes for the current user."""
     if current_user.role == 'teacher':
         classes = current_user.taught_classes
     else:
         classes = current_user.enrolled_classes.all()
-    return jsonify(success=True, classes=[{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code} for c in classes])
+    
+    class_list = [{
+        'id': c.id, 
+        'name': c.name, 
+        'teacher_name': c.teacher.username, 
+        'code': c.code
+    } for c in classes]
+    return jsonify(success=True, classes=class_list)
 
 @app.route('/api/classes', methods=['POST'])
 @teacher_required
 def create_class():
+    """Create a new class."""
     data = request.json
     if not data or 'name' not in data:
-        return jsonify(error='Missing required fields.'), 400
+        return jsonify(error='Class name is required.'), 400
+    
     try:
         code = secrets.token_hex(4).upper()
-        cls = Class(name=data['name'], code=code, teacher_id=current_user.id)
-        db.session.add(cls)
+        while Class.query.filter_by(code=code).first(): # Ensure code is unique
+            code = secrets.token_hex(4).upper()
+            
+        new_class = Class(name=data['name'], code=code, teacher_id=current_user.id)
+        db.session.add(new_class)
         db.session.commit()
-        return jsonify(success=True, class_={'id': cls.id, 'name': cls.name, 'code': cls.code})
+        return jsonify(success=True, class_={'id': new_class.id, 'name': new_class.name, 'code': new_class.code}), 201
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error creating class: {str(e)}")
-        return jsonify(error='Could not create class.'), 500
+        return jsonify(error='Failed to create the class.'), 500
 
 @app.route('/api/join_class', methods=['POST'])
 @login_required
 def join_class():
+    """Allow a student to join a class using a code."""
     data = request.json
-    if not data or 'code' not in data:
-        return jsonify(error='Missing required fields.'), 400
+    code = data.get('code', '').upper()
+    if not code:
+        return jsonify(error='Class code is required.'), 400
+        
+    cls = Class.query.filter_by(code=code).first()
+    if not cls:
+        return jsonify(error='Invalid class code.'), 404
+        
+    if cls.students.filter_by(id=current_user.id).first():
+        return jsonify(error='You are already enrolled in this class.'), 400
+        
     try:
-        cls = Class.query.filter_by(code=data['code'].upper()).first()
-        if not cls:
-            return jsonify(error='Invalid class code'), 404
-        if cls.students.filter_by(id=current_user.id).first():
-            return jsonify(error='You are already enrolled in this class.'), 400
         current_user.enrolled_classes.append(cls)
         db.session.commit()
-        return jsonify(success=True, message='Joined class')
+        return jsonify(success=True, message=f'Successfully joined class: {cls.name}')
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error joining class: {str(e)}")
-        return jsonify(error='Could not join class.'), 500
+        return jsonify(error='An unexpected error occurred while joining the class.'), 500
 
 @app.route('/api/classes/<class_id>')
 @login_required
-def get_class(class_id):
+def get_class_details(class_id):
+    """Get detailed information about a specific class."""
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="You do not have permission to access this class."), 403
+        
     cls = Class.query.options(db.joinedload(Class.students).subqueryload(User.profile)).get_or_404(class_id)
-    if not (current_user.role == 'admin' or current_user.id == cls.teacher_id or current_user in cls.students.all()):
-        return jsonify(error="You do not have access to this class."), 403
-    return jsonify(success=True, class_={
+    
+    class_data = {
         'id': cls.id,
         'name': cls.name,
-        'students': [{'id': s.id, 'username': s.username, 'profile': {'bio': s.profile.bio or '', 'avatar': s.profile.avatar or ''} if s.profile else {'bio': '', 'avatar': ''}} for s in cls.students]
-    })
+        'students': [{
+            'id': s.id, 
+            'username': s.username, 
+            'profile': {'bio': s.profile.bio or '', 'avatar': s.profile.avatar or ''} if s.profile else {}
+        } for s in cls.students]
+    }
+    return jsonify(success=True, class_=class_data)
 
 @app.route('/api/class_messages/<class_id>')
 @login_required
 def get_class_messages(class_id):
-    cls = Class.query.get_or_404(class_id)
-    if not (current_user.role == 'admin' or current_user.id == cls.teacher_id or current_user in cls.students.all()):
-        return jsonify(error="You do not have access to this class."), 403
-    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp).all()
-    return jsonify(success=True, messages=[{
+    """Get all chat messages for a specific class."""
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="You do not have permission to view these messages."), 403
+        
+    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp.asc()).all()
+    
+    message_list = [{
         'id': m.id,
         'sender_id': m.sender_id,
-        'sender_name': m.sender.username if m.sender else 'AI',
+        'sender_name': m.sender.username if m.sender else 'AI Assistant',
         'sender_avatar': m.sender.profile.avatar if m.sender and m.sender.profile else None,
         'content': m.content,
         'timestamp': m.timestamp.isoformat()
-    } for m in messages])
+    } for m in messages]
+    return jsonify(success=True, messages=message_list)
 
 @app.route('/api/generate_ai_response', methods=['POST'])
 @login_required
 def generate_ai_response():
+    """Generate and post an AI response to a class chat."""
     data = request.json
-    if not data or 'class_id' not in data or 'prompt' not in data:
-        return jsonify(error='Missing required fields.'), 400
-    
-    prompt = data.get('prompt', '').lower()
-    if any(q in prompt for q in ['who made you', 'who created you', 'who is your creator']):
-        ai_response = "I was created by DeVHossein."
+    class_id = data.get('class_id')
+    prompt = data.get('prompt')
+
+    if not class_id or not prompt:
+        return jsonify(error='Missing class_id or prompt.'), 400
+
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="You do not have permission to interact with this class chat."), 403
+
+    # Simple keyword-based response for the creator question
+    if any(q in prompt.lower() for q in ['who made you', 'who created you', 'who is your creator']):
+        ai_response_text = "I was created by the collaborative efforts of DeVHossein."
     else:
-        ai_persona = current_user.ai_persona if current_user.ai_persona else "a helpful AI assistant"
-        ai_response = f"As {ai_persona}, my response is: " + data.get('prompt', '')
+        # Placeholder for a real AI API call
+        site_persona = SiteSettings.query.get('ai_persona')
+        default_persona = "a helpful AI assistant"
+        persona = current_user.ai_persona or (site_persona.value if site_persona else default_persona)
+        ai_response_text = f"As {persona}, I'm processing your request about: '{prompt}'"
+
     try:
-        msg = ChatMessage(class_id=data['class_id'], sender_id=None, content=ai_response)
+        msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
         db.session.add(msg)
         db.session.commit()
-        socketio.emit('new_message', {'class_id': data['class_id'], 'sender_id': None, 'sender_name': 'AI', 'sender_avatar': None, 'content': ai_response, 'timestamp': msg.timestamp.isoformat()}, room=f'class_{data["class_id"]}')
-        return jsonify(success=True)
+        
+        # Emit the new message to all clients in the class room
+        socketio.emit('new_message', {
+            'class_id': class_id,
+            'sender_id': None,
+            'sender_name': 'AI Assistant',
+            'sender_avatar': None, # Or a default AI avatar URL
+            'content': ai_response_text,
+            'timestamp': msg.timestamp.isoformat()
+        }, room=f'class_{class_id}')
+        
+        return jsonify(success=True, message="AI response generated.")
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error generating AI response: {str(e)}")
-        return jsonify(error='Could not generate AI response.'), 500
+        logging.error(f"Error saving or emitting AI response: {str(e)}")
+        return jsonify(error='Could not process the AI response.'), 500
+
+# ==============================================================================
+# --- 7. API ROUTES - TEAMS ---
+# ==============================================================================
 
 @app.route('/api/teams')
 @login_required
-def get_teams():
+def get_my_teams():
+    """Get all teams for the current user."""
     teams = current_user.teams.all()
-    return jsonify(success=True, teams=[{
+    team_list = [{
         'id': t.id,
         'name': t.name,
         'code': t.code,
         'owner_name': t.owner.username,
         'member_count': t.members.count()
-    } for t in teams])
+    } for t in teams]
+    return jsonify(success=True, teams=team_list)
 
 @app.route('/api/teams', methods=['POST'])
 @login_required
 def create_team():
+    """Create a new team with the current user as the owner."""
     data = request.json
-    if not data or 'name' not in data:
-        return jsonify(error='Missing required fields.'), 400
+    if not data or not data.get('name'):
+        return jsonify(error='Team name is required.'), 400
+        
     try:
         code = secrets.token_hex(4).upper()
-        team = Team(name=data['name'], code=code, owner_id=current_user.id)
-        db.session.add(team)
-        team.members.append(current_user)
+        while Team.query.filter_by(code=code).first(): # Ensure code is unique
+            code = secrets.token_hex(4).upper()
+            
+        new_team = Team(name=data['name'], code=code, owner_id=current_user.id)
+        new_team.members.append(current_user) # The creator is automatically a member
+        db.session.add(new_team)
         db.session.commit()
-        return jsonify(success=True, team={'id': team.id, 'name': team.name, 'code': team.code})
+        return jsonify(success=True, team={'id': new_team.id, 'name': new_team.name, 'code': new_team.code}), 201
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error creating team: {str(e)}")
-        return jsonify(error='Could not create team.'), 500
+        return jsonify(error='Failed to create the team.'), 500
 
 @app.route('/api/join_team', methods=['POST'])
 @login_required
 def join_team():
+    """Allow a user to join a team using a code."""
     data = request.json
-    if not data or 'code' not in data:
-        return jsonify(error='Missing required fields.'), 400
+    code = data.get('code', '').upper()
+    if not code:
+        return jsonify(error='Team code is required.'), 400
+        
+    team = Team.query.filter_by(code=code).first()
+    if not team:
+        return jsonify(error='Invalid team code.'), 404
+        
+    if current_user in team.members:
+        return jsonify(error='You are already a member of this team.'), 400
+        
     try:
-        team = Team.query.filter_by(code=data['code'].upper()).first()
-        if not team:
-            return jsonify(error='Invalid team code'), 404
-        if current_user in team.members.all():
-            return jsonify(error='You are already a member of this team.'), 400
         current_user.teams.append(team)
         db.session.commit()
-        return jsonify(success=True, message='Joined team')
+        return jsonify(success=True, message=f'Successfully joined team: {team.name}')
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error joining team: {str(e)}")
-        return jsonify(error='Could not join team.'), 500
+        return jsonify(error='An unexpected error occurred while joining the team.'), 500
 
 @app.route('/api/teams/<team_id>')
 @login_required
-def get_team(team_id):
+def get_team_details(team_id):
+    """Get detailed information about a specific team."""
     team = Team.query.options(db.joinedload(Team.members).subqueryload(User.profile)).get_or_404(team_id)
-    if not (current_user.id == team.owner_id or current_user in team.members.all()):
-        return jsonify(error="You do not have access to this team."), 403
-    return jsonify(success=True, team={
+    
+    if current_user not in team.members and current_user.role != 'admin':
+        return jsonify(error="You do not have permission to access this team."), 403
+        
+    team_data = {
         'id': team.id,
         'name': team.name,
         'code': team.code,
         'owner_id': team.owner_id,
-        'members': [{'id': m.id, 'username': m.username, 'profile': {'bio': m.profile.bio or '', 'avatar': m.profile.avatar or ''} if m.profile else {'bio': '', 'avatar': ''}} for m in team.members]
-    })
+        'members': [{
+            'id': m.id, 
+            'username': m.username, 
+            'profile': {'bio': m.profile.bio or '', 'avatar': m.profile.avatar or ''} if m.profile else {}
+        } for m in team.members]
+    }
+    return jsonify(success=True, team=team_data)
+
+# ==============================================================================
+# --- 8. API ROUTES - USER PROFILE & BILLING ---
+# ==============================================================================
 
 @app.route('/api/update_profile', methods=['POST'])
 @login_required
 def update_profile():
+    """Update the current user's profile information."""
     data = request.json
     try:
         profile = current_user.profile
-        if not profile:
+        if not profile: # Should not happen with current logic, but good for robustness
             profile = Profile(user_id=current_user.id)
             db.session.add(profile)
-        profile.bio = data.get('bio', '')
-        profile.avatar = data.get('avatar', '')
-        current_user.theme_preference = data.get('theme_preference', 'dark')
+            
+        profile.bio = data.get('bio', profile.bio)
+        profile.avatar = data.get('avatar', profile.avatar)
+        current_user.theme_preference = data.get('theme_preference', current_user.theme_preference)
+        
         db.session.commit()
         return jsonify(success=True, profile={'bio': profile.bio, 'avatar': profile.avatar})
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error updating profile: {str(e)}")
+        logging.error(f"Error updating profile for user {current_user.id}: {str(e)}")
         return jsonify(error='Could not update profile.'), 500
 
 @app.route('/api/create-checkout-session', methods=['POST'])
 @login_required
 def create_checkout_session():
+    """Create a Stripe Checkout session for subscriptions."""
     data = request.json
+    price_id = data.get('price_id')
+    if not price_id:
+        return jsonify(error='Price ID is required.'), 400
     try:
-        session = stripe.checkout.Session.create(
+        checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            line_items=[{'price': data['price_id'], 'quantity': 1}],
+            line_items=[{'price': price_id, 'quantity': 1}],
             mode='subscription',
-            success_url=SITE_CONFIG['YOUR_DOMAIN'] + '/success',
-            cancel_url=SITE_CONFIG['YOUR_DOMAIN'] + '/cancel',
-            customer_email=current_user.email
+            success_url=f'{SITE_CONFIG["YOUR_DOMAIN"]}/?session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url=SITE_CONFIG['YOUR_DOMAIN'],
+            customer_email=current_user.email,
+            client_reference_id=current_user.id
         )
-        return jsonify(success=True, session_id=session.id)
+        return jsonify(success=True, session_id=checkout_session.id)
     except Exception as e:
         logging.error(f"Stripe Checkout Session Error: {str(e)}")
-        return jsonify(error='Could not create checkout session.'), 500
+        return jsonify(error=str(e)), 500
 
 @app.route('/api/create-portal-session', methods=['POST'])
 @login_required
 def create_portal_session():
+    """Create a Stripe Billing Portal session for managing subscriptions."""
     if not current_user.stripe_customer_id:
         return jsonify(error='User does not have a Stripe customer ID.'), 400
     try:
-        session = stripe.billing_portal.Session.create(
+        portal_session = stripe.billing_portal.Session.create(
             customer=current_user.stripe_customer_id,
             return_url=SITE_CONFIG['YOUR_DOMAIN']
         )
-        return jsonify(success=True, url=session.url)
+        return jsonify(success=True, url=portal_session.url)
     except Exception as e:
         logging.error(f"Stripe Portal Session Error: {str(e)}")
-        return jsonify(error='Could not create billing portal session.'), 500
+        return jsonify(error=str(e)), 500
 
 @app.route('/stripe_webhooks', methods=['POST'])
 def stripe_webhooks():
-    return jsonify(success=True)
+    """Handle incoming webhooks from Stripe."""
+    # This is a placeholder. A real implementation would require signature
+    # verification and handling of various event types.
+    return jsonify(status='success'), 200
+
+# ==============================================================================
+# --- 9. API ROUTES - NOTIFICATIONS ---
+# ==============================================================================
 
 @app.route('/api/notifications')
 @login_required
 def get_notifications():
+    """Get all notifications for the current user."""
     notifs = current_user.notifications.order_by(Notification.timestamp.desc()).all()
     return jsonify(success=True, notifications=[{'id': n.id, 'content': n.content, 'is_read': n.is_read, 'timestamp': n.timestamp.isoformat()} for n in notifs])
 
 @app.route('/api/notifications/unread_count')
 @login_required
 def unread_notifications_count():
+    """Get the count of unread notifications for the current user."""
     count = current_user.notifications.filter_by(is_read=False).count()
     return jsonify(success=True, count=count)
 
 @app.route('/api/notifications/mark_read', methods=['POST'])
 @login_required
 def mark_notifications_read():
+    """Mark all unread notifications for the current user as read."""
     try:
-        for n in current_user.notifications.filter_by(is_read=False).all():
-            n.is_read = True
+        current_user.notifications.filter_by(is_read=False).update({'is_read': True})
         db.session.commit()
         return jsonify(success=True)
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error marking notifications as read: {str(e)}")
+        logging.error(f"Error marking notifications as read for user {current_user.id}: {str(e)}")
         return jsonify(error='Could not update notifications.'), 500
+
+# ==============================================================================
+# --- 10. API ROUTES - ADMIN PANEL ---
+# ==============================================================================
 
 @app.route('/api/admin/dashboard_data')
 @admin_required
 def admin_dashboard_data():
+    """Fetch aggregated data for the admin dashboard."""
     stats = {
         'total_users': User.query.count(),
         'total_classes': Class.query.count(),
         'total_teams': Team.query.count(),
         'active_subscriptions': User.query.filter_by(has_subscription=True).count()
     }
-    users = [{'id': u.id, 'username': u.username, 'email': u.email, 'role': u.role, 'created_at': u.created_at.isoformat()} for u in User.query.all()]
-    classes = [{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code, 'student_count': c.students.count()} for c in Class.query.all()]
+    users = [u.to_dict() for u in User.query.all()]
+    classes = [{
+        'id': c.id, 
+        'name': c.name, 
+        'teacher_name': c.teacher.username, 
+        'code': c.code, 
+        'student_count': c.students.count()
+    } for c in Class.query.all()]
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
 
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_user(user_id):
+    """Delete a user from the database."""
     try:
         user = User.query.get_or_404(user_id)
         db.session.delete(user)
         db.session.commit()
-        return jsonify(success=True)
+        return jsonify(success=True, message=f'User {user.username} deleted.')
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error deleting user: {str(e)}")
+        logging.error(f"Admin error deleting user {user_id}: {str(e)}")
         return jsonify(error='Could not delete user.'), 500
 
 @app.route('/api/admin/classes/<class_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_class(class_id):
+    """Delete a class from the database."""
     try:
         cls = Class.query.get_or_404(class_id)
         db.session.delete(cls)
         db.session.commit()
-        return jsonify(success=True)
+        return jsonify(success=True, message=f'Class {cls.name} deleted.')
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error deleting class: {str(e)}")
+        logging.error(f"Admin error deleting class {class_id}: {str(e)}")
         return jsonify(error='Could not delete class.'), 500
 
 @app.route('/api/admin/update_settings', methods=['POST'])
 @admin_required
 def admin_update_settings():
+    """Update site-wide settings."""
     data = request.json
     try:
         for key, value in data.items():
             setting = SiteSettings.query.get(key)
-            if not setting:
-                setting = SiteSettings(key=key)
+            if setting:
+                setting.value = value
+            else:
+                setting = SiteSettings(key=key, value=value)
                 db.session.add(setting)
-            setting.value = value
         db.session.commit()
-        return jsonify(success=True)
+        return jsonify(success=True, message='Settings updated.')
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error updating settings: {str(e)}")
+        logging.error(f"Admin error updating settings: {str(e)}")
         return jsonify(error='Could not update settings.'), 500
 
-@app.route('/api/admin/toggle_maintenance', methods=['POST'])
+@app.route('/api/admin/music', methods=['GET', 'POST'])
 @admin_required
-def admin_toggle_maintenance():
-    try:
-        setting = SiteSettings.query.get('maintenance')
-        if not setting:
-            setting = SiteSettings(key='maintenance', value='false')
-            db.session.add(setting)
-        setting.value = 'true' if setting.value == 'false' else 'false'
-        db.session.commit()
-        return jsonify(success=True, enabled=setting.value == 'true')
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error toggling maintenance: {str(e)}")
-        return jsonify(error='Could not toggle maintenance mode.'), 500
-
-@app.route('/api/admin/bugfix', methods=['POST'])
-@admin_required
-def admin_bugfix():
-    logging.info("Admin initiated bugfix script.")
-    try:
-        users_without_profile = User.query.filter(~User.profile.has()).all()
-        for user in users_without_profile:
-            profile = Profile(user_id=user.id)
-            db.session.add(profile)
-        db.session.commit()
-        logging.info(f"Fixed {len(users_without_profile)} missing profiles.")
-        return jsonify(success=True, message=f"Bugfix script ran successfully. Fixed {len(users_without_profile)} missing profiles.")
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Bugfix script failed: {str(e)}")
-        return jsonify(success=False, error=f"Bugfix failed: {str(e)}"), 500
-
-@app.route('/api/admin/set_ai_persona', methods=['POST'])
-@admin_required
-def admin_set_ai_persona():
-    data = request.json
-    persona = data.get('persona', '')
-    if not persona:
-        return jsonify(success=False, error='Persona content cannot be empty.'), 400
-    try:
-        setting = SiteSettings.query.filter_by(key='ai_persona').first()
-        if not setting:
-            setting = SiteSettings(key='ai_persona', value=persona)
-            db.session.add(setting)
-        else:
-            setting.value = persona
-        db.session.commit()
-        return jsonify(success=True, message='AI persona updated successfully.')
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error setting AI persona: {str(e)}")
-        return jsonify(success=False, error='Failed to set AI persona.'), 500
-
-@app.route('/api/teacher/set_student_persona', methods=['POST'])
-@teacher_required
-def teacher_set_student_persona():
-    data = request.json
-    student_id = data.get('student_id')
-    persona = data.get('persona')
-    if not student_id or persona is None:
-        return jsonify(error='Missing student_id or persona field.'), 400
-    student = User.query.get(student_id)
-    if not student:
-        return jsonify(error='Student not found.'), 404
-    if current_user.role == 'teacher' and not any(student in c.students for c in current_user.taught_classes):
-        return jsonify(error='You do not have permission to modify this student.'), 403
-    try:
-        student.ai_persona = persona if persona else None
-        db.session.commit()
-        return jsonify(success=True, message=f'AI persona for {student.username} updated.')
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error setting student persona: {str(e)}")
-        return jsonify(error='Failed to set student persona.'), 500
-
-@app.route('/api/admin/music', methods=['POST'])
-@admin_required
-def add_music_track():
-    data = request.json
-    if not data or 'name' not in data or 'url' not in data:
-        return jsonify(error='Missing name or URL for music track.'), 400
-    try:
-        music = BackgroundMusic(name=data['name'], url=data['url'], uploaded_by=current_user.id)
-        db.session.add(music)
-        db.session.commit()
-        return jsonify(success=True, message='Music track added successfully.')
-    except Exception as e:
-        db.session.rollback()
-        return jsonify(error='Failed to add music track.'), 500
-
-@app.route('/api/admin/music')
-@login_required
-def get_music_tracks():
+def admin_manage_music():
+    """Manage background music tracks."""
+    if request.method == 'POST':
+        data = request.json
+        if not data or 'name' not in data or 'url' not in data:
+            return jsonify(error='Missing name or URL for music track.'), 400
+        try:
+            music = BackgroundMusic(name=data['name'], url=data['url'], uploaded_by=current_user.id)
+            db.session.add(music)
+            db.session.commit()
+            return jsonify(success=True, message='Music track added.'), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify(error='Failed to add music track.'), 500
+    
+    # GET request
     music_tracks = BackgroundMusic.query.all()
     return jsonify(success=True, music=[{'id': m.id, 'name': m.name, 'url': m.url} for m in music_tracks])
 
-@app.route('/api/admin/music/<music_id>', methods=['DELETE'])
+@app.route('/api/admin/music/<int:music_id>', methods=['DELETE'])
 @admin_required
-def delete_music_track(music_id):
+def admin_delete_music(music_id):
+    """Delete a music track."""
     try:
         music = BackgroundMusic.query.get_or_404(music_id)
         db.session.delete(music)
@@ -1741,71 +1869,73 @@ def delete_music_track(music_id):
         db.session.rollback()
         return jsonify(error='Failed to delete music track.'), 500
 
-@app.route('/api/request-password-reset', methods=['POST'])
-def request_password_reset():
-    data = request.json
-    user = User.query.filter_by(email=data['email']).first()
-    if user:
-        token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
-        msg = Message('Password Reset Request', recipients=[user.email])
-        msg.body = f'Click here to reset: {SITE_CONFIG["YOUR_DOMAIN"]}/reset/{token}'
-        mail.send(msg)
-    return jsonify(success=True, message='If an account exists, a reset email has been sent.')
-
-@app.route('/api/reset-password', methods=['POST'])
-def reset_password():
-    data = request.json
-    token = data.get('token')
-    new_password = data.get('password')
-    if not token or not new_password:
-        return jsonify(error='Missing token or new password.'), 400
-    try:
-        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)
-    except (SignatureExpired, BadTimeSignature):
-        return jsonify(error='The password reset link is invalid or has expired.'), 400
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify(error='User not found.'), 404
-    try:
-        user.password_hash = generate_password_hash(new_password)
-        db.session.commit()
-        return jsonify(success=True, message='Password reset successfully.')
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error resetting password: {str(e)}")
-        return jsonify(error='Could not reset password. Please try again.'), 500
+# ==============================================================================
+# --- 11. SOCKET.IO EVENTS ---
+# ==============================================================================
 
 @socketio.on('join')
 def on_join(data):
-    join_room(data['room'])
+    """Handle a client joining a room."""
+    if current_user.is_authenticated:
+        join_room(data['room'])
 
 @socketio.on('leave')
 def on_leave(data):
-    leave_room(data['room'])
+    """Handle a client leaving a room."""
+    if current_user.is_authenticated:
+        leave_room(data['room'])
 
 @socketio.on('send_message')
 def on_send_message(data):
+    """Handle a user sending a message to a class chat."""
     if not current_user.is_authenticated:
         return
-    msg = ChatMessage(class_id=data['class_id'], sender_id=current_user.id, content=data['message'])
-    db.session.add(msg)
-    db.session.commit()
-    emit('new_message', {
-        'id': msg.id,
-        'class_id': msg.class_id,
-        'sender_id': msg.sender_id,
-        'sender_name': current_user.username,
-        'sender_avatar': current_user.profile.avatar if current_user.profile else None,
-        'content': msg.content,
-        'timestamp': msg.timestamp.isoformat()
-    }, room=f'class_{data["class_id"]}')
+
+    class_id = data.get('class_id')
+    message_content = data.get('message')
+
+    if not class_id or not message_content:
+        return # Or emit an error back to the sender
+
+    if not user_has_class_access(class_id, current_user):
+        return # Or emit an error back to the sender
+
+    try:
+        msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=message_content)
+        db.session.add(msg)
+        db.session.commit()
+        
+        emit('new_message', {
+            'id': msg.id,
+            'class_id': msg.class_id,
+            'sender_id': msg.sender_id,
+            'sender_name': current_user.username,
+            'sender_avatar': current_user.profile.avatar if current_user.profile else None,
+            'content': msg.content,
+            'timestamp': msg.timestamp.isoformat()
+        }, room=f'class_{class_id}')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Socket error sending message: {str(e)}")
+
+# ==============================================================================
+# --- 12. APP INITIALIZATION ---
+# ==============================================================================
 
 def initialize_database():
+    """Create database tables and default records if they don't exist."""
     with app.app_context():
         db.create_all()
+        
+        # Create default admin user if no users exist
         if not User.query.first():
             try:
-                admin_user = User(username='big ballz', email='admin@example.com', password_hash=generate_password_hash('adminpassword'), role='admin')
+                admin_user = User(
+                    username='big ballz', 
+                    email='admin@example.com', 
+                    password_hash=generate_password_hash('adminpassword'), 
+                    role='admin'
+                )
                 db.session.add(admin_user)
                 db.session.flush()
                 admin_profile = Profile(user_id=admin_user.id)
@@ -1814,8 +1944,10 @@ def initialize_database():
                 logging.info("Default admin user created.")
             except IntegrityError:
                 db.session.rollback()
-                logging.warning("Default admin user already exists.")
-        if not SiteSettings.query.filter_by(key='ai_persona').first():
+                logging.warning("Default admin user already exists or could not be created.")
+        
+        # Create default AI persona setting if it doesn't exist
+        if not SiteSettings.query.get('ai_persona'):
             try:
                 ai_persona_setting = SiteSettings(key='ai_persona', value='a helpful AI assistant')
                 db.session.add(ai_persona_setting)
@@ -1828,4 +1960,5 @@ def initialize_database():
 if __name__ == '__main__':
     initialize_database()
     socketio.run(app, debug=True)
+
 

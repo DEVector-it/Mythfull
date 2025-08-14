@@ -31,6 +31,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
+
+' , and I want you to fix it.
+
 CORS(app, supports_credentials=True, origins="*")
 Talisman(app, content_security_policy=None)
 

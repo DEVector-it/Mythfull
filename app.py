@@ -1188,7 +1188,7 @@ with app.app_context():
             logging.warning("Default AI persona setting already exists.")
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, port=5000)
+    socketio.run(app, debug=True, port=50
 
 
 

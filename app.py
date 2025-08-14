@@ -23,6 +23,7 @@ from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from flask_wtf.csrf import CSRFProtect, generate_csrf # --- SECURITY: Import for CSRF protection
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
@@ -38,10 +39,40 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:/
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-very-secret-key-for-dev')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT', 'a-fallback-salt-for-dev')
+# --- SECURITY: Set a cookie to be sent only over HTTPS in production ---
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
+app.config['REMEMBER_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['REMEMBER_COOKIE_HTTPONLY'] = True
+
 
 # --- Security & CORS ---
-CORS(app, supports_credentials=True, origins="*")
-Talisman(app, content_security_policy=None)
+CORS(app, supports_credentials=True, origins="*") # In production, restrict this to your frontend domain
+# --- SECURITY: Define a Content Security Policy (CSP) ---
+# This policy restricts where content (scripts, styles, etc.) can be loaded from, mitigating XSS attacks.
+csp = {
+    'default-src': '\'self\'',
+    'script-src': [
+        '\'self\'',
+        'https://cdn.tailwindcss.com',
+        'https://cdnjs.cloudflare.com',
+        'https://js.stripe.com'
+    ],
+    'style-src': [
+        '\'self\'',
+        '\'unsafe-inline\'', # Allow inline styles
+        'https://cdn.tailwindcss.com',
+        'https://fonts.googleapis.com'
+    ],
+    'font-src': [
+        '\'self\'',
+        'https://fonts.gstatic.com'
+    ],
+    'img-src': '*', # Allow images from any source for avatars etc.
+    'connect-src': '\'self\'' # For Socket.IO and API calls
+}
+Talisman(app, content_security_policy=csp)
+csrf = CSRFProtect(app) # --- SECURITY: Initialize CSRF Protection ---
 
 # --- Site-wide Configuration Dictionary ---
 SITE_CONFIG = {
@@ -298,7 +329,7 @@ HTML_CONTENT = """
         .user-message .chat-bubble { background-color: #1E40AF; border-color: #3B82F6; }
         
         /* --- REWORKED ANIMATIONS & BACKGROUNDS --- */
-        .welcome-bg {
+        .dynamic-bg {
             background: linear-gradient(-45deg, #0f172a, #1e3a8a, #4c1d95, #0f172a);
             background-size: 400% 400%;
             animation: gradientBG 20s ease infinite;
@@ -326,20 +357,6 @@ HTML_CONTENT = """
     <div id="modal-container"></div>
     <div class="fixed bottom-4 left-4 text-xs text-gray-500">&copy; <span id="current-year"></span> Myth AI</div>
     <audio id="background-music" loop autoplay></audio>
-
-    <template id="template-welcome-anime">
-        <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
-            <div class="glassmorphism p-8 rounded-xl text-center max-w-2xl">
-                <div id="logo-container-welcome" class="mx-auto mb-4 h-24 w-24"></div>
-                <h1 class="text-4xl font-bold text-white mb-4">AI for Curiosity, Not Cheating.</h1>
-                <p class="text-gray-300 mb-6">
-                    We've built a platform where AI fosters genuine understanding. Teachers can create private classrooms, track student progress, and see what questions are being asked. Our specialized AI tutors are designed to guide, not just give away the solution.
-                </p>
-                <button id="get-started-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Get Started</button>
-            </div>
-        </div>
-        <audio id="welcome-audio" src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3" preload="auto"></audio>
-    </template>
     
     <template id="template-full-screen-loader">
         <div class="full-screen-loader fade-in">
@@ -353,7 +370,7 @@ HTML_CONTENT = """
     </template>
 
     <template id="template-role-choice">
-        <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
+        <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in dynamic-bg">
             <div class="w-full max-w-md text-center">
                 <div class="flex items-center justify-center gap-3 mb-4">
                     <div id="logo-container-role" class="h-16 w-16"></div>
@@ -397,7 +414,7 @@ HTML_CONTENT = """
         </div>
     </template>
     
-    <template id="template-auth-form"><div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg"><div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl"><button id="back-to-roles" class="text-sm text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Role Selection</button><h1 class="text-3xl font-bold text-center brand-gradient-text mb-2" id="auth-title">Portal Login</h1><p class="text-gray-400 text-center mb-6" id="auth-subtitle">Sign in to continue</p><form id="auth-form"><input type="hidden" id="account_type" name="account_type" value="student"><div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div><div id="admin-key-field" class="hidden mb-4"><label for="admin-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Admin Key</label><input type="password" id="admin-secret-key" name="admin_secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for admin login"></div><div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div><button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button><p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p></form><div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div></div></div></template>
+    <template id="template-auth-form"><div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in dynamic-bg"><div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl"><button id="back-to-roles" class="text-sm text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Role Selection</button><h1 class="text-3xl font-bold text-center brand-gradient-text mb-2" id="auth-title">Portal Login</h1><p class="text-gray-400 text-center mb-6" id="auth-subtitle">Sign in to continue</p><form id="auth-form"><input type="hidden" id="account_type" name="account_type" value="student"><div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div><div id="admin-key-field" class="hidden mb-4"><label for="admin-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Admin Key</label><input type="password" id="admin-secret-key" name="admin_secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for admin login"></div><div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div><button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity">Login</button><p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p></form><div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div></div></div></template>
     <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
     <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
     <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div></template>
@@ -498,7 +515,7 @@ HTML_CONTENT = """
         async function handleSendChat(e) { e.preventDefault(); const input = document.getElementById('chat-input'); const button = document.getElementById('send-chat-btn'); const message = input.value.trim(); if (!message) return; if (appState.currentUser.role === 'admin' && message.startsWith('/')) { const parts = message.split(' '); const command = parts[0]; const value = parts.slice(1).join(' '); let settingsKey = ''; if (command === '/announce') settingsKey = 'announcement'; if (command === '/motd') settingsKey = 'daily_message'; if (command === '/persona') settingsKey = 'ai_persona'; if (settingsKey) { const result = await apiCall('/admin/update_settings', { method: 'POST', body: { [settingsKey]: value } }); if (result.success) { showToast(`Admin command successful: ${settingsKey} updated.`, 'success'); input.value = ''; } } else { showToast(`Unknown admin command: ${command}`, 'error'); } return; } input.value = ''; input.disabled = true; button.disabled = true; button.innerHTML = '<div class="loader w-6 h-6 mx-auto"></div>'; const result = await apiCall('/chat/send', { method: 'POST', body: { prompt: message, class_id: appState.selectedClass.id } }); if (result.success) { input.disabled = false; button.disabled = false; button.innerHTML = 'Send'; input.focus(); } else { const errorMsg = { id: 'error-' + Date.now(), class_id: appState.selectedClass.id, sender_id: null, sender_name: "System Error", content: result.error || "Could not send message.", timestamp: new Date().toISOString() }; appendChatMessage(errorMsg); input.disabled = false; button.disabled = false; button.innerHTML = 'Send'; input.focus(); } }
         function appendChatMessage(message) { const messagesDiv = document.getElementById('chat-messages'); if (!messagesDiv) return; const isCurrentUser = message.sender_id === appState.currentUser.id; const isAI = message.sender_id === null; const msgWrapper = document.createElement('div'); msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`; const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? aiAvatarSvg : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`; const bubble = `<div class="flex flex-col"><span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span><div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">${escapeHtml(message.content)}</div><span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span></div>`; msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble; messagesDiv.appendChild(msgWrapper); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
         async function fetchBackgroundMusic() { const result = await apiCall('/admin/music'); if (result.success && result.music.length > 0) { const randomTrack = result.music[Math.floor(Math.random() * result.music.length)]; DOMElements.backgroundMusic.src = randomTrack.url; DOMElements.backgroundMusic.play().catch(e => console.error("Music playback failed:", e)); } }
-        async function main() { const status = await apiCall('/status'); if (status.success && status.user) { appState.currentUser = status.user; applyTheme(status.user.theme_preference || 'dark'); setupDashboard(status.user, status.settings); } else { renderPage('template-welcome-anime', () => { document.getElementById('get-started-btn').addEventListener('click', setupRoleChoicePage); playAudio('welcome-audio'); }); } }
+        async function main() { const status = await apiCall('/status'); if (status.success && status.user) { appState.currentUser = status.user; applyTheme(status.user.theme_preference || 'dark'); setupDashboard(status.user, status.settings); } else { renderPage('template-role-choice'); } }
         function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`; document.getElementById('notification-bell').addEventListener('click', handleNotifications); updateNotificationBell(); }
         async function updateNotificationBell(hasUnread = false) { const dot = document.getElementById('notification-dot'); if(!dot) return; if (hasUnread) { dot.classList.remove('hidden'); } else { const result = await apiCall('/notifications/unread_count'); if (result.success && result.count > 0) dot.classList.remove('hidden'); else dot.classList.add('hidden'); } }
         async function handleNotifications() { const result = await apiCall('/notifications'); if (!result.success) return; const modalContent = document.createElement('div'); modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`; showModal(modalContent); await apiCall('/notifications/mark_read', { method: 'POST' }); updateNotificationBell(); }
@@ -1188,7 +1205,8 @@ with app.app_context():
             logging.warning("Default AI persona setting already exists.")
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, port=50
+    socketio.run(app, debug=True, port=5000)
+
 
 
 

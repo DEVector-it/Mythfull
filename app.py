@@ -70,7 +70,8 @@ csp = {
         '\'self\'',
         'https://cdn.tailwindcss.com',
         'https://cdnjs.cloudflare.com',
-        'https://js.stripe.com'
+        'https://js.stripe.com',
+        'https://pagead2.googlesyndication.com' # Added for AdSense
     ],
     'style-src': [
         '\'self\'',
@@ -83,7 +84,7 @@ csp = {
         'https://fonts.gstatic.com'
     ],
     'img-src': '*',
-    'connect-src': ['\'self\'', f'wss://{request.host}'] if 'request' in globals() else '\'self\''
+    'connect-src': ['\'self\'', 'wss:'] # Corrected to avoid context error
 }
 Talisman(app, content_security_policy=csp)
 csrf = CSRFProtect(app)
@@ -304,6 +305,8 @@ HTML_CONTENT = """
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://js.stripe.com/v3/"></script>
+    <!-- NEW: Google AdSense Script -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1136294351029434" crossorigin="anonymous"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -571,6 +574,12 @@ def index():
 @app.route('/favicon.ico')
 def favicon():
     return '', 204
+
+# --- NEW: GOOGLE SITE VERIFICATION ---
+# Replace the filename and content with the values from your Google Search Console.
+@app.route('/googlea1b2c3d4e5f6g7h8.html')
+def google_verification():
+    return "google-site-verification: googlea1b2c3d4e5f6g7h8.html"
 
 
 @app.route('/reset/<token>')
@@ -1000,7 +1009,6 @@ def get_smart_replies():
 # ==============================================================================
 # --- 8. OTHER API ROUTES (Teams, Profile, Billing, etc.) ---
 # ==============================================================================
-# ... (These sections are unchanged and appear correct) ...
 @app.route('/api/teams')
 @login_required
 def get_my_teams():
@@ -1343,7 +1351,3 @@ with app.app_context():
 if __name__ == '__main__':
     is_debug = os.environ.get('FLASK_ENV') != 'production'
     socketio.run(app, debug=is_debug, port=5000)
-
-
-
-

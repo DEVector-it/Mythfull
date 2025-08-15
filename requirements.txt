@@ -543,6 +543,11 @@ HTML_CONTENT = """
 def index():
     return HTML_CONTENT
 
+@app.route('/favicon.ico')
+def favicon():
+    """Handles browser requests for the site favicon to prevent 404 errors in logs."""
+    return '', 204
+
 @app.route('/reset/<token>')
 def reset_password_page(token):
     try:
@@ -1206,5 +1211,6 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+
 
 

@@ -1,4 +1,4 @@
-v# --- Imports ---
+# --- Imports ---
 import os
 import json
 import logging
@@ -15,7 +15,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from dotenv import load_dotenv
 import stripe
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
+from itsdangerous import TimestampSigner, SignatureExpired, BadTimeSignature
 from flask_mail import Mail, Message
 from flask_talisman import Talisman
 from flask_sqlalchemy import SQLAlchemy
@@ -35,6 +35,15 @@ from flask import session
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
 # ==============================================================================
+
+# SECURITY: Add explicit dependency checks for critical packages.
+try:
+    import eventlet
+except ImportError:
+    logging.critical("FATAL ERROR: The 'eventlet' package is required for real-time features.")
+    logging.critical("Please install it by running: pip install eventlet")
+    exit(1)
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -46,7 +55,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(16)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT') or secrets.token_hex(16)
-# SECURITY: Set a shorter permanent session lifetime
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=8)
 
 # --- Production Security Checks ---
@@ -87,26 +95,19 @@ CORS(app, supports_credentials=True, origins=[prod_origin] if is_production else
 csp = {
     'default-src': '\'self\'',
     'script-src': [
-        '\'self\'',
-        '\'unsafe-inline\'', # Needed for the error handler fallback
-        'https://cdn.tailwindcss.com',
-        'https://cdnjs.cloudflare.com',
-        'https://js.stripe.com',
-        '\'nonce-{nonce}\''
+        '\'self\'', '\'unsafe-inline\'', 'https://cdn.tailwindcss.com',
+        'https://cdnjs.cloudflare.com', 'https://js.stripe.com', '\'nonce-{nonce}\''
     ],
     'style-src': [
-        '\'self\'',
-        '\'unsafe-inline\'', # Needed for the error handler fallback
-        'https://cdn.tailwindcss.com',
-        'https://fonts.googleapis.com',
-        '\'nonce-{nonce}\''
+        '\'self\'', '\'unsafe-inline\'', 'https://cdn.tailwindcss.com',
+        'https://fonts.googleapis.com', '\'nonce-{nonce}\''
     ],
     'font-src': ['\'self\'', 'https://fonts.gstatic.com'],
     'img-src': ['*', 'data:'],
     'connect-src': [
         '\'self\'',
         f'wss://{SITE_CONFIG["YOUR_DOMAIN"].split("//")[-1]}' if is_production and 'localhost' not in SITE_CONFIG["YOUR_DOMAIN"] else 'ws://localhost:5000',
-        'https://api.stripe.com'
+        'https://api.stripe.com', 'https://generativelanguage.googleapis.com'
     ],
     'object-src': '\'none\'', 'base-uri': '\'self\'', 'form-action': '\'self\''
 }
@@ -118,7 +119,6 @@ bcrypt = Bcrypt(app)
 
 # --- Initialize Other Extensions ---
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
-password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
 socketio = SocketIO(app, cors_allowed_origins=prod_origin if is_production else "*", async_mode='eventlet')
 mail = Mail(app)
@@ -128,7 +128,8 @@ if SITE_CONFIG.get("GEMINI_API_KEY"):
         import google.generativeai as genai
         genai.configure(api_key=SITE_CONFIG.get("GEMINI_API_KEY"))
     except ImportError:
-        logging.warning("google-generativeai library not found. AI features will be disabled.")
+        logging.error("The 'google-generativeai' library is not found, but a GEMINI_API_KEY is provided.")
+        logging.error("AI-powered features will be disabled. To enable them, run: pip install google-generativeai")
         genai = None
 
 # --- Flask-Mail Configuration ---
@@ -167,6 +168,7 @@ class User(UserMixin, db.Model):
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
     taught_classes = db.relationship('Class', back_populates='teacher', lazy='dynamic', foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
+    subscription = db.relationship('Subscription', back_populates='user', uselist=False, cascade="all, delete-orphan")
 
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -183,7 +185,8 @@ class User(UserMixin, db.Model):
         data = {
             'id': self.id, 'username': self.username, 'role': self.role,
             'created_at': self.created_at.isoformat(), 'profile': profile_data, 'points': self.points,
-            'streak': self.streak
+            'streak': self.streak,
+            'subscription_status': self.subscription.status if self.subscription else 'free'
         }
         if include_email:
             data['email'] = self.email
@@ -205,6 +208,8 @@ class Class(db.Model):
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
     messages = db.relationship('ChatMessage', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
+    decks = db.relationship('Deck', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
+    quizzes = db.relationship('Quiz', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -226,14 +231,67 @@ class ChatMessage(db.Model):
 
     def to_dict(self):
         return {
-            'id': self.id,
-            'class_id': self.class_id,
+            'id': self.id, 'class_id': self.class_id,
             'sender': self.sender.to_dict() if self.sender else {'username': 'Unknown User', 'id': None, 'profile': {}},
-            'content': self.content,
-            'timestamp': self.timestamp.isoformat(),
-            'is_edited': self.is_edited,
-            'reactions': self.reactions or {}
+            'content': self.content, 'timestamp': self.timestamp.isoformat(),
+            'is_edited': self.is_edited, 'reactions': self.reactions or {}
         }
+
+class Deck(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    class_obj = db.relationship('Class', back_populates='decks')
+    cards = db.relationship('Card', back_populates='deck', lazy='dynamic', cascade="all, delete-orphan")
+
+class Card(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    deck_id = db.Column(db.Integer, db.ForeignKey('deck.id', ondelete='CASCADE'), nullable=False)
+    term = db.Column(db.Text, nullable=False)
+    definition = db.Column(db.Text, nullable=False)
+    deck = db.relationship('Deck', back_populates='cards')
+
+class Quiz(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False, index=True)
+    title = db.Column(db.String(200), nullable=False)
+    time_limit = db.Column(db.Integer, nullable=True) # in minutes
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    class_obj = db.relationship('Class', back_populates='quizzes')
+    questions = db.relationship('Question', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
+
+class Question(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    question_type = db.Column(db.String(50), nullable=False, default='multiple_choice')
+    quiz = db.relationship('Quiz', back_populates='questions')
+    choices = db.relationship('Choice', back_populates='question', lazy='dynamic', cascade="all, delete-orphan")
+
+class Choice(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    question_id = db.Column(db.Integer, db.ForeignKey('question.id', ondelete='CASCADE'), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    is_correct = db.Column(db.Boolean, default=False, nullable=False)
+    question = db.relationship('Question', back_populates='choices')
+
+class QuizAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    score = db.Column(db.Float, nullable=True)
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    quiz = db.relationship('Quiz', backref='attempts')
+    student = db.relationship('User', backref='quiz_attempts')
+
+class Subscription(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
+    stripe_customer_id = db.Column(db.String(255), unique=True)
+    stripe_subscription_id = db.Column(db.String(255), unique=True)
+    status = db.Column(db.String(50), default='free', index=True)
+    user = db.relationship('User', back_populates='subscription')
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -253,7 +311,7 @@ def load_user(user_id):
         guest.is_guest = True
         guest.profile = Profile(theme_preference='dark')
         return guest
-    return User.query.options(selectinload(User.profile)).get(user_id)
+    return User.query.options(selectinload(User.profile), selectinload(User.subscription)).get(user_id)
 
 def role_required(role_names):
     if not isinstance(role_names, list): role_names = [role_names]
@@ -276,18 +334,14 @@ def class_member_required(f):
     @wraps(f)
     def decorated_function(class_id, *args, **kwargs):
         target_class = Class.query.options(selectinload(Class.teacher)).get_or_404(class_id)
-        
         is_student = False
         if current_user.is_authenticated and not getattr(current_user, 'is_guest', False):
             is_student = db.session.query(student_class_association.c.user_id).filter_by(user_id=current_user.id, class_id=class_id).first() is not None
-
         is_teacher = current_user.is_authenticated and target_class.teacher_id == current_user.id
         is_admin = current_user.is_authenticated and current_user.role == 'admin'
-
         if not (is_student or is_teacher or is_admin):
             logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access to class {class_id}.")
             abort(403)
-        
         return f(target_class, *args, **kwargs)
     return decorated_function
 
@@ -314,6 +368,7 @@ HTML_CONTENT = """
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Myth AI Portal</title>
+    <script src="https://js.stripe.com/v3/"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -348,8 +403,7 @@ HTML_CONTENT = """
 <body class="text-gray-200 antialiased">
     <div id="app-container" class="relative min-h-screen w-full overflow-x-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
-    
-    <!-- This footer is purely informational. It has no blocking functionality. -->
+    <div id="modal-container"></div>
     <div class="fixed bottom-4 right-4 text-xs text-gray-400 z-0">© 2025 Myth AI. All Rights Reserved.</div>
 
     <!-- TEMPLATES -->
@@ -451,6 +505,7 @@ HTML_CONTENT = """
     <template id="template-selected-class-view">
         <div class="flex border-b border-gray-700 mb-4">
              <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
+             <button data-tab="quizzes" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Quizzes</button>
         </div>
         <div id="class-view-content"></div>
     </template>
@@ -469,21 +524,35 @@ HTML_CONTENT = """
     <template id="template-profile">
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
-            <form id="profile-form" class="glassmorphism p-6 rounded-lg space-y-4">
-                <div>
-                    <label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>
-                    <select id="theme-select" name="theme_preference" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
-                </div>
-                <div>
-                    <label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label>
-                    <input id="avatar" name="avatar" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
-                </div>
-                <div>
-                    <label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label>
-                    <textarea id="bio" name="bio" rows="4" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></textarea>
-                </div>
-                <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Changes</button>
-            </form>
+            <div class="flex border-b border-gray-700 mb-4">
+                 <button data-tab="settings" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
+                 <button data-tab="billing" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Billing</button>
+            </div>
+            <div id="profile-view-content"></div>
+        </div>
+    </template>
+    <template id="template-profile-settings">
+        <form id="profile-form" class="glassmorphism p-6 rounded-lg space-y-4">
+            <div>
+                <label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>
+                <select id="theme-select" name="theme_preference" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
+            </div>
+            <div>
+                <label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label>
+                <input id="avatar" name="avatar" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
+            </div>
+            <div>
+                <label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label>
+                <textarea id="bio" name="bio" rows="4" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></textarea>
+            </div>
+            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Changes</button>
+        </form>
+    </template>
+    <template id="template-profile-billing">
+        <div class="glassmorphism p-6 rounded-lg space-y-4">
+            <h3 class="text-2xl font-bold">Subscription</h3>
+            <div id="subscription-status"></div>
+            <div id="billing-actions"></div>
         </div>
     </template>
     <template id="template-leaderboard-view">
@@ -533,11 +602,11 @@ HTML_CONTENT = """
     <script nonce="{{ g.nonce }}">
         document.addEventListener('DOMContentLoaded', () => {
             // *** FAILSAFE ERROR HANDLER ***
-            // This will catch any critical errors during app initialization and display them on screen.
             try {
                 const DOMElements = { 
                     appContainer: document.getElementById('app-container'), 
                     toastContainer: document.getElementById('toast-container'),
+                    modalContainer: document.getElementById('modal-container'),
                 };
                 let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', siteSettings: {}, currentClass: null, socket: null, classCache: new Map() };
 
@@ -688,6 +757,9 @@ HTML_CONTENT = """
                     const contentContainer = document.getElementById('class-view-content');
                     if (tab === 'chat') {
                         setupClassChatTab(contentContainer);
+                    } else if (tab === 'quizzes') {
+                        // Placeholder for quiz tab
+                        contentContainer.innerHTML = '<p>Quizzes coming soon!</p>';
                     }
                 }
 
@@ -776,11 +848,10 @@ HTML_CONTENT = """
                 function updateChatMessage(msg) {
                     const messageEl = document.getElementById(`message-${msg.id}`);
                     if (messageEl) {
-                        // Just re-render the whole message to update content and reactions
                         const shouldScroll = messageEl.parentElement.scrollTop + messageEl.parentElement.clientHeight === messageEl.parentElement.scrollHeight;
                         const oldEl = messageEl;
-                        renderChatMessage(msg, false); // Render new one
-                        oldEl.replaceWith(document.getElementById(`message-${msg.id}`)); // Replace in place
+                        renderChatMessage(msg, false);
+                        oldEl.replaceWith(document.getElementById(`message-${msg.id}`));
                     }
                 }
 
@@ -815,6 +886,23 @@ HTML_CONTENT = """
                 
                 async function setupProfileTab(container) {
                     renderSubTemplate(container, 'template-profile', () => {
+                        container.querySelectorAll('.profile-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchProfileTab(e.currentTarget.dataset.tab)));
+                        switchProfileTab('settings');
+                    });
+                }
+
+                function switchProfileTab(tab) {
+                    document.querySelectorAll('.profile-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
+                    const contentContainer = document.getElementById('profile-view-content');
+                    if (tab === 'settings') {
+                        setupProfileSettingsTab(contentContainer);
+                    } else if (tab === 'billing') {
+                        setupProfileBillingTab(contentContainer);
+                    }
+                }
+
+                async function setupProfileSettingsTab(container) {
+                    renderSubTemplate(container, 'template-profile-settings', () => {
                         const profile = appState.currentUser.profile;
                         document.getElementById('bio').value = profile.bio || '';
                         document.getElementById('avatar').value = profile.avatar || '';
@@ -824,9 +912,36 @@ HTML_CONTENT = """
                         document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
                     });
                 }
+
+                async function setupProfileBillingTab(container) {
+                    renderSubTemplate(container, 'template-profile-billing', () => {
+                        const statusContainer = document.getElementById('subscription-status');
+                        const actionsContainer = document.getElementById('billing-actions');
+                        const status = appState.currentUser.subscription_status;
+                        
+                        statusContainer.innerHTML = `<p>Current Plan: <span class="font-bold capitalize ${status === 'active' ? 'text-green-400' : 'text-yellow-400'}">${status}</span></p>`;
+                        
+                        if (status !== 'active') {
+                            actionsContainer.innerHTML = `<button id="upgrade-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`;
+                            document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade);
+                        } else {
+                            actionsContainer.innerHTML = `<p class="text-gray-400">You are on the Pro plan. Thank you for your support!</p>`;
+                        }
+                    });
+                }
+
+                async function handleUpgrade() {
+                    const btn = document.getElementById('upgrade-btn');
+                    setButtonLoadingState(btn, true);
+                    const result = await apiCall('/billing/create-checkout-session', { method: 'POST' });
+                    if (result.success) {
+                        const stripe = Stripe(result.public_key);
+                        stripe.redirectToCheckout({ sessionId: result.session_id });
+                    }
+                    setButtonLoadingState(btn, false);
+                }
                 
                 function setupForgotPassword() {
-                    // This is a simplified version. A real implementation would likely have a dedicated page.
                     const email = prompt("Please enter your email address to receive a password reset link:");
                     if (email) {
                         apiCall('/forgot_password', { method: 'POST', body: { email } }).then(result => {
@@ -898,14 +1013,13 @@ HTML_CONTENT = """
                 async function main() {
                     const urlParams = new URLSearchParams(window.location.search);
                     if (urlParams.has('token')) {
-                        // Handle password reset flow
                         const token = urlParams.get('token');
                         const newPassword = prompt('Please enter your new password:');
                         if (newPassword) {
                             const result = await apiCall('/reset_password', { method: 'POST', body: { token, new_password: newPassword } });
                             if (result.success) {
                                 alert('Password reset successfully! Please log in with your new password.');
-                                window.location.search = ''; // Clear token from URL
+                                window.location.search = '';
                             } else {
                                 alert('Invalid or expired token. Please try again.');
                                 window.location.search = '';
@@ -973,7 +1087,6 @@ def signup():
     if not all([username, email, password, role]):
         return jsonify({"error": "Missing required fields."}), 400
 
-    # SECURITY: Stricter password policy
     if len(password) < 10 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password) or not re.search("[!@#$%^&*()_+-=[]{};':\"|,.<>/?]", password):
         return jsonify({"error": "Password must be 10+ characters and include uppercase, lowercase, number, and special character."}), 400
 
@@ -989,7 +1102,6 @@ def signup():
     db.session.add(new_user)
     db.session.commit()
     
-    # SECURITY: Regenerate session after signup and login
     session.clear()
     session.regenerate()
     login_user(new_user)
@@ -997,7 +1109,7 @@ def signup():
     return jsonify({"success": True, "user": new_user.to_dict(include_email=True), "settings": settings})
 
 @app.route('/api/login', methods=['POST'])
-@limiter.limit("10 per minute; 100 per day") # Stricter limit
+@limiter.limit("10 per minute; 100 per day")
 def login():
     data = request.json
     username = data.get('username')
@@ -1012,7 +1124,6 @@ def login():
         logging.warning(f"SECURITY: Failed admin login for {username} with incorrect key.")
         return jsonify({"error": "Invalid admin secret key."}), 403
 
-    # SECURITY: Regenerate session on successful login to prevent session fixation
     session.clear()
     session.regenerate()
 
@@ -1034,7 +1145,6 @@ def login():
 def logout():
     logging.info(f"SECURITY: User {current_user.username} logged out.")
     logout_user()
-    # SECURITY: Clear session data on logout
     session.clear()
     return jsonify({"success": True})
 
@@ -1045,7 +1155,8 @@ def forgot_password():
     user = User.query.filter_by(email=email).first()
     if user:
         try:
-            token = password_reset_serializer.dumps(email, salt=app.config['SECURITY_PASSWORD_SALT'])
+            signer = TimestampSigner(app.config['SECRET_KEY'], salt=app.config['SECURITY_PASSWORD_SALT'])
+            token = signer.sign(email.encode('utf-8')).decode('utf-8')
             reset_url = url_for('render_spa', token=token, _external=True)
             msg = Message("Password Reset Request for Myth AI",
                           sender=app.config['MAIL_DEFAULT_SENDER'],
@@ -1058,7 +1169,6 @@ def forgot_password():
             return jsonify({"error": "Could not send reset email. Please contact support."}), 500
     else:
         logging.warning(f"Password reset requested for non-existent email: {email}")
-    # Always return success to prevent email enumeration
     return jsonify({"success": True, "message": "If an account with that email exists, a password reset link has been sent."})
 
 @app.route('/api/reset_password', methods=['POST'])
@@ -1068,8 +1178,9 @@ def reset_password():
     token = data.get('token')
     new_password = data.get('new_password')
 
+    signer = TimestampSigner(app.config['SECRET_KEY'], salt=app.config['SECURITY_PASSWORD_SALT'])
     try:
-        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600) # 1 hour expiry
+        email = signer.unsign(token.encode('utf-8'), max_age=3600).decode('utf-8')
     except (SignatureExpired, BadTimeSignature):
         return jsonify({"error": "The password reset link is invalid or has expired."}), 400
 
@@ -1077,7 +1188,6 @@ def reset_password():
     if not user:
         return jsonify({"error": "User not found."}), 404
 
-    # SECURITY: Validate new password complexity
     if len(new_password) < 10 or not re.search("[a-z]", new_password) or not re.search("[A-Z]", new_password) or not re.search("[0-9]", new_password) or not re.search("[!@#$%^&*()_+-=[]{};':\"|,.<>/?]", new_password):
         return jsonify({"error": "Password must be 10+ characters and include uppercase, lowercase, number, and special character."}), 400
 
@@ -1215,7 +1325,6 @@ def update_admin_settings():
 def on_join(data):
     if not current_user.is_authenticated: return
     room = data['room']
-    # SECURITY: Verify user is a member of the class before joining the socket room
     target_class = Class.query.get(room)
     if not target_class or (current_user not in target_class.students and target_class.teacher_id != current_user.id and current_user.role != 'admin'):
         logging.warning(f"SECURITY: Unauthorized socket join attempt by {current_user.id} to room {room}")
@@ -1322,9 +1431,7 @@ def init_db_command():
         logging.info("Default settings seeded.")
 
 if __name__ == '__main__':
-    # SECURITY: In a real production environment, use a proper WSGI server like Gunicorn or uWSGI
-    # and run behind a reverse proxy like Nginx.
-    # Example: gunicorn --worker-class eventlet -w 1 --log-level=info -b 0.0.0.0:5000 app:app
     socketio.run(app, debug=(not is_production))
+
 
 

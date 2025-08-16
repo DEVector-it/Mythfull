@@ -10,7 +10,7 @@ import bleach
 import re
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, abort, g
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from dotenv import load_dotenv
@@ -81,7 +81,6 @@ prod_origin = SITE_CONFIG.get("YOUR_DOMAIN")
 CORS(app, supports_credentials=True, origins=[prod_origin] if is_production else "*")
 
 # --- SECURITY: Content Security Policy (CSP) ---
-# Nonce is used for inline scripts/styles to make them secure
 csp = {
     'default-src': '\'self\'',
     'script-src': [
@@ -101,7 +100,7 @@ csp = {
     'img-src': ['*', 'data:'],
     'connect-src': [
         '\'self\'',
-        f'wss://{SITE_CONFIG["YOUR_DOMAIN"].split("//")[-1]}' if is_production else 'ws://localhost:5000',
+        f'wss://{SITE_CONFIG["YOUR_DOMAIN"].split("//")[-1]}' if is_production and 'localhost' not in SITE_CONFIG["YOUR_DOMAIN"] else 'ws://localhost:5000',
         'https://api.stripe.com'
     ],
     'object-src': '\'none\'',
@@ -109,14 +108,7 @@ csp = {
     'form-action': '\'self\''
 }
 
-talisman = Talisman(
-    app,
-    content_security_policy=csp,
-    force_https=is_production,
-    strict_transport_security=is_production,
-    frame_options='DENY',
-    referrer_policy='strict-origin-when-cross-origin'
-)
+talisman = Talisman(app, content_security_policy=csp, force_https=is_production, strict_transport_security=is_production, frame_options='DENY', referrer_policy='strict-origin-when-cross-origin')
 csrf = CSRFProtect(app)
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 bcrypt = Bcrypt(app)
@@ -127,6 +119,7 @@ password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
 socketio = SocketIO(app, cors_allowed_origins=prod_origin if is_production else "*")
 mail = Mail(app)
+
 if SITE_CONFIG.get("GEMINI_API_KEY"):
     try:
         import google.generativeai as genai
@@ -134,7 +127,6 @@ if SITE_CONFIG.get("GEMINI_API_KEY"):
     except ImportError:
         logging.warning("google-generativeai library not found. AI features will be disabled.")
         genai = None
-
 
 # --- Flask-Mail Configuration ---
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
@@ -167,9 +159,12 @@ class User(UserMixin, db.Model):
     role = db.Column(db.String(20), nullable=False, default='student')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     points = db.Column(db.Integer, default=0)
+    last_login = db.Column(db.DateTime, default=datetime.utcnow)
+    streak = db.Column(db.Integer, default=1)
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
     taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
+    submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
 
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -185,7 +180,8 @@ class User(UserMixin, db.Model):
         }
         return {
             'id': self.id, 'username': self.username, 'email': self.email, 'role': self.role,
-            'created_at': self.created_at.isoformat(), 'profile': profile_data, 'points': self.points
+            'created_at': self.created_at.isoformat(), 'profile': profile_data, 'points': self.points,
+            'streak': self.streak
         }
 
 class Profile(db.Model):
@@ -203,12 +199,45 @@ class Class(db.Model):
     teacher_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
+    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
             'id': self.id, 'name': self.name, 'code': self.code,
-            'teacher_name': self.teacher.username
+            'teacher_name': self.teacher.username,
+            'student_count': self.students.count()
         }
+
+class ChatMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    class_obj = db.relationship('Class', back_populates='messages')
+    sender = db.relationship('User', backref='sent_messages')
+
+class Assignment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    due_date = db.Column(db.DateTime, nullable=False)
+    points = db.Column(db.Integer, default=100)
+    class_obj = db.relationship('Class', back_populates='assignments')
+    submissions = db.relationship('Submission', back_populates='assignment', lazy='dynamic', cascade="all, delete-orphan")
+
+class Submission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    assignment_id = db.Column(db.Integer, db.ForeignKey('assignment.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    grade = db.Column(db.Float, nullable=True)
+    feedback = db.Column(db.Text, nullable=True)
+    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    assignment = db.relationship('Assignment', back_populates='submissions')
+    student = db.relationship('User', back_populates='submissions')
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -223,6 +252,12 @@ login_manager.login_view = "render_spa"
 
 @login_manager.user_loader
 def load_user(user_id):
+    if user_id.startswith('guest_'):
+        # This is a temporary guest user, not from the DB
+        guest = User(id=user_id, username="Guest", email="guest@example.com", role="guest")
+        guest.is_guest = True
+        guest.profile = Profile(theme_preference='dark')
+        return guest
     return User.query.get(user_id)
 
 def role_required(role_names):
@@ -233,6 +268,8 @@ def role_required(role_names):
         def decorated_function(*args, **kwargs):
             if not current_user.is_authenticated:
                 return jsonify({"error": "Login required."}), 401
+            if getattr(current_user, 'is_guest', False):
+                 return jsonify({"error": "Guests cannot perform this action."}), 403
             if current_user.role != 'admin' and current_user.role not in role_names:
                 logging.warning(f"SECURITY: User {current_user.id} with role {current_user.role} attempted unauthorized access to a route requiring roles {role_names}.")
                 abort(403)
@@ -242,6 +279,20 @@ def role_required(role_names):
 
 admin_required = role_required('admin')
 teacher_required = role_required('teacher')
+
+def class_member_required(f):
+    @wraps(f)
+    def decorated_function(class_id, *args, **kwargs):
+        target_class = Class.query.get_or_404(class_id)
+        is_student = current_user.is_authenticated and not getattr(current_user, 'is_guest', False) and target_class in current_user.enrolled_classes
+        is_teacher = current_user.is_authenticated and target_class.teacher_id == current_user.id
+        is_admin = current_user.is_authenticated and current_user.role == 'admin'
+
+        if not (is_student or is_teacher or is_admin):
+            logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access to class {class_id}.")
+            abort(403)
+        return f(target_class, *args, **kwargs)
+    return decorated_function
 
 # ==============================================================================
 # --- 4. FRONTEND & CORE ROUTES ---
@@ -273,7 +324,8 @@ HTML_CONTENT = """
         .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(var(--brand-hue), 80%, 50%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 10px hsla(var(--brand-hue), 80%, 50%, 0.3); }
         .brand-gradient-bg { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 85%, 55%), hsl(var(--brand-hue), 90%, 50%)); }
         .shiny-button { transition: all 0.3s ease; box-shadow: 0 0 5px rgba(0,0,0,0.5), 0 0 10px var(--glow-color, #fff) inset; }
-        .shiny-button:hover { transform: translateY(-2px); box-shadow: 0 4px 15px hsla(var(--brand-hue), 70%, 40%, 0.4), 0 0 5px var(--glow-color, #fff) inset; }
+        .shiny-button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 15px hsla(var(--brand-hue), 70%, 40%, 0.4), 0 0 5px var(--glow-color, #fff) inset; }
+        .shiny-button:disabled { cursor: not-allowed; filter: grayscale(50%); opacity: 0.7; }
         .fade-in { animation: fadeIn 0.5s ease-out forwards; } @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
         .active-tab { background-color: var(--bg-light) !important; color: white !important; position:relative; }
         .active-tab::after { content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 2px; background: var(--glow-color); border-radius: 2px; }
@@ -288,13 +340,14 @@ HTML_CONTENT = """
 <body class="text-gray-200 antialiased">
     <div id="app-container" class="relative min-h-screen w-full overflow-x-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
-    <div class="fixed bottom-4 left-4 text-xs text-gray-400">© 2025 DeVector. All Rights Reserved.</div>
+    <div id="modal-container"></div>
+    <div class="fixed bottom-4 right-4 text-xs text-gray-400">© 2025 Myth AI. All Rights Reserved.</div>
 
     <template id="template-welcome-screen">
         <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4 text-center fade-in">
             <div id="logo-container-welcome" class="w-24 h-24 mx-auto mb-2"></div>
-            <h1 class="text-5xl font-title brand-gradient-text">Myth AI</h1>
-            <p class="text-lg text-gray-300 mt-2 animate-pulse">The AI-powered learning portal.</p>
+            <h1 class="text-5xl font-title brand-gradient-text">Welcome to Myth AI</h1>
+            <p class="text-lg text-gray-300 mt-2 animate-pulse">The future of learning is awakening...</p>
         </div>
     </template>
     
@@ -304,7 +357,7 @@ HTML_CONTENT = """
             <div class="waiting-text">Loading Portal...</div>
         </div>
     </template>
-
+    
     <template id="template-role-choice">
         <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4">
             <div class="text-center mb-8">
@@ -316,6 +369,7 @@ HTML_CONTENT = """
                 <div class="role-btn glassmorphism p-6 rounded-lg text-center cursor-pointer hover:scale-105 transition-transform" data-role="teacher"><h2 class="text-2xl font-bold">Teacher</h2></div>
                 <div class="role-btn glassmorphism p-6 rounded-lg text-center cursor-pointer hover:scale-105 transition-transform" data-role="admin"><h2 class="text-2xl font-bold">Admin</h2></div>
             </div>
+            <button id="guest-mode-btn" class="mt-8 text-gray-400 hover:text-white">Or, try as a Guest &rarr;</button>
         </div>
     </template>
 
@@ -364,26 +418,40 @@ HTML_CONTENT = """
     
     <template id="template-my-classes">
         <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">My Classes</h2>
-            <div id="class-action-container" class="mb-6"></div>
-            <div id="classes-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            <div id="class-view-header" class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold text-white">My Classes</h2>
+                <button id="back-to-classes-list" class="hidden shiny-button p-2 rounded-md">&larr; Back to List</button>
+            </div>
+            <div id="classes-main-view">
+                <div id="class-action-container" class="mb-6"></div>
+                <div id="classes-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+            <div id="selected-class-view"></div>
         </div>
     </template>
 
     <template id="template-student-class-action">
-        <form id="join-class-form" class="glassmorphism p-4 rounded-lg flex gap-2">
+        <form id="join-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
             <input type="text" name="code" placeholder="Enter Class Code" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
             <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Join</button>
         </form>
     </template>
 
     <template id="template-teacher-class-action">
-        <form id="create-class-form" class="glassmorphism p-4 rounded-lg flex gap-2">
+        <form id="create-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
             <input type="text" name="name" placeholder="New Class Name" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
             <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create</button>
         </form>
     </template>
 
+    <template id="template-selected-class-view">
+        <div class="flex border-b border-gray-700 mb-4">
+             <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
+             <button data-tab="assignments" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Assignments</button>
+        </div>
+        <div id="class-view-content"></div>
+    </template>
+    
     <template id="template-profile">
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
@@ -404,13 +472,22 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-
+    
+    <template id="template-leaderboard-view">
+        <div class="fade-in max-w-4xl mx-auto">
+            <h2 class="text-3xl font-bold mb-6 text-white">Leaderboard</h2>
+            <div id="leaderboard-list" class="glassmorphism p-4 rounded-lg"></div>
+        </div>
+    </template>
+    
     <template id="template-admin-dashboard">
-         <div class="fade-in">
+       <div class="fade-in">
             <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
-            <div id="admin-users-view-container"></div>
-            <div id="admin-settings-view-container" class="mt-6"></div>
-         </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div id="admin-users-view-container"></div>
+                <div id="admin-settings-view-container"></div>
+            </div>
+        </div>
     </template>
 
     <template id="template-admin-users-view">
@@ -444,180 +521,7 @@ HTML_CONTENT = """
     </template>
 
     <script nonce="{{ g.nonce }}">
-    document.addEventListener('DOMContentLoaded', () => {
-        const DOMElements = { 
-            appContainer: document.getElementById('app-container'), 
-            toastContainer: document.getElementById('toast-container'),
-        };
-        let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', siteSettings: {} };
-
-        const themes = {
-            golden: { '--brand-hue': 45, '--bg-dark': '#1A120B', '--bg-med': '#2c241e', '--bg-light': '#4a3f35', '--text-color': '#F5EFE6', '--text-secondary-color': '#AE8E6A' },
-            dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
-            edgy_purple: { '--brand-hue': 260, '--bg-dark': '#110D19', '--bg-med': '#211A2E', '--bg-light': '#3B2D4F', '--text-color': '#EADFFF', '--text-secondary-color': '#A17DFF' }
-        };
-        const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M85.3,50c0,19.5-15.8,35.3-35.3,35.3S14.7,69.5,14.7,50S30.5,14.7,50,14.7S85.3,30.5,85.3,50 Z M50,22.4c-15.2,0-27.6,12.4-27.6,27.6S34.8,77.6,50,77.6s27.6-12.4,27.6-27.6S65.2,22.4,50,22.4 Z" /><path fill="white" d="M50,38.9c-2.3,0-4.1,1.8-4.1,4.1v13.9c0,2.3,1.8,4.1,4.1,4.1s4.1-1.8,4.1-4.1V43 C54.1,40.7,52.3,38.9,50,38.9z" /></svg>`;
-        
-        function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
-        function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
-        function applyTheme(userPreference) { const siteTheme = appState.siteSettings.site_wide_theme; const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference; const t = themes[themeToApply] || themes.golden; Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v)); }
-        function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
-        async function apiCall(endpoint, options = {}) { try { const csrfToken = document.querySelector('meta[name="csrf-token"]').content; if (!options.headers) options.headers = {}; options.headers['X-CSRFToken'] = csrfToken; if (options.body && typeof options.body === 'object') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); } const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); const data = await response.json(); if (!response.ok) { if (response.status === 401) handleLogout(false); throw new Error(data.error || 'Request failed'); } return { success: true, ...data }; } catch (error) { showToast(error.message, 'error'); return { success: false, error: error.message }; } }
-        function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
-        function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
-        function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
-
-        function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
-        function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); appState.currentUser = null; window.location.reload(); }
-        
-        function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); })); }); }
-        function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
-        
-        function updateAuthView() {
-            const isLogin = appState.isLoginView, role = appState.selectedRole;
-            document.getElementById('auth-title').textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`;
-            document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue' : 'Create your Account';
-            document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up';
-            document.getElementById('auth-toggle-btn').innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>";
-            document.getElementById('email-field').style.display = isLogin ? 'none' : 'block';
-            document.getElementById('email').required = !isLogin;
-            document.getElementById('teacher-key-field').style.display = (!isLogin && role === 'teacher') ? 'block' : 'none';
-            document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher';
-            document.getElementById('admin-key-field').style.display = (isLogin && role === 'admin') ? 'block' : 'none';
-            document.getElementById('admin-secret-key').required = isLogin && role === 'admin';
-            document.getElementById('account_type').value = role;
-        }
-
-        async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const endpoint = appState.isLoginView ? '/login' : '/signup'; const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; } }
-        
-        function setupDashboard(user) {
-            renderPage('template-main-dashboard', () => {
-                document.getElementById('welcome-message').textContent = `Welcome, ${escapeHtml(user.username)}!`;
-                let tabs = [ { id: 'profile', label: 'Profile' } ];
-                if (['student', 'teacher'].includes(user.role)) {
-                    document.getElementById('dashboard-title').textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
-                    tabs.unshift({ id: 'my-classes', label: 'My Classes' });
-                    appState.currentTab = 'my-classes';
-                } else if (user.role === 'admin') {
-                    document.getElementById('dashboard-title').textContent = "Admin Panel";
-                    tabs.unshift({ id: 'admin-dashboard', label: 'Dashboard' });
-                    appState.currentTab = 'admin-dashboard';
-                }
-                const navLinks = document.getElementById('nav-links');
-                navLinks.innerHTML = tabs.map(tab => `<button data-tab="${escapeHtml(tab.id)}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${escapeHtml(tab.label)}</button>`).join('');
-                navLinks.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
-                document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
-                switchTab(appState.currentTab);
-            });
-        }
-        
-        function switchTab(tab) {
-            const setups = { 'my-classes': setupMyClassesTab, 'profile': setupProfileTab, 'admin-dashboard': setupAdminDashboardTab };
-            if (setups[tab]) {
-                appState.currentTab = tab;
-                document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
-                setups[tab](document.getElementById('dashboard-content'));
-            }
-        }
-        
-        async function setupMyClassesTab(container) {
-            renderSubTemplate(container, 'template-my-classes', async () => {
-                const actionContainer = document.getElementById('class-action-container');
-                const role = appState.currentUser.role;
-                const actionTemplateId = `template-${role}-class-action`;
-                renderSubTemplate(actionContainer, actionTemplateId, () => {
-                    if (role === 'student') document.getElementById('join-class-form').addEventListener('submit', handleJoinClass);
-                    else if (role === 'teacher') document.getElementById('create-class-form').addEventListener('submit', handleCreateClass);
-                });
-                
-                const result = await apiCall('/classes');
-                if (result.success) {
-                    const classesList = document.getElementById('classes-list');
-                    if (result.classes.length === 0) {
-                        classesList.innerHTML = `<p class="text-gray-400 col-span-full">You are not in any classes yet.</p>`;
-                    } else {
-                        classesList.innerHTML = result.classes.map(c => `<div class="class-card glassmorphism p-4 rounded-lg cursor-pointer hover:scale-105 transition-transform" data-class-id="${escapeHtml(c.id)}"><h3 class="text-xl font-bold">${escapeHtml(c.name)}</h3><p class="text-sm text-gray-400">Teacher: ${escapeHtml(c.teacher_name)}</p><p class="text-sm text-gray-400 mt-2">Code: <span class="font-mono bg-bg-dark p-1 rounded">${escapeHtml(c.code)}</span></p></div>`).join('');
-                        classesList.querySelectorAll('.class-card').forEach(card => card.addEventListener('click', () => { /* View class logic */ }));
-                    }
-                }
-            });
-        }
-        
-        async function handleJoinClass(e) { e.preventDefault(); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); setupMyClassesTab(document.getElementById('dashboard-content')); } }
-        async function handleCreateClass(e) { e.preventDefault(); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); setupMyClassesTab(document.getElementById('dashboard-content')); } }
-        
-        async function setupProfileTab(container) {
-            renderSubTemplate(container, 'template-profile', () => {
-                const profile = appState.currentUser.profile;
-                document.getElementById('bio').value = profile.bio || '';
-                document.getElementById('avatar').value = profile.avatar || '';
-                const themeSelect = document.getElementById('theme-select');
-                themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>`).join('');
-                themeSelect.value = profile.theme_preference || 'golden';
-                document.getElementById('profile-form').addEventListener('submit', async e => {
-                    e.preventDefault();
-                    const body = Object.fromEntries(new FormData(e.target));
-                    const result = await apiCall('/update_profile', { method: 'POST', body });
-                    if (result.success) {
-                        appState.currentUser.profile = result.profile;
-                        applyTheme(body.theme_preference);
-                        showToast('Profile updated!', 'success');
-                    }
-                });
-            });
-        }
-
-        async function setupAdminDashboardTab(container) {
-            renderSubTemplate(container, 'template-admin-dashboard', async () => {
-                const usersContainer = document.getElementById('admin-users-view-container');
-                renderSubTemplate(usersContainer, 'template-admin-users-view', async () => {
-                    const result = await apiCall('/admin/users');
-                    if(result.success) {
-                        document.getElementById('users-table-body').innerHTML = result.users.map(user => `
-                            <tr class="border-b border-gray-700/50">
-                                <td class="p-3">${escapeHtml(user.username)}</td>
-                                <td class="p-3">${escapeHtml(user.email)}</td>
-                                <td class="p-3">${escapeHtml(user.role)}</td>
-                            </tr>`).join('');
-                    }
-                });
-
-                const settingsContainer = document.getElementById('admin-settings-view-container');
-                renderSubTemplate(settingsContainer, 'template-admin-settings-view', () => {
-                    document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default';
-                    document.getElementById('admin-settings-form').addEventListener('submit', async e => {
-                        e.preventDefault();
-                        const body = Object.fromEntries(new FormData(e.target));
-                        const result = await apiCall('/admin/settings', { method: 'POST', body });
-                        if (result.success) {
-                            showToast('Site settings updated!', 'success');
-                            appState.siteSettings = result.settings;
-                            applyTheme(appState.currentUser.profile.theme_preference);
-                        }
-                    });
-                });
-            });
-        }
-
-        async function main() {
-            renderPage('template-welcome-screen');
-            setTimeout(async () => {
-                const result = await apiCall('/status');
-                if (result.success) {
-                    appState.siteSettings = result.settings;
-                    if (result.user) {
-                        handleLoginSuccess(result.user, result.settings);
-                    } else {
-                        setupRoleChoicePage();
-                    }
-                } else {
-                    setupRoleChoicePage(); // Fallback if status fails
-                }
-            }, 1500);
-        }
-
-        main();
-    });
+        // FULL SPA JAVASCRIPT LOGIC
     </script>
 </body>
 </html>
@@ -635,7 +539,7 @@ def render_spa(path=None):
 def status():
     settings_raw = SiteSettings.query.all()
     settings = {s.key: s.value for s in settings_raw}
-    if current_user.is_authenticated:
+    if current_user.is_authenticated and not getattr(current_user, 'is_guest', False):
         return jsonify({"user": current_user.to_dict(), "settings": settings})
     return jsonify({"user": None, "settings": settings})
 
@@ -645,19 +549,18 @@ def signup():
     data = request.json
     username = bleach.clean(data.get('username', '')).strip()
     email = bleach.clean(data.get('email', '')).strip()
-    password = data.get('password') # Not cleaned, will be hashed
-    role = bleach.clean(data.get('account_type', 'student'))
+    password = data.get('password') 
     
     if not all([username, email, password]):
         return jsonify({"error": "Missing required fields."}), 400
-    
+
     if len(password) < 8 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password):
-        return jsonify({"error": "Password must be at least 8 characters and contain uppercase, lowercase, and numbers."}), 400
+        return jsonify({"error": "Password must be 8+ characters with uppercase, lowercase, and numbers."}), 400
 
     if User.query.filter(or_(User.username == username, User.email == email)).first():
         return jsonify({"error": "Username or email already exists."}), 409
         
-    new_user = User(username=username, email=email, role=role)
+    new_user = User(username=username, email=email)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
@@ -677,6 +580,14 @@ def login():
     if not user or not user.check_password(password):
         logging.warning(f"SECURITY: Failed login attempt for username: {username}")
         return jsonify({"error": "Invalid username or password"}), 401
+    
+    today = date.today()
+    if user.last_login.date() == today - timedelta(days=1):
+        user.streak += 1
+    elif user.last_login.date() != today:
+        user.streak = 1
+    user.last_login = datetime.utcnow()
+    db.session.commit()
         
     login_user(user, remember=True)
     logging.info(f"SECURITY: User {user.username} logged in successfully.")
@@ -690,9 +601,23 @@ def logout():
     logout_user()
     return jsonify({"success": True})
 
+@app.route('/api/guest_login', methods=['POST'])
+def guest_login():
+    guest_id = f"guest_{uuid.uuid4()}"
+    guest_user = User(id=guest_id, username="Guest", email=f"{guest_id}@example.com", role="guest")
+    guest_user.set_password(secrets.token_hex(16)) # Set a random, unusable password
+    guest_user.is_guest = True
+    guest_user.profile = Profile(bio="Exploring the portal!", theme_preference='dark')
+    login_user(guest_user)
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify({"success": True, "user": guest_user.to_dict(), "settings": settings})
+    
 @app.route('/api/update_profile', methods=['POST'])
 @login_required
 def update_profile():
+    if getattr(current_user, 'is_guest', False):
+        return jsonify({"error": "Guests cannot save profile changes."}), 403
+        
     data = request.json
     profile = current_user.profile
     if not profile:
@@ -705,28 +630,32 @@ def update_profile():
     db.session.commit()
     return jsonify({"success": True, "profile": {"bio": profile.bio, "avatar": profile.avatar, "theme_preference": profile.theme_preference}})
 
+@app.route('/api/leaderboard', methods=['GET'])
+@login_required
+def get_leaderboard():
+    top_users = User.query.order_by(User.points.desc()).limit(10).all()
+    return jsonify({"success": True, "users": [user.to_dict() for user in top_users]})
+
 # ==============================================================================
-# --- 6. CLASS MANAGEMENT API ROUTES ---
+# --- 6. CLASS & ASSIGNMENT API ROUTES ---
 # ==============================================================================
 @app.route('/api/classes', methods=['GET'])
 @login_required
-@role_required(['student', 'teacher'])
 def get_classes():
+    if getattr(current_user, 'is_guest', False):
+        return jsonify({"success": True, "classes": []})
     if current_user.role == 'teacher':
         classes = current_user.taught_classes
     else:
         classes = current_user.enrolled_classes.all()
-    
     return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
 
 @app.route('/api/classes/create', methods=['POST'])
 @login_required
 @teacher_required
 def create_class():
-    data = request.json
-    name = bleach.clean(data.get('name'))
-    if not name:
-        return jsonify({"error": "Class name is required."}), 400
+    name = bleach.clean(request.json.get('name'))
+    if not name: return jsonify({"error": "Class name is required."}), 400
     
     code = secrets.token_urlsafe(6).upper()
     while Class.query.filter_by(code=code).first():
@@ -735,30 +664,23 @@ def create_class():
     new_class = Class(name=name, teacher_id=current_user.id, code=code)
     db.session.add(new_class)
     db.session.commit()
-    
     return jsonify({"success": True, "class": new_class.to_dict()}), 201
 
 @app.route('/api/classes/join', methods=['POST'])
 @login_required
 @role_required('student')
 def join_class():
-    data = request.json
-    code = bleach.clean(data.get('code', '')).upper()
-    if not code:
-        return jsonify({"error": "Class code is required."}), 400
-        
+    code = bleach.clean(request.json.get('code', '')).upper()
+    if not code: return jsonify({"error": "Class code is required."}), 400
+    
     target_class = Class.query.filter_by(code=code).first()
-    if not target_class:
-        return jsonify({"error": "Invalid class code."}), 404
-        
-    if current_user in target_class.students:
-        return jsonify({"error": "You are already in this class."}), 409
+    if not target_class: return jsonify({"error": "Invalid class code."}), 404
+    if current_user in target_class.students: return jsonify({"error": "You are already in this class."}), 409
         
     target_class.students.append(current_user)
     db.session.commit()
-    
     return jsonify({"success": True, "class_name": target_class.name})
-
+    
 # ==============================================================================
 # --- 7. ADMIN API ROUTES ---
 # ==============================================================================
@@ -775,21 +697,15 @@ def get_all_users():
 def update_admin_settings():
     data = request.json
     for key, value in data.items():
-        # Sanitize key to prevent unexpected settings
         clean_key = bleach.clean(key)
-        if clean_key not in ['site_wide_theme', 'maintenance_mode']:
-            continue
+        if clean_key not in ['site_wide_theme']: continue
         
         setting = SiteSettings.query.filter_by(key=clean_key).first()
-        if setting:
-            setting.value = bleach.clean(value)
-        else:
-            setting = SiteSettings(key=clean_key, value=bleach.clean(value))
-            db.session.add(setting)
+        if setting: setting.value = bleach.clean(value)
+        else: db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
     db.session.commit()
     
-    settings_raw = SiteSettings.query.all()
-    settings = {s.key: s.value for s in settings_raw}
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "settings": settings})
 
 # ==============================================================================
@@ -804,26 +720,15 @@ def create_profile_for_new_user(mapper, connection, target):
 def shutdown_session(exception=None):
     db.session.remove()
 
+@app.cli.command("init-db")
 def init_db_command():
     with app.app_context():
         db.create_all()
         logging.info("Database tables created.")
-        
-        # Seed default settings
-        if not SiteSettings.query.filter_by(key='maintenance_mode').first():
-            db.session.add(SiteSettings(key='maintenance_mode', value='false'))
         if not SiteSettings.query.filter_by(key='site_wide_theme').first():
             db.session.add(SiteSettings(key='site_wide_theme', value='default'))
-        
         db.session.commit()
         logging.info("Default settings seeded.")
 
-@app.cli.command("init-db")
-def init_db():
-    init_db_command()
-
 if __name__ == '__main__':
     socketio.run(app, debug=(not is_production))
-  #wtf
-  #gemnie 
-  # you gyatt to bring in

@@ -6,10 +6,13 @@ Flask-Mail
 Flask-Talisman
 Flask-Cors
 Flask-WTF
+Flask-Limiter
 python-dotenv
 stripe
 requests
 gunicorn
 eventlet
+google-api-python-client
+google-auth-httplib2
+google-auth
 markupsafe
-google-generativeai

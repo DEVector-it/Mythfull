@@ -1,4 +1,4 @@
-# --- Imports ---
+v# --- Imports ---
 import os
 import json
 import logging
@@ -30,6 +30,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from markupsafe import escape
 from flask_bcrypt import Bcrypt
+from flask import session
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
@@ -45,6 +46,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(16)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT') or secrets.token_hex(16)
+# SECURITY: Set a shorter permanent session lifetime
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=8)
 
 # --- Production Security Checks ---
 is_production = os.environ.get('FLASK_ENV') == 'production'
@@ -260,7 +263,7 @@ def role_required(role_names):
             if not current_user.is_authenticated: return jsonify({"error": "Login required."}), 401
             if getattr(current_user, 'is_guest', False): return jsonify({"error": "Guests cannot perform this action."}), 403
             if current_user.role != 'admin' and current_user.role not in role_names:
-                logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access.")
+                logging.warning(f"SECURITY: User {current_user.id} with role {current_user.role} attempted unauthorized access to a route requiring roles {role_names}.")
                 abort(403)
             return f(*args, **kwargs)
         return decorated_function
@@ -414,6 +417,8 @@ HTML_CONTENT = """
                 </form>
                 <div class="mt-4 text-sm text-center">
                     <button id="auth-toggle-btn" class="font-medium text-yellow-400 hover:text-yellow-300"></button>
+                    <span class="text-gray-400 mx-1">|</span>
+                    <button id="forgot-password-btn" class="font-medium text-yellow-400 hover:text-yellow-300">Forgot Password?</button>
                 </div>
             </div>
         </div>
@@ -560,7 +565,7 @@ HTML_CONTENT = """
                 function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
                 
                 function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); })); document.getElementById('guest-mode-btn').addEventListener('click', handleGuestLogin); }); }
-                function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
+                function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); document.getElementById('forgot-password-btn').addEventListener('click', setupForgotPassword); }); }
                 
                 function updateAuthView() {
                     const isLogin = appState.isLoginView, role = appState.selectedRole;
@@ -819,6 +824,18 @@ HTML_CONTENT = """
                         document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
                     });
                 }
+                
+                function setupForgotPassword() {
+                    // This is a simplified version. A real implementation would likely have a dedicated page.
+                    const email = prompt("Please enter your email address to receive a password reset link:");
+                    if (email) {
+                        apiCall('/forgot_password', { method: 'POST', body: { email } }).then(result => {
+                            if (result.success) {
+                                alert("If an account with that email exists, a password reset link has been sent.");
+                            }
+                        });
+                    }
+                }
 
                 async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); try { const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } } finally { setButtonLoadingState(btn, false); } }
                 
@@ -879,6 +896,23 @@ HTML_CONTENT = """
                 }
 
                 async function main() {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    if (urlParams.has('token')) {
+                        // Handle password reset flow
+                        const token = urlParams.get('token');
+                        const newPassword = prompt('Please enter your new password:');
+                        if (newPassword) {
+                            const result = await apiCall('/reset_password', { method: 'POST', body: { token, new_password: newPassword } });
+                            if (result.success) {
+                                alert('Password reset successfully! Please log in with your new password.');
+                                window.location.search = ''; // Clear token from URL
+                            } else {
+                                alert('Invalid or expired token. Please try again.');
+                                window.location.search = '';
+                            }
+                        }
+                    }
+
                     renderPage('template-welcome-screen');
                     setTimeout(async () => {
                         const result = await apiCall('/status');
@@ -939,13 +973,15 @@ def signup():
     if not all([username, email, password, role]):
         return jsonify({"error": "Missing required fields."}), 400
 
-    if len(password) < 8 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password):
-        return jsonify({"error": "Password must be 8+ characters with uppercase, lowercase, and numbers."}), 400
+    # SECURITY: Stricter password policy
+    if len(password) < 10 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password) or not re.search("[!@#$%^&*()_+-=[]{};':\"|,.<>/?]", password):
+        return jsonify({"error": "Password must be 10+ characters and include uppercase, lowercase, number, and special character."}), 400
 
     if User.query.filter(or_(User.username == username, User.email == email)).first():
         return jsonify({"error": "Username or email already exists."}), 409
     
     if role == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
+        logging.warning(f"SECURITY: Failed teacher signup attempt with incorrect key.")
         return jsonify({"error": "Invalid teacher secret key."}), 403
         
     new_user = User(username=username, email=email, role=role)
@@ -953,12 +989,15 @@ def signup():
     db.session.add(new_user)
     db.session.commit()
     
+    # SECURITY: Regenerate session after signup and login
+    session.clear()
+    session.regenerate()
     login_user(new_user)
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "user": new_user.to_dict(include_email=True), "settings": settings})
 
 @app.route('/api/login', methods=['POST'])
-@limiter.limit("10 per minute")
+@limiter.limit("10 per minute; 100 per day") # Stricter limit
 def login():
     data = request.json
     username = data.get('username')
@@ -966,11 +1005,16 @@ def login():
     user = User.query.filter_by(username=username).first()
     
     if not user or not user.check_password(password):
-        logging.warning(f"SECURITY: Failed login attempt for username: {username}")
+        logging.warning(f"SECURITY: Failed login attempt for username: {username} from IP {get_remote_address()}")
         return jsonify({"error": "Invalid username or password"}), 401
     
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
+        logging.warning(f"SECURITY: Failed admin login for {username} with incorrect key.")
         return jsonify({"error": "Invalid admin secret key."}), 403
+
+    # SECURITY: Regenerate session on successful login to prevent session fixation
+    session.clear()
+    session.regenerate()
 
     today = date.today()
     if user.last_login.date() == today - timedelta(days=1):
@@ -990,7 +1034,57 @@ def login():
 def logout():
     logging.info(f"SECURITY: User {current_user.username} logged out.")
     logout_user()
+    # SECURITY: Clear session data on logout
+    session.clear()
     return jsonify({"success": True})
+
+@app.route('/api/forgot_password', methods=['POST'])
+@limiter.limit("5 per hour")
+def forgot_password():
+    email = bleach.clean(request.json.get('email', ''))
+    user = User.query.filter_by(email=email).first()
+    if user:
+        try:
+            token = password_reset_serializer.dumps(email, salt=app.config['SECURITY_PASSWORD_SALT'])
+            reset_url = url_for('render_spa', token=token, _external=True)
+            msg = Message("Password Reset Request for Myth AI",
+                          sender=app.config['MAIL_DEFAULT_SENDER'],
+                          recipients=[email])
+            msg.body = f"Please click the following link to reset your password: {reset_url}\n\nIf you did not request this, please ignore this email."
+            mail.send(msg)
+            logging.info(f"Password reset email sent to {email}")
+        except Exception as e:
+            logging.error(f"Failed to send password reset email to {email}: {e}")
+            return jsonify({"error": "Could not send reset email. Please contact support."}), 500
+    else:
+        logging.warning(f"Password reset requested for non-existent email: {email}")
+    # Always return success to prevent email enumeration
+    return jsonify({"success": True, "message": "If an account with that email exists, a password reset link has been sent."})
+
+@app.route('/api/reset_password', methods=['POST'])
+@limiter.limit("5 per hour")
+def reset_password():
+    data = request.json
+    token = data.get('token')
+    new_password = data.get('new_password')
+
+    try:
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600) # 1 hour expiry
+    except (SignatureExpired, BadTimeSignature):
+        return jsonify({"error": "The password reset link is invalid or has expired."}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+
+    # SECURITY: Validate new password complexity
+    if len(new_password) < 10 or not re.search("[a-z]", new_password) or not re.search("[A-Z]", new_password) or not re.search("[0-9]", new_password) or not re.search("[!@#$%^&*()_+-=[]{};':\"|,.<>/?]", new_password):
+        return jsonify({"error": "Password must be 10+ characters and include uppercase, lowercase, number, and special character."}), 400
+
+    user.set_password(new_password)
+    db.session.commit()
+    logging.info(f"Password for user {user.username} has been reset successfully.")
+    return jsonify({"success": True, "message": "Password reset successfully."})
 
 @app.route('/api/guest_login', methods=['POST'])
 def guest_login():
@@ -1045,7 +1139,8 @@ def get_classes():
 @teacher_required
 def create_class():
     name = bleach.clean(request.json.get('name'))
-    if not name: return jsonify({"error": "Class name is required."}), 400
+    if not name or len(name) > 100: 
+        return jsonify({"error": "Class name is required and must be under 100 characters."}), 400
     
     code = secrets.token_urlsafe(6).upper()
     while Class.query.filter_by(code=code).first():
@@ -1120,6 +1215,11 @@ def update_admin_settings():
 def on_join(data):
     if not current_user.is_authenticated: return
     room = data['room']
+    # SECURITY: Verify user is a member of the class before joining the socket room
+    target_class = Class.query.get(room)
+    if not target_class or (current_user not in target_class.students and target_class.teacher_id != current_user.id and current_user.role != 'admin'):
+        logging.warning(f"SECURITY: Unauthorized socket join attempt by {current_user.id} to room {room}")
+        return
     join_room(room)
     logging.info(f"User {current_user.username} joined room {room}")
 
@@ -1222,5 +1322,9 @@ def init_db_command():
         logging.info("Default settings seeded.")
 
 if __name__ == '__main__':
+    # SECURITY: In a real production environment, use a proper WSGI server like Gunicorn or uWSGI
+    # and run behind a reverse proxy like Nginx.
+    # Example: gunicorn --worker-class eventlet -w 1 --log-level=info -b 0.0.0.0:5000 app:app
     socketio.run(app, debug=(not is_production))
+
 

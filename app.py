@@ -102,9 +102,6 @@ talisman = Talisman(
     content_security_policy=csp,
     force_https=is_production,
     strict_transport_security=is_production,
-    session_cookie_secure=is_production,
-    session_cookie_httponly=True,
-    session_cookie_samesite='Lax',
     frame_options='DENY',
     content_type_nosniff=True,
     referrer_policy='strict-origin-when-cross-origin'
@@ -998,4 +995,6 @@ def init_db():
 
 if __name__ == '__main__':
     socketio.run(app, debug=(not is_production))
+
+
 

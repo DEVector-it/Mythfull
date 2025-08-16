@@ -83,14 +83,14 @@ csp = {
     'default-src': '\'self\'',
     'script-src': [
         '\'self\'',
-        '\'unsafe-inline\'',
+        '\'unsafe-inline\'', # Needed for inline script block
         'https://cdn.tailwindcss.com',
         'https://cdnjs.cloudflare.com',
         'https://js.stripe.com',
     ],
     'style-src': [
         '\'self\'',
-        '\'unsafe-inline\'',
+        '\'unsafe-inline\'', # Needed for inline style block
         'https://cdn.tailwindcss.com',
         'https://fonts.googleapis.com'
     ],
@@ -136,15 +136,18 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
+# --- Association Tables ---
 student_class_association = db.Table('student_class_association',
     db.Column('user_id', db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True),
     db.Column('class_id', db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), primary_key=True)
 )
+
 team_member_association = db.Table('team_member_association',
     db.Column('user_id', db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True),
     db.Column('team_id', db.String(36), db.ForeignKey('team.id', ondelete='CASCADE'), primary_key=True)
 )
 
+# --- Main Database Models ---
 class User(UserMixin, db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
@@ -205,6 +208,14 @@ class Class(db.Model):
     messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
     assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
     quizzes = db.relationship('Quiz', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'code': self.code,
+            'teacher_name': self.teacher.username
+        }
 
 class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -366,9 +377,6 @@ HTML_CONTENT = """
         .fade-in { animation: fadeIn 0.5s ease-out forwards; } @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
         .active-tab { background-color: var(--bg-light) !important; color: white !important; position:relative; }
         .active-tab::after { content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 2px; background: var(--glow-color); border-radius: 2px; }
-        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-        .ai-message .chat-bubble { background-color: #4a3f35; border-color: #AE8E6A; }
-        .user-message .chat-bubble { background-color: #2c241e; border-color: #F5EFE6; }
         .dynamic-bg {
             background: linear-gradient(-45deg, #1a120b, #4a3f35, #b48a4f, #1a120b);
             background-size: 400% 400%;
@@ -399,6 +407,7 @@ HTML_CONTENT = """
         };
     </script>
 
+    <!-- TEMPLATES START -->
     <template id="template-welcome-screen">
         <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4 text-center fade-in">
             <div id="logo-container-welcome" class="w-24 h-24 mx-auto mb-2"></div>
@@ -420,7 +429,7 @@ HTML_CONTENT = """
             <div class="glassmorphism p-8 rounded-2xl max-w-lg w-full">
                 <div id="logo-container-maintenance" class="w-20 h-20 mx-auto mb-4"></div>
                 <h1 class="text-4xl font-title brand-gradient-text mb-2">Under Maintenance</h1>
-                <p class="text-gray-300 mb-6">We're currently performing some upgrades to improve your experience. We'll be back online shortly!</p>
+                <p class="text-gray-300 mb-6">We're currently performing some upgrades. We'll be back online shortly!</p>
                 <button id="admin-login-btn" class="text-sm text-gray-500 hover:text-gray-300">Admin Login</button>
             </div>
         </div>
@@ -459,7 +468,6 @@ HTML_CONTENT = """
                 </div>
                 <nav id="nav-links" class="flex-1 flex flex-col gap-2"></nav>
                 <div class="mt-auto">
-                    <div id="notification-bell-container" class="relative mb-2"></div>
                     <button id="logout-btn" class="w-full text-left text-gray-300 hover:bg-red-800/50 p-3 rounded-md transition-colors">Logout</button>
                 </div>
             </aside>
@@ -476,28 +484,26 @@ HTML_CONTENT = """
                     <h2 id="auth-title" class="text-3xl font-bold text-white"></h2>
                     <p id="auth-subtitle" class="mt-2 text-gray-300"></p>
                 </div>
-                <form id="auth-form" class="mt-8 space-y-6">
+                <form id="auth-form" class="mt-8 space-y-4">
                     <input type="hidden" name="account_type" id="account_type">
                     <input type="hidden" name="admin_signup_token" id="admin_signup_token" value="">
-                    <div class="rounded-md shadow-sm -space-y-px">
-                        <div id="username-field">
-                            <label for="username" class="sr-only">Username</label>
-                            <input id="username" name="username" type="text" autocomplete="username" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:ring-2 focus:ring-yellow-500 focus:outline-none" placeholder="Username">
-                        </div>
-                        <div id="email-field" class="pt-4">
-                            <label for="email" class="sr-only">Email address</label>
-                            <input id="email" name="email" type="email" autocomplete="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:ring-2 focus:ring-yellow-500 focus:outline-none" placeholder="Email address">
-                        </div>
-                        <div id="password-field" class="pt-4">
-                            <label for="password" class="sr-only">Password</label>
-                            <input id="password" name="password" type="password" autocomplete="current-password" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:ring-2 focus:ring-yellow-500 focus:outline-none" placeholder="Password">
-                        </div>
-                        <div id="teacher-key-field" class="pt-4 hidden">
-                            <input id="teacher-secret-key" name="secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Teacher Secret Key">
-                        </div>
-                         <div id="admin-key-field" class="pt-4 hidden">
-                            <input id="admin-secret-key" name="admin_secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Admin Secret Key">
-                        </div>
+                    <div>
+                        <label for="username" class="sr-only">Username</label>
+                        <input id="username" name="username" type="text" autocomplete="username" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Username">
+                    </div>
+                    <div id="email-field">
+                        <label for="email" class="sr-only">Email address</label>
+                        <input id="email" name="email" type="email" autocomplete="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Email address">
+                    </div>
+                    <div>
+                        <label for="password" class="sr-only">Password</label>
+                        <input id="password" name="password" type="password" autocomplete="current-password" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Password">
+                    </div>
+                    <div id="teacher-key-field" class="hidden">
+                        <input id="teacher-secret-key" name="secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Teacher Secret Key">
+                    </div>
+                    <div id="admin-key-field" class="hidden">
+                        <input id="admin-secret-key" name="admin_secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Admin Secret Key">
                     </div>
                     <p id="auth-error" class="text-red-400 text-sm text-center h-4"></p>
                     <div>
@@ -512,37 +518,93 @@ HTML_CONTENT = """
         </div>
     </template>
     
-    <template id="template-my-classes">...</template>
-    <template id="template-team-mode">...</template>
-    <template id="template-student-class-action">...</template>
-    <template id="template-teacher-class-action">...</template>
-    <template id="template-team-actions">...</template>
-    <template id="template-selected-class-view">...</template>
-    <template id="template-class-chat-view">...</template>
-    <template id="template-class-assignments-view">...</template>
-    <template id="template-class-quizzes-view">...</template>
-    <template id="template-class-students-view">...</template>
-    <template id="template-study-guide-tab">...</template>
-    <template id="template-profile">...</template>
-    <template id="template-billing">...</template>
-    <template id="template-admin-dashboard">...</template>
-    <template id="template-admin-users-view">...</template>
-    <template id="template-admin-classes-view">...</template>
-    <template id="template-admin-settings-view">...</template>
-    <template id="template-admin-music-view">...</template>
-    <template id="template-modal">...</template>
+    <template id="template-my-classes">
+        <div class="fade-in">
+            <div id="class-view-header" class="flex justify-between items-center mb-6">
+                 <h2 class="text-3xl font-bold text-white">My Classes</h2>
+                 <button id="back-to-classes-list" class="hidden shiny-button p-2 rounded-md">&larr; Back to List</button>
+            </div>
+            <div id="classes-main-view">
+                <div id="class-action-container" class="mb-6"></div>
+                <div id="classes-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+            <div id="selected-class-view" class="hidden"></div>
+        </div>
+    </template>
+
+    <template id="template-student-class-action">
+        <form id="join-class-form" class="glassmorphism p-4 rounded-lg flex gap-2">
+            <input type="text" name="code" placeholder="Enter Class Code" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
+            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Join Class</button>
+        </form>
+    </template>
+
+    <template id="template-teacher-class-action">
+        <form id="create-class-form" class="glassmorphism p-4 rounded-lg flex gap-2">
+            <input type="text" name="name" placeholder="Enter New Class Name" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
+            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create Class</button>
+        </form>
+    </template>
+    
+    <template id="template-profile">
+        <div class="fade-in max-w-2xl mx-auto">
+            <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
+            <form id="profile-form" class="glassmorphism p-6 rounded-lg space-y-4">
+                 <div>
+                    <label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>
+                    <select id="theme-select" name="theme_preference" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
+                 </div>
+                 <div>
+                    <label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label>
+                    <input id="avatar" name="avatar" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
+                </div>
+                <div>
+                    <label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label>
+                    <textarea id="bio" name="bio" rows="4" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></textarea>
+                </div>
+                <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Changes</button>
+            </form>
+        </div>
+    </template>
+
+    <template id="template-admin-dashboard">
+        <div class="fade-in">
+            <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
+            <div id="admin-view-container"></div>
+        </div>
+    </template>
+
+    <template id="template-admin-users-view">
+        <h3 class="text-2xl font-bold mb-4">User Management</h3>
+        <div class="overflow-x-auto glassmorphism rounded-lg">
+            <table class="w-full text-left">
+                <thead class="bg-bg-light">
+                    <tr>
+                        <th class="p-3">Username</th>
+                        <th class="p-3">Email</th>
+                        <th class="p-3">Role</th>
+                        <th class="p-3">Created At</th>
+                    </tr>
+                </thead>
+                <tbody id="users-table-body"></tbody>
+            </table>
+        </div>
+    </template>
+    <!-- TEMPLATES END -->
 
     <script>
+    // ==========================================================================
+    // --- SPA (Single Page Application) Logic ---
+    // ==========================================================================
     document.addEventListener('DOMContentLoaded', () => {
+        // --- Core State and Elements ---
         const BASE_URL = '';
-        const DOMElements = {
-            appContainer: document.getElementById('app-container'),
+        const DOMElements = { 
+            appContainer: document.getElementById('app-container'), 
             toastContainer: document.getElementById('toast-container'),
-            modalContainer: document.getElementById('modal-container'),
-            backgroundMusic: document.getElementById('background-music')
         };
-        let appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, isLoginView: true, selectedRole: null };
-
+        let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', currentTab: 'my-classes', selectedClass: null };
+        
         const themes = {
             golden: { '--brand-hue': 45, '--bg-dark': '#1A120B', '--bg-med': '#2c241e', '--bg-light': '#4a3f35', '--text-color': '#F5EFE6', '--text-secondary-color': '#AE8E6A' },
             dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
@@ -551,11 +613,8 @@ HTML_CONTENT = """
 
         const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,5 C74.85,5 95,25.15 95,50 C95,74.85 74.85,95 50,95 C25.15,95 5,74.85 5,50 C5,25.15 25.15,5 50,5 Z M50,15 C30.67,15 15,30.67 15,50 C15,69.33 30.67,85 50,85 C69.33,85 85,69.33 85,50 C85,30.67 69.33,15 50,15 Z" /><path fill="white" d="M50,30 C55.52,30 60,34.48 60,40 L60,60 C60,65.52 55.52,70 50,70 C44.48,70 40,65.52 40,60 L40,40 C40,34.48 44.48,30 50,30 Z" /></svg>`;
         
-        function escapeHtml(unsafe) {
-            if (typeof unsafe !== 'string') return '';
-            return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]);
-        }
-
+        // --- Utility Functions ---
+        function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
         function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
         function applyTheme(themeName) { const t = themes[themeName] || themes.golden; Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v)); }
         function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
@@ -563,64 +622,48 @@ HTML_CONTENT = """
         function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
         function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
         function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
-        function connectSocket() { if (appState.socket) appState.socket.disconnect(); appState.socket = io(BASE_URL); appState.socket.on('connect', () => { appState.socket.emit('join', { room: `user_${appState.currentUser.id}` }); }); appState.socket.on('new_notification', (data) => { showToast(`Notification: ${data.content}`, 'info'); }); }
-        
+
+        // --- Authentication and Page Flow ---
         function handleLoginSuccess(user, settings) { appState.currentUser = user; if (user.profile && user.profile.theme_preference) { applyTheme(user.profile.theme_preference); } showFullScreenLoader(); setTimeout(() => { setupDashboard(user, settings); }, 1000); }
-        function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
-        
+        function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); appState.currentUser = null; window.location.reload(); }
         function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', () => { appState.selectedRole = btn.dataset.role; setupAuthPage(); })); }); }
         function setupAuthPage(token = null) { appState.isLoginView = !token; renderPage('template-auth-form', () => { if(token) document.getElementById('admin_signup_token').value = token; updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword); document.getElementById('back-to-roles').addEventListener('click', main); }); }
         function updateAuthView() {
             const isLogin = appState.isLoginView, role = appState.selectedRole;
-            const elements = {
-                title: document.getElementById('auth-title'), subtitle: document.getElementById('auth-subtitle'),
-                submitBtn: document.getElementById('auth-submit-btn'), toggleBtn: document.getElementById('auth-toggle-btn'),
-                emailField: document.getElementById('email-field'), teacherKeyField: document.getElementById('teacher-key-field'),
-                adminKeyField: document.getElementById('admin-key-field'), backToRolesBtn: document.getElementById('back-to-roles'),
-                adminTokenInput: document.getElementById('admin_signup_token')
-            };
+            const title = document.getElementById('auth-title'), subtitle = document.getElementById('auth-subtitle');
+            const submitBtn = document.getElementById('auth-submit-btn'), toggleBtn = document.getElementById('auth-toggle-btn');
+            const emailField = document.getElementById('email-field'), teacherKeyField = document.getElementById('teacher-key-field');
+            const adminKeyField = document.getElementById('admin-key-field'), adminTokenInput = document.getElementById('admin_signup_token');
             document.getElementById('account_type').value = role;
-            elements.title.textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`;
-            
-            Object.values(elements).forEach(el => el && el.classList.remove('hidden'));
-
-            if (elements.adminTokenInput.value) {
-                appState.isLoginView = false; appState.selectedRole = 'admin';
-                elements.title.textContent = 'Create Admin Account';
-                elements.subtitle.textContent = 'Complete registration.';
-                elements.backToRolesBtn.classList.add('hidden'); elements.toggleBtn.classList.add('hidden');
-            } else if (role === 'admin') {
-                elements.toggleBtn.classList.add('hidden');
-            }
-
-            elements.emailField.classList.toggle('hidden', isLogin);
+            title.textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`;
+            document.getElementById('back-to-roles').classList.toggle('hidden', !!adminTokenInput.value);
+            toggleBtn.classList.toggle('hidden', role === 'admin' && !adminTokenInput.value);
+            emailField.classList.toggle('hidden', isLogin);
             document.getElementById('email').required = !isLogin;
-            elements.subtitle.textContent = isLogin ? 'Sign in to continue' : 'Create your Account';
-            elements.submitBtn.textContent = isLogin ? 'Login' : 'Sign Up';
-            elements.toggleBtn.innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>";
-            elements.teacherKeyField.classList.toggle('hidden', isLogin || role !== 'teacher');
+            subtitle.textContent = isLogin ? 'Sign in to continue' : 'Create your Account';
+            submitBtn.textContent = isLogin ? 'Login' : 'Sign Up';
+            toggleBtn.innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>";
+            teacherKeyField.classList.toggle('hidden', isLogin || role !== 'teacher');
             document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher';
-            elements.adminKeyField.classList.toggle('hidden', !isLogin || role !== 'admin');
+            adminKeyField.classList.toggle('hidden', !isLogin || role !== 'admin');
             document.getElementById('admin-secret-key').required = isLogin && role === 'admin';
         }
-        async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const endpoint = appState.isLoginView ? '/login' : '/signup'; const body = Object.fromEntries(new FormData(form)); const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { if (body.admin_signup_token) { showToast('Admin account created! Please log in.', 'success'); setTimeout(() => window.location.reload(), 2000); } else { handleLoginSuccess(result.user, result.settings); } } else { document.getElementById('auth-error').textContent = result.error; } }
-        async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message, 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
-
+        async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const endpoint = appState.isLoginView ? '/login' : '/signup'; const body = Object.fromEntries(new FormData(form)); const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; } }
+        async function handleForgotPassword() { const email = prompt('Enter your account email:'); if (email) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email }}); showToast(result.message || 'If an account with that email exists, a reset link has been sent.', 'info'); } }
+        
+        // --- Dashboard and Tab Management ---
         function setupDashboard(user, settings) {
-            if (!user) return setupAuthPage();
-            connectSocket();
             renderPage('template-main-dashboard', () => {
                 const navLinks = document.getElementById('nav-links');
-                const dashboardTitle = document.getElementById('dashboard-title');
-                let tabs = [];
+                let tabs = [ { id: 'profile', label: 'Profile' } ];
                 if (['student', 'teacher'].includes(user.role)) {
-                    dashboardTitle.textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
+                    document.getElementById('dashboard-title').textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
+                    tabs.unshift({ id: 'my-classes', label: 'My Classes' });
                     appState.currentTab = 'my-classes';
-                    tabs = [ { id: 'my-classes', label: 'My Classes' }, { id: 'profile', label: 'Profile' } ];
                 } else if (user.role === 'admin') {
-                    dashboardTitle.textContent = "Admin Panel";
+                    document.getElementById('dashboard-title').textContent = "Admin Panel";
+                    tabs.unshift({ id: 'admin-dashboard', label: 'Dashboard' });
                     appState.currentTab = 'admin-dashboard';
-                    tabs = [ { id: 'admin-dashboard', label: 'Dashboard' }, { id: 'profile', label: 'My Profile' } ];
                 }
                 navLinks.innerHTML = tabs.map(tab => `<button data-tab="${escapeHtml(tab.id)}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${escapeHtml(tab.label)}</button>`).join('');
                 document.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
@@ -628,34 +671,26 @@ HTML_CONTENT = """
                 switchTab(appState.currentTab);
             });
         }
+
         function switchTab(tab) {
             const setups = { 'my-classes': setupMyClassesTab, 'profile': setupProfileTab, 'admin-dashboard': setupAdminDashboardTab };
             if(setups[tab]) {
                 appState.currentTab = tab;
+                appState.selectedClass = null; // Reset selected class when switching main tabs
                 document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
                 setups[tab](document.getElementById('dashboard-content'));
             }
         }
-        async function setupMyClassesTab(container) { /* Placeholder */ container.innerHTML = "<h2>My Classes</h2><p>Feature coming soon.</p>";}
-        
+
+        // --- Specific Tab Setup Functions ---
         async function setupProfileTab(container) {
             renderSubTemplate(container, 'template-profile', () => {
                 const profile = appState.currentUser.profile;
                 document.getElementById('bio').value = profile.bio || '';
                 document.getElementById('avatar').value = profile.avatar || '';
-                
-                const themeSelect = document.createElement('select');
-                themeSelect.id = 'theme-select';
-                themeSelect.name = 'theme_preference';
-                themeSelect.className = 'w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600';
-                themeSelect.innerHTML = Object.keys(themes).map(themeName => `<option value="${escapeHtml(themeName)}">${escapeHtml(themeName.charAt(0).toUpperCase() + themeName.slice(1))}</option>`).join('');
+                const themeSelect = document.getElementById('theme-select');
+                themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.charAt(0).toUpperCase() + name.slice(1)}</option>`).join('');
                 themeSelect.value = profile.theme_preference || 'golden';
-                
-                const themeControl = document.createElement('div');
-                themeControl.innerHTML = '<label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>';
-                themeControl.appendChild(themeSelect);
-                document.getElementById('profile-form').prepend(themeControl);
-                
                 document.getElementById('profile-form').addEventListener('submit', async e => {
                     e.preventDefault();
                     const body = Object.fromEntries(new FormData(e.target));
@@ -668,20 +703,96 @@ HTML_CONTENT = """
                 });
             });
         }
-
-        async function setupAdminDashboardTab(container) {
-            renderSubTemplate(container, 'template-admin-dashboard', async () => {
-                const result = await apiCall('/admin/dashboard_data');
-                if (result.success) {
-                    document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join('');
+        
+        async function setupMyClassesTab(container) {
+            renderSubTemplate(container, 'template-my-classes', async () => {
+                const actionContainer = document.getElementById('class-action-container');
+                const role = appState.currentUser.role;
+                if (role === 'student') {
+                    renderSubTemplate(actionContainer, 'template-student-class-action', () => {
+                        document.getElementById('join-class-form').addEventListener('submit', async e => {
+                            e.preventDefault();
+                            const code = e.target.elements.code.value;
+                            const result = await apiCall('/classes/join', { method: 'POST', body: { code } });
+                            if (result.success) {
+                                showToast(`Successfully joined ${result.class_name}!`, 'success');
+                                setupMyClassesTab(container); // Refresh list
+                            }
+                        });
+                    });
+                } else if (role === 'teacher') {
+                    renderSubTemplate(actionContainer, 'template-teacher-class-action', () => {
+                        document.getElementById('create-class-form').addEventListener('submit', async e => {
+                            e.preventDefault();
+                            const name = e.target.elements.name.value;
+                            const result = await apiCall('/classes/create', { method: 'POST', body: { name } });
+                            if (result.success) {
+                                showToast(`Class "${result.class.name}" created!`, 'success');
+                                setupMyClassesTab(container); // Refresh list
+                            }
+                        });
+                    });
                 }
-                document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab)));
-                switchAdminView('users');
+                
+                const result = await apiCall('/classes');
+                if (result.success) {
+                    const classesList = document.getElementById('classes-list');
+                    if (result.classes.length === 0) {
+                        classesList.innerHTML = `<p class="text-gray-400">You are not enrolled in any classes yet.</p>`;
+                    } else {
+                        classesList.innerHTML = result.classes.map(c => `
+                            <div class="class-card glassmorphism p-4 rounded-lg cursor-pointer hover:scale-105 transition-transform" data-class-id="${escapeHtml(c.id)}">
+                                <h3 class="text-xl font-bold">${escapeHtml(c.name)}</h3>
+                                <p class="text-sm text-gray-400">Teacher: ${escapeHtml(c.teacher_name)}</p>
+                                <p class="text-sm text-gray-400 mt-2">Code: <span class="font-mono bg-bg-dark p-1 rounded">${escapeHtml(c.code)}</span></p>
+                            </div>
+                        `).join('');
+                        document.querySelectorAll('.class-card').forEach(card => {
+                            card.addEventListener('click', () => viewClass(card.dataset.classId));
+                        });
+                    }
+                }
             });
         }
-        
-        async function switchAdminView(view) { /* Placeholder */ }
 
+        function viewClass(classId) {
+            appState.selectedClass = classId;
+            document.getElementById('classes-main-view').classList.add('hidden');
+            const selectedClassView = document.getElementById('selected-class-view');
+            selectedClassView.classList.remove('hidden');
+            selectedClassView.innerHTML = `<h3 class="text-2xl">Details for class ${classId}</h3><p>Assignments, quizzes, and chat will be shown here.</p>`; // Placeholder
+            
+            const backButton = document.getElementById('back-to-classes-list');
+            backButton.classList.remove('hidden');
+            backButton.onclick = () => {
+                appState.selectedClass = null;
+                document.getElementById('classes-main-view').classList.remove('hidden');
+                selectedClassView.classList.add('hidden');
+                backButton.classList.add('hidden');
+            };
+        }
+        
+        async function setupAdminDashboardTab(container) {
+            renderSubTemplate(container, 'template-admin-dashboard', () => {
+                const adminContainer = document.getElementById('admin-view-container');
+                renderSubTemplate(adminContainer, 'template-admin-users-view', async () => {
+                    const result = await apiCall('/admin/users');
+                    if(result.success) {
+                        const tableBody = document.getElementById('users-table-body');
+                        tableBody.innerHTML = result.users.map(user => `
+                            <tr class="border-b border-gray-700/50">
+                                <td class="p-3">${escapeHtml(user.username)}</td>
+                                <td class="p-3">${escapeHtml(user.email)}</td>
+                                <td class="p-3">${escapeHtml(user.role)}</td>
+                                <td class="p-3">${new Date(user.created_at).toLocaleDateString()}</td>
+                            </tr>
+                        `).join('');
+                    }
+                });
+            });
+        }
+
+        // --- Application Entry Point ---
         async function main() {
             renderPage('template-welcome-screen');
             setTimeout(async () => {
@@ -702,7 +813,7 @@ HTML_CONTENT = """
                         setupRoleChoicePage();
                     }
                 }
-            }, 2500); // Show welcome screen
+            }, 1500); // Show welcome screen
         }
 
         main();
@@ -712,14 +823,14 @@ HTML_CONTENT = """
 </html>
 """
 
+# ==============================================================================
+# --- 5. CORE API ROUTES ---
+# ==============================================================================
 @app.route('/')
 @app.route('/<path:path>')
 def render_spa(path=None):
     return render_template_string(HTML_CONTENT, SITE_CONFIG=SITE_CONFIG, csrf_token=generate_csrf)
 
-# ==============================================================================
-# --- 6. API ROUTES ---
-# ==============================================================================
 @app.route('/api/status')
 def status():
     settings_raw = SiteSettings.query.all()
@@ -753,7 +864,8 @@ def signup():
     db.session.commit()
     
     login_user(new_user)
-    return jsonify({"success": True, "user": new_user.to_dict()})
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify({"success": True, "user": new_user.to_dict(), "settings": settings})
 
 @app.route('/api/login', methods=['POST'])
 @limiter.limit("10 per minute")
@@ -776,7 +888,87 @@ def logout():
     logout_user()
     return jsonify({"success": True})
 
-# ... Other API routes would go here
+@app.route('/api/update_profile', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.json
+    profile = current_user.profile
+    if not profile:
+        profile = Profile(user_id=current_user.id)
+        db.session.add(profile)
+        
+    profile.bio = data.get('bio', profile.bio)
+    profile.avatar = data.get('avatar', profile.avatar)
+    profile.theme_preference = data.get('theme_preference', profile.theme_preference)
+    db.session.commit()
+    return jsonify({"success": True, "profile": {"bio": profile.bio, "avatar": profile.avatar, "theme_preference": profile.theme_preference}})
+
+# ==============================================================================
+# --- 6. CLASS MANAGEMENT API ROUTES ---
+# ==============================================================================
+@app.route('/api/classes', methods=['GET'])
+@login_required
+def get_classes():
+    if current_user.role == 'teacher':
+        classes = current_user.taught_classes
+    else:
+        classes = current_user.enrolled_classes.all()
+    
+    return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
+
+@app.route('/api/classes/create', methods=['POST'])
+@login_required
+@teacher_required
+def create_class():
+    data = request.json
+    name = data.get('name')
+    if not name:
+        return jsonify({"error": "Class name is required."}), 400
+    
+    # Generate a unique 8-character code
+    while True:
+        code = secrets.token_urlsafe(6).upper()
+        if not Class.query.filter_by(code=code).first():
+            break
+            
+    new_class = Class(name=name, teacher_id=current_user.id, code=code)
+    db.session.add(new_class)
+    db.session.commit()
+    
+    return jsonify({"success": True, "class": new_class.to_dict()}), 201
+
+@app.route('/api/classes/join', methods=['POST'])
+@login_required
+def join_class():
+    if current_user.role != 'student':
+        return jsonify({"error": "Only students can join classes."}), 403
+        
+    data = request.json
+    code = data.get('code')
+    if not code:
+        return jsonify({"error": "Class code is required."}), 400
+        
+    target_class = Class.query.filter_by(code=code).first()
+    if not target_class:
+        return jsonify({"error": "Invalid class code."}), 404
+        
+    if current_user in target_class.students:
+        return jsonify({"error": "You are already in this class."}), 409
+        
+    target_class.students.append(current_user)
+    db.session.commit()
+    
+    return jsonify({"success": True, "class_name": target_class.name})
+
+# ==============================================================================
+# --- 7. ADMIN API ROUTES ---
+# ==============================================================================
+@app.route('/api/admin/users', methods=['GET'])
+@login_required
+@admin_required
+def get_all_users():
+    users = User.query.all()
+    return jsonify({"success": True, "users": [user.to_dict() for user in users]})
 
 # ==============================================================================
 # --- 8. APP INITIALIZATION & DB SETUP ---
@@ -794,10 +986,8 @@ def init_db_command():
     with app.app_context():
         db.create_all()
         logging.info("Database tables created.")
-        
         if not SiteSettings.query.filter_by(key='maintenance_mode').first():
             db.session.add(SiteSettings(key='maintenance_mode', value='false'))
-        
         db.session.commit()
         logging.info("Default settings seeded.")
 

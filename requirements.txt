@@ -11,8 +11,5 @@ stripe
 requests
 gunicorn
 eventlet
-itsdangerous
-werkzeug
-MarkupSafe
-Flask-Limiter
-SQLAlchemy
+markupsafe
+google-generativeai

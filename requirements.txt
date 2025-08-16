@@ -12,7 +12,5 @@ stripe
 requests
 gunicorn
 eventlet
-google-api-python-client
-google-auth-httplib2
-google-auth
+google-generativeai
 markupsafe

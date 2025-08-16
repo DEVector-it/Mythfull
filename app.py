@@ -20,7 +20,7 @@ from flask_mail import Mail, Message
 from flask_talisman import Talisman
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event, or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
@@ -85,6 +85,7 @@ csp = {
     'default-src': '\'self\'',
     'script-src': [
         '\'self\'',
+        '\'unsafe-inline\'', # Needed for the error handler fallback
         'https://cdn.tailwindcss.com',
         'https://cdnjs.cloudflare.com',
         'https://js.stripe.com',
@@ -92,6 +93,7 @@ csp = {
     ],
     'style-src': [
         '\'self\'',
+        '\'unsafe-inline\'', # Needed for the error handler fallback
         'https://cdn.tailwindcss.com',
         'https://fonts.googleapis.com',
         '\'nonce-{nonce}\''
@@ -103,9 +105,7 @@ csp = {
         f'wss://{SITE_CONFIG["YOUR_DOMAIN"].split("//")[-1]}' if is_production and 'localhost' not in SITE_CONFIG["YOUR_DOMAIN"] else 'ws://localhost:5000',
         'https://api.stripe.com'
     ],
-    'object-src': '\'none\'',
-    'base-uri': '\'self\'',
-    'form-action': '\'self\''
+    'object-src': '\'none\'', 'base-uri': '\'self\'', 'form-action': '\'self\''
 }
 
 talisman = Talisman(app, content_security_policy=csp, force_https=is_production, strict_transport_security=is_production, frame_options='DENY', referrer_policy='strict-origin-when-cross-origin')
@@ -117,7 +117,7 @@ bcrypt = Bcrypt(app)
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
 password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 db = SQLAlchemy(app)
-socketio = SocketIO(app, cors_allowed_origins=prod_origin if is_production else "*")
+socketio = SocketIO(app, cors_allowed_origins=prod_origin if is_production else "*", async_mode='eventlet')
 mail = Mail(app)
 
 if SITE_CONFIG.get("GEMINI_API_KEY"):
@@ -156,15 +156,14 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='student')
+    role = db.Column(db.String(20), nullable=False, default='student', index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    points = db.Column(db.Integer, default=0)
+    points = db.Column(db.Integer, default=0, index=True)
     last_login = db.Column(db.DateTime, default=datetime.utcnow)
     streak = db.Column(db.Integer, default=1)
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
-    taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
+    taught_classes = db.relationship('Class', back_populates='teacher', lazy='dynamic', foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
-    submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
 
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -172,17 +171,20 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return bcrypt.check_password_hash(self.password_hash, password)
 
-    def to_dict(self):
+    def to_dict(self, include_email=False):
         profile_data = {
             'bio': self.profile.bio if self.profile else '',
             'avatar': self.profile.avatar if self.profile else '',
             'theme_preference': self.profile.theme_preference if self.profile else 'golden',
         }
-        return {
-            'id': self.id, 'username': self.username, 'email': self.email, 'role': self.role,
+        data = {
+            'id': self.id, 'username': self.username, 'role': self.role,
             'created_at': self.created_at.isoformat(), 'profile': profile_data, 'points': self.points,
             'streak': self.streak
         }
+        if include_email:
+            data['email'] = self.email
+        return data
 
 class Profile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -199,8 +201,7 @@ class Class(db.Model):
     teacher_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
-    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
-    assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -211,33 +212,25 @@ class Class(db.Model):
 
 class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
-    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False, index=True)
+    sender_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    is_edited = db.Column(db.Boolean, default=False)
+    reactions = db.Column(db.JSON, default=lambda: {})
     class_obj = db.relationship('Class', back_populates='messages')
     sender = db.relationship('User', backref='sent_messages')
 
-class Assignment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
-    title = db.Column(db.String(200), nullable=False)
-    description = db.Column(db.Text, nullable=False)
-    due_date = db.Column(db.DateTime, nullable=False)
-    points = db.Column(db.Integer, default=100)
-    class_obj = db.relationship('Class', back_populates='assignments')
-    submissions = db.relationship('Submission', back_populates='assignment', lazy='dynamic', cascade="all, delete-orphan")
-
-class Submission(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    assignment_id = db.Column(db.Integer, db.ForeignKey('assignment.id', ondelete='CASCADE'), nullable=False)
-    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    content = db.Column(db.Text, nullable=False)
-    grade = db.Column(db.Float, nullable=True)
-    feedback = db.Column(db.Text, nullable=True)
-    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
-    assignment = db.relationship('Assignment', back_populates='submissions')
-    student = db.relationship('User', back_populates='submissions')
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'class_id': self.class_id,
+            'sender': self.sender.to_dict() if self.sender else {'username': 'Unknown User', 'id': None, 'profile': {}},
+            'content': self.content,
+            'timestamp': self.timestamp.isoformat(),
+            'is_edited': self.is_edited,
+            'reactions': self.reactions or {}
+        }
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -253,25 +246,21 @@ login_manager.login_view = "render_spa"
 @login_manager.user_loader
 def load_user(user_id):
     if user_id.startswith('guest_'):
-        # This is a temporary guest user, not from the DB
-        guest = User(id=user_id, username="Guest", email="guest@example.com", role="guest")
+        guest = User(id=user_id, username="Guest", email=f"{user_id}@example.com", role="guest")
         guest.is_guest = True
         guest.profile = Profile(theme_preference='dark')
         return guest
-    return User.query.get(user_id)
+    return User.query.options(selectinload(User.profile)).get(user_id)
 
 def role_required(role_names):
-    if not isinstance(role_names, list):
-        role_names = [role_names]
+    if not isinstance(role_names, list): role_names = [role_names]
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            if not current_user.is_authenticated:
-                return jsonify({"error": "Login required."}), 401
-            if getattr(current_user, 'is_guest', False):
-                 return jsonify({"error": "Guests cannot perform this action."}), 403
+            if not current_user.is_authenticated: return jsonify({"error": "Login required."}), 401
+            if getattr(current_user, 'is_guest', False): return jsonify({"error": "Guests cannot perform this action."}), 403
             if current_user.role != 'admin' and current_user.role not in role_names:
-                logging.warning(f"SECURITY: User {current_user.id} with role {current_user.role} attempted unauthorized access to a route requiring roles {role_names}.")
+                logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access.")
                 abort(403)
             return f(*args, **kwargs)
         return decorated_function
@@ -283,14 +272,19 @@ teacher_required = role_required('teacher')
 def class_member_required(f):
     @wraps(f)
     def decorated_function(class_id, *args, **kwargs):
-        target_class = Class.query.get_or_404(class_id)
-        is_student = current_user.is_authenticated and not getattr(current_user, 'is_guest', False) and target_class in current_user.enrolled_classes
+        target_class = Class.query.options(selectinload(Class.teacher)).get_or_404(class_id)
+        
+        is_student = False
+        if current_user.is_authenticated and not getattr(current_user, 'is_guest', False):
+            is_student = db.session.query(student_class_association.c.user_id).filter_by(user_id=current_user.id, class_id=class_id).first() is not None
+
         is_teacher = current_user.is_authenticated and target_class.teacher_id == current_user.id
         is_admin = current_user.is_authenticated and current_user.role == 'admin'
 
         if not (is_student or is_teacher or is_admin):
             logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access to class {class_id}.")
             abort(403)
+        
         return f(target_class, *args, **kwargs)
     return decorated_function
 
@@ -300,6 +294,15 @@ def class_member_required(f):
 @app.before_request
 def before_request_func():
     g.nonce = secrets.token_hex(16)
+    g.request_start_time = time.time()
+
+@app.after_request
+def after_request_func(response):
+    if hasattr(g, 'request_start_time'):
+        duration = time.time() - g.request_start_time
+        if duration > 0.5:
+            logging.warning(f"Slow request: {request.path} took {duration:.2f}s")
+    return response
 
 HTML_CONTENT = """
 <!DOCTYPE html>
@@ -334,15 +337,19 @@ HTML_CONTENT = """
         .full-screen-loader { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(26, 18, 11, 0.9); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; flex-direction: column; z-index: 1001; transition: opacity 0.3s ease; }
         .waiting-text { margin-top: 1rem; font-size: 1.25rem; color: var(--text-secondary-color); animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .chat-message-container:hover .message-actions { opacity: 1; }
+        .message-actions { opacity: 0; transition: opacity 0.2s ease-in-out; }
     </style>
     <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body class="text-gray-200 antialiased">
     <div id="app-container" class="relative min-h-screen w-full overflow-x-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
-    <div id="modal-container"></div>
-    <div class="fixed bottom-4 right-4 text-xs text-gray-400">© 2025 Myth AI. All Rights Reserved.</div>
+    
+    <!-- This footer is purely informational. It has no blocking functionality. -->
+    <div class="fixed bottom-4 right-4 text-xs text-gray-400 z-0">© 2025 Myth AI. All Rights Reserved.</div>
 
+    <!-- TEMPLATES -->
     <template id="template-welcome-screen">
         <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4 text-center fade-in">
             <div id="logo-container-welcome" class="w-24 h-24 mx-auto mb-2"></div>
@@ -350,14 +357,12 @@ HTML_CONTENT = """
             <p class="text-lg text-gray-300 mt-2 animate-pulse">The future of learning is awakening...</p>
         </div>
     </template>
-    
     <template id="template-full-screen-loader">
         <div class="full-screen-loader fade-in">
             <div id="logo-container-loader" class="h-16 w-16 mx-auto mb-4"></div>
             <div class="waiting-text">Loading Portal...</div>
         </div>
     </template>
-    
     <template id="template-role-choice">
         <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4">
             <div class="text-center mb-8">
@@ -372,10 +377,9 @@ HTML_CONTENT = """
             <button id="guest-mode-btn" class="mt-8 text-gray-400 hover:text-white">Or, try as a Guest &rarr;</button>
         </div>
     </template>
-
     <template id="template-main-dashboard">
         <div class="flex h-screen bg-bg-dark">
-            <aside class="w-64 bg-bg-med p-4 flex flex-col glassmorphism border-r border-gray-700/50">
+            <aside class="w-64 bg-bg-med p-4 flex-col glassmorphism border-r border-gray-700/50 hidden md:flex">
                 <div class="flex items-center gap-2 mb-4">
                     <div id="logo-container-dash" class="w-10 h-10"></div>
                     <h1 id="dashboard-title" class="text-xl font-bold text-white"></h1>
@@ -386,10 +390,9 @@ HTML_CONTENT = """
                     <button id="logout-btn" class="w-full text-left text-gray-300 hover:bg-red-800/50 p-3 rounded-md transition-colors">Logout</button>
                 </div>
             </aside>
-            <main id="dashboard-content" class="flex-1 p-6 overflow-y-auto"></main>
+            <main id="dashboard-content" class="flex-1 p-4 md:p-6 overflow-y-auto"></main>
         </div>
     </template>
-    
     <template id="template-auth-form">
         <div class="min-h-screen flex items-center justify-center dynamic-bg px-4">
             <div class="max-w-md w-full glassmorphism p-8 rounded-2xl">
@@ -415,43 +418,49 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
-    
     <template id="template-my-classes">
         <div class="fade-in">
             <div id="class-view-header" class="flex justify-between items-center mb-6">
-                <h2 class="text-3xl font-bold text-white">My Classes</h2>
+                <h2 id="my-classes-title" class="text-3xl font-bold text-white">My Classes</h2>
                 <button id="back-to-classes-list" class="hidden shiny-button p-2 rounded-md">&larr; Back to List</button>
             </div>
             <div id="classes-main-view">
                 <div id="class-action-container" class="mb-6"></div>
                 <div id="classes-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
             </div>
-            <div id="selected-class-view"></div>
+            <div id="selected-class-view" class="hidden"></div>
         </div>
     </template>
-
     <template id="template-student-class-action">
         <form id="join-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
             <input type="text" name="code" placeholder="Enter Class Code" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
             <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Join</button>
         </form>
     </template>
-
     <template id="template-teacher-class-action">
         <form id="create-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
             <input type="text" name="name" placeholder="New Class Name" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
             <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create</button>
         </form>
     </template>
-
     <template id="template-selected-class-view">
         <div class="flex border-b border-gray-700 mb-4">
              <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
-             <button data-tab="assignments" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Assignments</button>
         </div>
         <div id="class-view-content"></div>
     </template>
-    
+     <template id="template-class-chat-view">
+        <div class="flex flex-col h-[calc(100vh-15rem)]">
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4"></div>
+            <div id="typing-indicator" class="h-6 px-4 text-sm text-gray-400 italic"></div>
+            <form id="chat-form" class="p-4 bg-bg-med glassmorphism mt-2 rounded-lg">
+                <div class="flex items-center gap-2">
+                    <input id="chat-input" type="text" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Type a message..." autocomplete="off">
+                    <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-5 rounded-lg">Send</button>
+                </div>
+            </form>
+        </div>
+    </template>
     <template id="template-profile">
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
@@ -472,14 +481,12 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-    
     <template id="template-leaderboard-view">
         <div class="fade-in max-w-4xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">Leaderboard</h2>
             <div id="leaderboard-list" class="glassmorphism p-4 rounded-lg"></div>
         </div>
     </template>
-    
     <template id="template-admin-dashboard">
        <div class="fade-in">
             <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
@@ -489,7 +496,6 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
-
     <template id="template-admin-users-view">
         <div class="glassmorphism p-4 rounded-lg">
             <h3 class="text-2xl font-bold mb-4">User Management</h3>
@@ -501,7 +507,6 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
-
     <template id="template-admin-settings-view">
         <div class="glassmorphism p-4 rounded-lg">
             <h3 class="text-2xl font-bold mb-4">Site Settings</h3>
@@ -519,9 +524,388 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-
+    
     <script nonce="{{ g.nonce }}">
-        // FULL SPA JAVASCRIPT LOGIC
+        document.addEventListener('DOMContentLoaded', () => {
+            // *** FAILSAFE ERROR HANDLER ***
+            // This will catch any critical errors during app initialization and display them on screen.
+            try {
+                const DOMElements = { 
+                    appContainer: document.getElementById('app-container'), 
+                    toastContainer: document.getElementById('toast-container'),
+                };
+                let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', siteSettings: {}, currentClass: null, socket: null, classCache: new Map() };
+
+                const themes = {
+                    golden: { '--brand-hue': 45, '--bg-dark': '#1A120B', '--bg-med': '#2c241e', '--bg-light': '#4a3f35', '--text-color': '#F5EFE6', '--text-secondary-color': '#AE8E6A' },
+                    dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
+                    edgy_purple: { '--brand-hue': 260, '--bg-dark': '#110D19', '--bg-med': '#211A2E', '--bg-light': '#3B2D4F', '--text-color': '#EADFFF', '--text-secondary-color': '#A17DFF' }
+                };
+                const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,14.7C30.5,14.7,14.7,30.5,14.7,50S30.5,85.3,50,85.3S85.3,69.5,85.3,50S69.5,14.7,50,14.7z M50,77.6 C34.8,77.6,22.4,65.2,22.4,50S34.8,22.4,50,22.4s27.6,12.4,27.6,27.6S65.2,77.6,50,77.6z"/><circle cx="50" cy="50" r="10" fill="white"/></svg>`;
+                
+                function debounce(func, wait) { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; }
+                function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
+                function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
+                function applyTheme(userPreference) { const siteTheme = appState.siteSettings.site_wide_theme; const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference; const t = themes[themeToApply] || themes.golden; Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v)); }
+                function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
+                function setButtonLoadingState(button, isLoading) { if (!button) return; if (isLoading) { button.disabled = true; button.dataset.originalText = button.innerHTML; button.innerHTML = `<svg class="animate-spin h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`; } else { button.disabled = false; if (button.dataset.originalText) { button.innerHTML = button.dataset.originalText; } } }
+                async function apiCall(endpoint, options = {}) { try { const csrfToken = document.querySelector('meta[name="csrf-token"]').content; if (!options.headers) options.headers = {}; options.headers['X-CSRFToken'] = csrfToken; if (options.body && typeof options.body === 'object') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); } const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); const data = await response.json(); if (!response.ok) { if (response.status === 401) handleLogout(false); throw new Error(data.error || 'Request failed'); } return { success: true, ...data }; } catch (error) { showToast(error.message, 'error'); return { success: false, error: error.message }; } }
+                function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
+                function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
+                function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
+
+                function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); appState.socket.on('message_updated', (msg) => updateChatMessage(msg)); appState.socket.on('message_deleted', (data) => document.getElementById(`message-${data.message_id}`)?.remove()); appState.socket.on('typing', (data) => updateTypingIndicator(data.username, true)); appState.socket.on('stop_typing', (data) => updateTypingIndicator(data.username, false)); }
+                
+                function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); if (user.role !== 'guest') connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
+                function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
+                
+                function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); })); document.getElementById('guest-mode-btn').addEventListener('click', handleGuestLogin); }); }
+                function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
+                
+                function updateAuthView() {
+                    const isLogin = appState.isLoginView, role = appState.selectedRole;
+                    document.getElementById('auth-title').textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`;
+                    document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue' : 'Create your Account';
+                    document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up';
+                    document.getElementById('auth-toggle-btn').innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>";
+                    document.getElementById('email-field').style.display = isLogin ? 'none' : 'block';
+                    document.getElementById('email').required = !isLogin;
+                    document.getElementById('teacher-key-field').style.display = (!isLogin && role === 'teacher') ? 'block' : 'none';
+                    document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher';
+                    document.getElementById('admin-key-field').style.display = (isLogin && role === 'admin') ? 'block' : 'none';
+                    document.getElementById('admin-secret-key').required = isLogin && role === 'admin';
+                    document.getElementById('account_type').value = role;
+                }
+
+                async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = Object.fromEntries(new FormData(form)); const endpoint = appState.isLoginView ? '/login' : '/signup'; const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; } setButtonLoadingState(btn, false); }
+                async function handleGuestLogin() { showFullScreenLoader('Entering Guest Mode...'); const result = await apiCall('/guest_login', { method: 'POST'}); if (result.success) { handleLoginSuccess(result.user, result.settings); } }
+
+                function setupDashboard(user) {
+                    renderPage('template-main-dashboard', () => {
+                        document.getElementById('welcome-message').innerHTML = `Welcome, ${escapeHtml(user.username)}! <br> Streak: 🔥 ${user.streak}`;
+                        let tabs = [ { id: 'profile', label: 'Profile' } ];
+                        if (['student', 'teacher'].includes(user.role)) {
+                            document.getElementById('dashboard-title').textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
+                            tabs.unshift({ id: 'my-classes', label: 'My Classes' }, { id: 'leaderboard', label: 'Leaderboard' });
+                            appState.currentTab = 'my-classes';
+                        } else if (user.role === 'admin') {
+                            document.getElementById('dashboard-title').textContent = "Admin Panel";
+                            tabs.unshift({ id: 'admin-dashboard', label: 'Dashboard' });
+                            appState.currentTab = 'admin-dashboard';
+                        }
+                        const navLinks = document.getElementById('nav-links');
+                        navLinks.innerHTML = tabs.map(tab => `<button data-tab="${escapeHtml(tab.id)}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${escapeHtml(tab.label)}</button>`).join('');
+                        navLinks.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
+                        document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
+                        switchTab(appState.currentTab);
+                    });
+                }
+
+                function switchTab(tab) {
+                    const setups = { 'my-classes': setupMyClassesTab, 'profile': setupProfileTab, 'admin-dashboard': setupAdminDashboardTab, 'leaderboard': setupLeaderboardTab };
+                    if (setups[tab]) {
+                        appState.currentTab = tab;
+                        document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
+                        setups[tab](document.getElementById('dashboard-content'));
+                    }
+                }
+
+                async function setupMyClassesTab(container) {
+                    renderSubTemplate(container, 'template-my-classes', async () => {
+                        document.getElementById('back-to-classes-list').addEventListener('click', () => showClassList(true));
+                        showClassList(false);
+                    });
+                }
+                
+                async function showClassList(isRefresh) {
+                    document.getElementById('classes-main-view').classList.remove('hidden');
+                    document.getElementById('selected-class-view').classList.add('hidden');
+                    document.getElementById('back-to-classes-list').classList.add('hidden');
+                    document.getElementById('my-classes-title').textContent = "My Classes";
+
+                    const actionContainer = document.getElementById('class-action-container');
+                    const role = appState.currentUser.role;
+                    if (role !== 'guest') {
+                        const actionTemplateId = `template-${role}-class-action`;
+                        renderSubTemplate(actionContainer, actionTemplateId, () => {
+                            if (role === 'student') document.getElementById('join-class-form').addEventListener('submit', handleJoinClass);
+                            else if (role === 'teacher') document.getElementById('create-class-form').addEventListener('submit', handleCreateClass);
+                        });
+                    } else {
+                        actionContainer.innerHTML = '';
+                    }
+
+                    const classesList = document.getElementById('classes-list');
+                    classesList.innerHTML = '<p class="text-gray-400">Loading classes...</p>';
+
+                    if (!isRefresh && appState.classCache.has('list')) {
+                        renderClasses(appState.classCache.get('list'));
+                    } else {
+                        const result = await apiCall('/classes');
+                        if (result.success) {
+                            appState.classCache.set('list', result.classes);
+                            renderClasses(result.classes);
+                        }
+                    }
+                }
+                
+                function renderClasses(classes) {
+                    const classesList = document.getElementById('classes-list');
+                    if (classes.length === 0) {
+                        classesList.innerHTML = `<p class="text-gray-400 col-span-full">You are not in any classes yet.</p>`;
+                    } else {
+                        classesList.innerHTML = classes.map(c => `
+                            <div class="class-card glassmorphism p-4 rounded-lg cursor-pointer hover:scale-105 transition-transform" data-class-id="${escapeHtml(c.id)}" data-class-name="${escapeHtml(c.name)}">
+                                <h3 class="text-xl font-bold">${escapeHtml(c.name)}</h3>
+                                <p class="text-sm text-gray-400">Teacher: ${escapeHtml(c.teacher_name)}</p>
+                                <p class="text-sm text-gray-400 mt-2">Code: <span class="font-mono bg-bg-dark p-1 rounded">${escapeHtml(c.code)}</span></p>
+                            </div>`).join('');
+                        classesList.querySelectorAll('.class-card').forEach(card => card.addEventListener('click', (e) => showClassDetail(e.currentTarget.dataset.classId, e.currentTarget.dataset.className)));
+                    }
+                }
+
+                async function showClassDetail(classId, className) {
+                    appState.currentClass = { id: classId, name: className };
+                    document.getElementById('classes-main-view').classList.add('hidden');
+                    document.getElementById('selected-class-view').classList.remove('hidden');
+                    document.getElementById('back-to-classes-list').classList.remove('hidden');
+                    document.getElementById('my-classes-title').textContent = className;
+                    
+                    const container = document.getElementById('selected-class-view');
+                    renderSubTemplate(container, 'template-selected-class-view', () => {
+                        container.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab)));
+                        switchClassTab('chat');
+                    });
+                }
+                
+                function switchClassTab(tab) {
+                    document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
+                    const contentContainer = document.getElementById('class-view-content');
+                    if (tab === 'chat') {
+                        setupClassChatTab(contentContainer);
+                    }
+                }
+
+                async function setupClassChatTab(container) {
+                    renderSubTemplate(container, 'template-class-chat-view', async () => {
+                        if (appState.socket) appState.socket.emit('join', { room: appState.currentClass.id });
+                        
+                        const chatMessages = document.getElementById('chat-messages');
+                        chatMessages.innerHTML = '<p class="text-gray-400">Loading messages...</p>';
+                        
+                        const result = await apiCall(`/classes/${appState.currentClass.id}/messages`);
+                        if (result.success) {
+                            chatMessages.innerHTML = '';
+                            result.messages.forEach(msg => renderChatMessage(msg, false));
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        }
+                        
+                        const chatForm = document.getElementById('chat-form');
+                        chatForm.addEventListener('submit', handleSendMessage);
+
+                        const debouncedTyping = debounce(() => appState.socket.emit('typing', { room: appState.currentClass.id }), 500);
+                        const stopTyping = () => appState.socket.emit('stop_typing', { room: appState.currentClass.id });
+                        document.getElementById('chat-input').addEventListener('input', debouncedTyping);
+                        document.getElementById('chat-input').addEventListener('blur', stopTyping);
+                    });
+                }
+
+                let typingUsers = new Set();
+                function updateTypingIndicator(username, isTyping) {
+                    if (isTyping) {
+                        typingUsers.add(username);
+                    } else {
+                        typingUsers.delete(username);
+                    }
+                    const indicator = document.getElementById('typing-indicator');
+                    if (indicator) {
+                        if (typingUsers.size > 0) {
+                            const users = Array.from(typingUsers).slice(0, 2).join(', ');
+                            indicator.textContent = `${users} ${typingUsers.size > 1 ? 'are' : 'is'} typing...`;
+                        } else {
+                            indicator.textContent = '';
+                        }
+                    }
+                }
+
+                function renderChatMessage(msg, shouldScroll) {
+                    const messagesContainer = document.getElementById('chat-messages');
+                    if (!messagesContainer) return;
+
+                    const isCurrentUser = msg.sender.id === appState.currentUser.id;
+                    const messageEl = document.createElement('div');
+                    messageEl.id = `message-${msg.id}`;
+                    messageEl.className = `chat-message-container flex items-start gap-3 ${isCurrentUser ? 'justify-end' : ''}`;
+                    
+                    const reactionsHtml = Object.entries(msg.reactions || {}).map(([emoji, users]) => 
+                        `<div class="bg-bg-light px-2 py-1 rounded-full text-xs cursor-pointer" title="${users.map(u => u.username).join(', ')}">${emoji} ${users.length}</div>`
+                    ).join('');
+
+                    messageEl.innerHTML = `
+                        ${!isCurrentUser ? `<img src="${escapeHtml(msg.sender.profile?.avatar || `https://i.pravatar.cc/40?u=${msg.sender.id}`)}" class="w-8 h-8 rounded-full">` : ''}
+                        <div class="flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}">
+                            <div class="flex items-center gap-2">
+                                ${isCurrentUser ? '' : `<span class="font-bold text-sm">${escapeHtml(msg.sender.username)}</span>`}
+                                <span class="text-xs text-gray-400">${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                            </div>
+                            <div class="bg-bg-med p-3 rounded-lg max-w-xs md:max-w-md relative">
+                                <p id="message-content-${msg.id}">${escapeHtml(msg.content)}</p>
+                                <div class="flex gap-1 mt-1">${reactionsHtml}</div>
+                                <div class="message-actions absolute -top-4 ${isCurrentUser ? 'left-0' : 'right-0'} flex gap-1 bg-bg-light p-1 rounded-md">
+                                    <button class="react-btn" data-message-id="${msg.id}">👍</button>
+                                    ${(isCurrentUser || appState.currentUser.role === 'teacher') ? `<button class="delete-btn" data-message-id="${msg.id}">🗑️</button>` : ''}
+                                    ${isCurrentUser ? `<button class="edit-btn" data-message-id="${msg.id}">✏️</button>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    messagesContainer.appendChild(messageEl);
+                    if (shouldScroll) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+                    messageEl.querySelector('.react-btn')?.addEventListener('click', (e) => handleReactMessage(e.currentTarget.dataset.messageId, '👍'));
+                    messageEl.querySelector('.edit-btn')?.addEventListener('click', (e) => handleEditMessage(e.currentTarget.dataset.messageId));
+                    messageEl.querySelector('.delete-btn')?.addEventListener('click', (e) => handleDeleteMessage(e.currentTarget.dataset.messageId));
+                }
+                
+                function updateChatMessage(msg) {
+                    const messageEl = document.getElementById(`message-${msg.id}`);
+                    if (messageEl) {
+                        // Just re-render the whole message to update content and reactions
+                        const shouldScroll = messageEl.parentElement.scrollTop + messageEl.parentElement.clientHeight === messageEl.parentElement.scrollHeight;
+                        const oldEl = messageEl;
+                        renderChatMessage(msg, false); // Render new one
+                        oldEl.replaceWith(document.getElementById(`message-${msg.id}`)); // Replace in place
+                    }
+                }
+
+                function handleSendMessage(e) {
+                    e.preventDefault();
+                    const input = document.getElementById('chat-input');
+                    const content = input.value.trim();
+                    if (content && appState.socket) {
+                        appState.socket.emit('send_message', { room: appState.currentClass.id, content: content });
+                        input.value = '';
+                        appState.socket.emit('stop_typing', { room: appState.currentClass.id });
+                    }
+                }
+
+                function handleReactMessage(messageId, emoji) { if (appState.socket) appState.socket.emit('react_message', { room: appState.currentClass.id, message_id: messageId, emoji: emoji }); }
+
+                function handleEditMessage(messageId) {
+                    const newContent = prompt('Edit your message:', document.getElementById(`message-content-${messageId}`).textContent);
+                    if (newContent && newContent.trim() !== '') {
+                        if (appState.socket) appState.socket.emit('edit_message', { room: appState.currentClass.id, message_id: messageId, new_content: newContent.trim() });
+                    }
+                }
+
+                function handleDeleteMessage(messageId) {
+                    if (confirm('Are you sure you want to delete this message?')) {
+                        if (appState.socket) appState.socket.emit('delete_message', { room: appState.currentClass.id, message_id: messageId });
+                    }
+                }
+            
+                async function handleJoinClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
+                async function handleCreateClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
+                
+                async function setupProfileTab(container) {
+                    renderSubTemplate(container, 'template-profile', () => {
+                        const profile = appState.currentUser.profile;
+                        document.getElementById('bio').value = profile.bio || '';
+                        document.getElementById('avatar').value = profile.avatar || '';
+                        const themeSelect = document.getElementById('theme-select');
+                        themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase())}</option>`).join('');
+                        themeSelect.value = profile.theme_preference || 'golden';
+                        document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
+                    });
+                }
+
+                async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); try { const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } } finally { setButtonLoadingState(btn, false); } }
+                
+                async function setupAdminDashboardTab(container) {
+                    renderSubTemplate(container, 'template-admin-dashboard', async () => {
+                        const usersContainer = document.getElementById('admin-users-view-container');
+                        renderSubTemplate(usersContainer, 'template-admin-users-view', async () => {
+                            const result = await apiCall('/admin/users');
+                            if(result.success) {
+                                document.getElementById('users-table-body').innerHTML = result.users.map(user => `
+                                    <tr class="border-b border-gray-700/50">
+                                        <td class="p-3">${escapeHtml(user.username)}</td>
+                                        <td class="p-3">${escapeHtml(user.email)}</td>
+                                        <td class="p-3">${escapeHtml(user.role)}</td>
+                                    </tr>`).join('');
+                            }
+                        });
+
+                        const settingsContainer = document.getElementById('admin-settings-view-container');
+                        renderSubTemplate(settingsContainer, 'template-admin-settings-view', () => {
+                            document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default';
+                            document.getElementById('admin-settings-form').addEventListener('submit', async e => {
+                                e.preventDefault();
+                                const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
+                                const body = Object.fromEntries(new FormData(e.target));
+                                const result = await apiCall('/admin/settings', { method: 'POST', body });
+                                if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); }
+                                setButtonLoadingState(btn, false);
+                            });
+                        });
+                    });
+                }
+                
+                async function setupLeaderboardTab(container) {
+                    renderSubTemplate(container, 'template-leaderboard-view', async () => {
+                        const list = document.getElementById('leaderboard-list');
+                        list.innerHTML = `<p class="text-gray-400">Loading leaderboard...</p>`;
+                        const result = await apiCall('/leaderboard');
+                        if (result.success) {
+                            if (result.users.length === 0) {
+                                list.innerHTML = `<p class="text-gray-400">No users on the leaderboard yet.</p>`;
+                            } else {
+                                list.innerHTML = `
+                                    <ol class="list-decimal list-inside space-y-2">
+                                        ${result.users.map((user, index) => `
+                                            <li class="p-2 rounded-md flex items-center gap-4 ${index === 0 ? 'bg-yellow-500/20' : (index === 1 ? 'bg-gray-400/20' : (index === 2 ? 'bg-yellow-700/20' : ''))}">
+                                                <span class="font-bold text-lg">${index + 1}.</span>
+                                                <img src="${escapeHtml(user.profile.avatar || 'https://i.pravatar.cc/40?u=' + user.id)}" class="w-8 h-8 rounded-full">
+                                                <span class="flex-grow">${escapeHtml(user.username)}</span>
+                                                <span class="font-bold">${user.points} pts</span>
+                                            </li>
+                                        `).join('')}
+                                    </ol>
+                                `;
+                            }
+                        }
+                    });
+                }
+
+                async function main() {
+                    renderPage('template-welcome-screen');
+                    setTimeout(async () => {
+                        const result = await apiCall('/status');
+                        if (result.success) {
+                            appState.siteSettings = result.settings;
+                            if (result.user) {
+                                handleLoginSuccess(result.user, result.settings);
+                            } else {
+                                setupRoleChoicePage();
+                            }
+                        } else {
+                            setupRoleChoicePage();
+                        }
+                    }, 1500);
+                }
+
+                main();
+            } catch (error) {
+                console.error("A critical error occurred during app initialization:", error);
+                document.body.innerHTML = `<div style="background-color: #1a120b; color: #f5efe6; font-family: sans-serif; padding: 2rem; height: 100vh; text-align: center;">
+                    <h1 style="font-size: 2rem; color: #ffcc00;">Application Error</h1>
+                    <p style="margin-top: 1rem;">The application failed to start. This is likely a problem with the front-end code.</p>
+                    <p style="margin-top: 0.5rem;">Please check the browser's developer console (F12) for more details.</p>
+                    <pre style="background-color: #2c241e; padding: 1rem; border-radius: 8px; text-align: left; margin-top: 2rem; white-space: pre-wrap; word-break: break-all;">${error.stack}</pre>
+                </div>`;
+            }
+        });
     </script>
 </body>
 </html>
@@ -540,7 +924,7 @@ def status():
     settings_raw = SiteSettings.query.all()
     settings = {s.key: s.value for s in settings_raw}
     if current_user.is_authenticated and not getattr(current_user, 'is_guest', False):
-        return jsonify({"user": current_user.to_dict(), "settings": settings})
+        return jsonify({"user": current_user.to_dict(include_email=True), "settings": settings})
     return jsonify({"user": None, "settings": settings})
 
 @app.route('/api/signup', methods=['POST'])
@@ -550,8 +934,9 @@ def signup():
     username = bleach.clean(data.get('username', '')).strip()
     email = bleach.clean(data.get('email', '')).strip()
     password = data.get('password') 
+    role = bleach.clean(data.get('account_type', 'student'))
     
-    if not all([username, email, password]):
+    if not all([username, email, password, role]):
         return jsonify({"error": "Missing required fields."}), 400
 
     if len(password) < 8 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password):
@@ -559,15 +944,18 @@ def signup():
 
     if User.query.filter(or_(User.username == username, User.email == email)).first():
         return jsonify({"error": "Username or email already exists."}), 409
+    
+    if role == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
+        return jsonify({"error": "Invalid teacher secret key."}), 403
         
-    new_user = User(username=username, email=email)
+    new_user = User(username=username, email=email, role=role)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
     
     login_user(new_user)
     settings = {s.key: s.value for s in SiteSettings.query.all()}
-    return jsonify({"success": True, "user": new_user.to_dict(), "settings": settings})
+    return jsonify({"success": True, "user": new_user.to_dict(include_email=True), "settings": settings})
 
 @app.route('/api/login', methods=['POST'])
 @limiter.limit("10 per minute")
@@ -581,6 +969,9 @@ def login():
         logging.warning(f"SECURITY: Failed login attempt for username: {username}")
         return jsonify({"error": "Invalid username or password"}), 401
     
+    if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
+        return jsonify({"error": "Invalid admin secret key."}), 403
+
     today = date.today()
     if user.last_login.date() == today - timedelta(days=1):
         user.streak += 1
@@ -592,7 +983,7 @@ def login():
     login_user(user, remember=True)
     logging.info(f"SECURITY: User {user.username} logged in successfully.")
     settings = {s.key: s.value for s in SiteSettings.query.all()}
-    return jsonify({"success": True, "user": user.to_dict(), "settings": settings})
+    return jsonify({"success": True, "user": user.to_dict(include_email=True), "settings": settings})
     
 @app.route('/api/logout', methods=['POST'])
 @login_required
@@ -605,7 +996,6 @@ def logout():
 def guest_login():
     guest_id = f"guest_{uuid.uuid4()}"
     guest_user = User(id=guest_id, username="Guest", email=f"{guest_id}@example.com", role="guest")
-    guest_user.set_password(secrets.token_hex(16)) # Set a random, unusable password
     guest_user.is_guest = True
     guest_user.profile = Profile(bio="Exploring the portal!", theme_preference='dark')
     login_user(guest_user)
@@ -633,21 +1023,21 @@ def update_profile():
 @app.route('/api/leaderboard', methods=['GET'])
 @login_required
 def get_leaderboard():
-    top_users = User.query.order_by(User.points.desc()).limit(10).all()
+    top_users = User.query.options(selectinload(User.profile)).order_by(User.points.desc()).limit(10).all()
     return jsonify({"success": True, "users": [user.to_dict() for user in top_users]})
 
 # ==============================================================================
-# --- 6. CLASS & ASSIGNMENT API ROUTES ---
+# --- 6. CLASS & CHAT API ROUTES ---
 # ==============================================================================
 @app.route('/api/classes', methods=['GET'])
 @login_required
 def get_classes():
     if getattr(current_user, 'is_guest', False):
         return jsonify({"success": True, "classes": []})
-    if current_user.role == 'teacher':
-        classes = current_user.taught_classes
-    else:
-        classes = current_user.enrolled_classes.all()
+    
+    query = current_user.taught_classes if current_user.role == 'teacher' else current_user.enrolled_classes
+    classes = query.options(selectinload(Class.teacher)).all()
+    
     return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
 
 @app.route('/api/classes/create', methods=['POST'])
@@ -680,7 +1070,22 @@ def join_class():
     target_class.students.append(current_user)
     db.session.commit()
     return jsonify({"success": True, "class_name": target_class.name})
+
+@app.route('/api/classes/<string:class_id>/messages', methods=['GET'])
+@login_required
+@class_member_required
+def get_messages(target_class):
+    page = request.args.get('page', 1, type=int)
+    messages = target_class.messages.options(selectinload(ChatMessage.sender).selectinload(User.profile)) \
+                                    .order_by(ChatMessage.timestamp.desc()) \
+                                    .paginate(page=page, per_page=50, error_out=False)
     
+    return jsonify({
+        "success": True, 
+        "messages": [m.to_dict() for m in reversed(messages.items)],
+        "has_next": messages.has_next
+    })
+
 # ==============================================================================
 # --- 7. ADMIN API ROUTES ---
 # ==============================================================================
@@ -688,8 +1093,8 @@ def join_class():
 @login_required
 @admin_required
 def get_all_users():
-    users = User.query.options(joinedload(User.profile)).all()
-    return jsonify({"success": True, "users": [user.to_dict() for user in users]})
+    users = User.query.options(selectinload(User.profile)).all()
+    return jsonify({"success": True, "users": [user.to_dict(include_email=True) for user in users]})
 
 @app.route('/api/admin/settings', methods=['POST'])
 @login_required
@@ -709,7 +1114,93 @@ def update_admin_settings():
     return jsonify({"success": True, "settings": settings})
 
 # ==============================================================================
-# --- 8. APP INITIALIZATION & DB SETUP ---
+# --- 8. SOCKET.IO REAL-TIME EVENTS ---
+# ==============================================================================
+@socketio.on('join')
+def on_join(data):
+    if not current_user.is_authenticated: return
+    room = data['room']
+    join_room(room)
+    logging.info(f"User {current_user.username} joined room {room}")
+
+@socketio.on('leave')
+def on_leave(data):
+    if not current_user.is_authenticated: return
+    room = data['room']
+    leave_room(room)
+    logging.info(f"User {current_user.username} left room {room}")
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    if not current_user.is_authenticated or getattr(current_user, 'is_guest', False): return
+    room = data['room']
+    content = bleach.clean(data['content'])
+    
+    msg = ChatMessage(class_id=room, sender_id=current_user.id, content=content)
+    db.session.add(msg)
+    db.session.commit()
+    
+    emit('new_message', msg.to_dict(), room=room)
+
+@socketio.on('edit_message')
+def handle_edit_message(data):
+    if not current_user.is_authenticated: return
+    msg_id = data['message_id']
+    msg = ChatMessage.query.get(msg_id)
+    if msg and msg.sender_id == current_user.id:
+        msg.content = bleach.clean(data['new_content'])
+        msg.is_edited = True
+        db.session.commit()
+        emit('message_updated', msg.to_dict(), room=data['room'])
+
+@socketio.on('delete_message')
+def handle_delete_message(data):
+    if not current_user.is_authenticated: return
+    msg_id = data['message_id']
+    msg = ChatMessage.query.get(msg_id)
+    target_class = Class.query.get(msg.class_id)
+    if msg and (msg.sender_id == current_user.id or target_class.teacher_id == current_user.id):
+        db.session.delete(msg)
+        db.session.commit()
+        emit('message_deleted', {'message_id': msg_id}, room=data['room'])
+
+@socketio.on('react_message')
+def handle_react_message(data):
+    if not current_user.is_authenticated: return
+    msg_id = data['message_id']
+    emoji = data['emoji']
+    msg = ChatMessage.query.get(msg_id)
+    if msg:
+        reactions = msg.reactions.copy() if msg.reactions else {}
+        if emoji not in reactions:
+            reactions[emoji] = []
+        
+        user_info = {'id': current_user.id, 'username': current_user.username}
+        user_ids = [u['id'] for u in reactions.get(emoji, [])]
+
+        if current_user.id in user_ids:
+            reactions[emoji] = [u for u in reactions[emoji] if u['id'] != current_user.id]
+            if not reactions[emoji]:
+                del reactions[emoji]
+        else:
+            reactions[emoji].append(user_info)
+        
+        msg.reactions = reactions
+        db.session.commit()
+        emit('message_updated', msg.to_dict(), room=data['room'])
+
+@socketio.on('typing')
+def handle_typing(data):
+    if not current_user.is_authenticated: return
+    emit('typing', {'username': current_user.username}, room=data['room'], include_self=False)
+
+@socketio.on('stop_typing')
+def handle_stop_typing(data):
+    if not current_user.is_authenticated: return
+    emit('stop_typing', {'username': current_user.username}, room=data['room'], include_self=False)
+
+# ==============================================================================
+# --- 9. APP INITIALIZATION & DB SETUP ---
 # ==============================================================================
 @event.listens_for(User, 'after_insert')
 def create_profile_for_new_user(mapper, connection, target):
@@ -732,3 +1223,4 @@ def init_db_command():
 
 if __name__ == '__main__':
     socketio.run(app, debug=(not is_production))
+

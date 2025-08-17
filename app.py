@@ -5,7 +5,6 @@ import logging
 import time
 import uuid
 import secrets
-import requests
 import bleach
 import re
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, abort, g
@@ -208,8 +207,6 @@ class Class(db.Model):
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
     messages = db.relationship('ChatMessage', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
-    decks = db.relationship('Deck', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
-    quizzes = db.relationship('Quiz', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -236,54 +233,6 @@ class ChatMessage(db.Model):
             'content': self.content, 'timestamp': self.timestamp.isoformat(),
             'is_edited': self.is_edited, 'reactions': self.reactions or {}
         }
-
-class Deck(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
-    title = db.Column(db.String(200), nullable=False)
-    class_obj = db.relationship('Class', back_populates='decks')
-    cards = db.relationship('Card', back_populates='deck', lazy='dynamic', cascade="all, delete-orphan")
-
-class Card(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    deck_id = db.Column(db.Integer, db.ForeignKey('deck.id', ondelete='CASCADE'), nullable=False)
-    term = db.Column(db.Text, nullable=False)
-    definition = db.Column(db.Text, nullable=False)
-    deck = db.relationship('Deck', back_populates='cards')
-
-class Quiz(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False, index=True)
-    title = db.Column(db.String(200), nullable=False)
-    time_limit = db.Column(db.Integer, nullable=True) # in minutes
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    class_obj = db.relationship('Class', back_populates='quizzes')
-    questions = db.relationship('Question', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
-
-class Question(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
-    text = db.Column(db.Text, nullable=False)
-    question_type = db.Column(db.String(50), nullable=False, default='multiple_choice')
-    quiz = db.relationship('Quiz', back_populates='questions')
-    choices = db.relationship('Choice', back_populates='question', lazy='dynamic', cascade="all, delete-orphan")
-
-class Choice(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    question_id = db.Column(db.Integer, db.ForeignKey('question.id', ondelete='CASCADE'), nullable=False)
-    text = db.Column(db.Text, nullable=False)
-    is_correct = db.Column(db.Boolean, default=False, nullable=False)
-    question = db.relationship('Question', back_populates='choices')
-
-class QuizAttempt(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
-    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    score = db.Column(db.Float, nullable=True)
-    started_at = db.Column(db.DateTime, default=datetime.utcnow)
-    completed_at = db.Column(db.DateTime, nullable=True)
-    quiz = db.relationship('Quiz', backref='attempts')
-    student = db.relationship('User', backref='quiz_attempts')
 
 class Subscription(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -504,12 +453,11 @@ HTML_CONTENT = """
     </template>
     <template id="template-selected-class-view">
         <div class="flex border-b border-gray-700 mb-4">
-             <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
-             <button data-tab="quizzes" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Quizzes</button>
+            <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
         </div>
         <div id="class-view-content"></div>
     </template>
-     <template id="template-class-chat-view">
+    <template id="template-class-chat-view">
         <div class="flex flex-col h-[calc(100vh-15rem)]">
             <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4"></div>
             <div id="typing-indicator" class="h-6 px-4 text-sm text-gray-400 italic"></div>
@@ -525,8 +473,8 @@ HTML_CONTENT = """
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
             <div class="flex border-b border-gray-700 mb-4">
-                 <button data-tab="settings" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
-                 <button data-tab="billing" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Billing</button>
+                <button data-tab="settings" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
+                <button data-tab="billing" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Billing</button>
             </div>
             <div id="profile-view-content"></div>
         </div>
@@ -562,7 +510,7 @@ HTML_CONTENT = """
         </div>
     </template>
     <template id="template-admin-dashboard">
-       <div class="fade-in">
+        <div class="fade-in">
             <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 <div id="admin-users-view-container"></div>
@@ -601,7 +549,6 @@ HTML_CONTENT = """
     
     <script nonce="{{ g.nonce }}">
         document.addEventListener('DOMContentLoaded', () => {
-            // *** FAILSAFE ERROR HANDLER ***
             try {
                 const DOMElements = { 
                     appContainer: document.getElementById('app-container'), 
@@ -617,46 +564,16 @@ HTML_CONTENT = """
                 };
                 const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,14.7C30.5,14.7,14.7,30.5,14.7,50S30.5,85.3,50,85.3S85.3,69.5,85.3,50S69.5,14.7,50,14.7z M50,77.6 C34.8,77.6,22.4,65.2,22.4,50S34.8,22.4,50,22.4s27.6,12.4,27.6,27.6S65.2,77.6,50,77.6z"/><circle cx="50" cy="50" r="10" fill="white"/></svg>`;
                 
-                function debounce(func, wait) { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; }
                 function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
                 function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
                 function applyTheme(userPreference) { const siteTheme = appState.siteSettings.site_wide_theme; const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference; const t = themes[themeToApply] || themes.golden; Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v)); }
                 function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
                 function setButtonLoadingState(button, isLoading) { if (!button) return; if (isLoading) { button.disabled = true; button.dataset.originalText = button.innerHTML; button.innerHTML = `<svg class="animate-spin h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`; } else { button.disabled = false; if (button.dataset.originalText) { button.innerHTML = button.dataset.originalText; } } }
-                async function apiCall(endpoint, options = {}) { 
-                    try { 
-                        const csrfToken = document.querySelector('meta[name="csrf-token"]').content; 
-                        if (!options.headers) options.headers = {}; 
-                        options.headers['X-CSRFToken'] = csrfToken; 
-                        if (options.body && typeof options.body === 'object') { 
-                            options.headers['Content-Type'] = 'application/json'; 
-                            options.body = JSON.stringify(options.body); 
-                        } 
-                        const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); 
-                        
-                        const contentType = response.headers.get("content-type");
-                        if (!contentType || !contentType.includes("application/json")) {
-                            const text = await response.text();
-                            throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}...`);
-                        }
-
-                        const data = await response.json(); 
-                        if (!response.ok) { 
-                            if (response.status === 401) handleLogout(false); 
-                            throw new Error(data.error || 'Request failed'); 
-                        } 
-                        return { success: true, ...data }; 
-                    } catch (error) { 
-                        showToast(error.message, 'error'); 
-                        return { success: false, error: error.message }; 
-                    } 
-                }
+                async function apiCall(endpoint, options = {}) { try { const csrfToken = document.querySelector('meta[name="csrf-token"]').content; if (!options.headers) options.headers = {}; options.headers['X-CSRFToken'] = csrfToken; if (options.body && typeof options.body === 'object') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); } const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); const contentType = response.headers.get("content-type"); if (!contentType || !contentType.includes("application/json")) { const text = await response.text(); throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}...`); } const data = await response.json(); if (!response.ok) { if (response.status === 401) handleLogout(false); throw new Error(data.error || 'Request failed'); } return { success: true, ...data }; } catch (error) { showToast(error.message, 'error'); return { success: false, error: error.message }; } }
                 function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
                 function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
                 function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
 
-                function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); appState.socket.on('message_updated', (msg) => updateChatMessage(msg)); appState.socket.on('message_deleted', (data) => document.getElementById(`message-${data.message_id}`)?.remove()); appState.socket.on('typing', (data) => updateTypingIndicator(data.username, true)); appState.socket.on('stop_typing', (data) => updateTypingIndicator(data.username, false)); }
-                
                 function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); if (user.role !== 'guest') connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
                 function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
                 
@@ -784,9 +701,6 @@ HTML_CONTENT = """
                     const contentContainer = document.getElementById('class-view-content');
                     if (tab === 'chat') {
                         setupClassChatTab(contentContainer);
-                    } else if (tab === 'quizzes') {
-                        // Placeholder for quiz tab
-                        contentContainer.innerHTML = '<p>Quizzes coming soon!</p>';
                     }
                 }
 
@@ -907,7 +821,7 @@ HTML_CONTENT = """
                         if (appState.socket) appState.socket.emit('delete_message', { room: appState.currentClass.id, message_id: messageId });
                     }
                 }
-            
+                
                 async function handleJoinClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
                 async function handleCreateClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
                 
@@ -1188,7 +1102,7 @@ def forgot_password():
             msg = Message("Password Reset Request for Myth AI",
                           sender=app.config['MAIL_DEFAULT_SENDER'],
                           recipients=[email])
-            msg.body = f"Please click the following link to reset your password: {reset_url}\n\nIf you did not request this, please ignore this email."
+            msg.body = f"Please click the following link to reset your password: {reset_url}\\n\\nIf you did not request this, please ignore this email."
             mail.send(msg)
             logging.info(f"Password reset email sent to {email}")
         except Exception as e:
@@ -1309,8 +1223,8 @@ def join_class():
 def get_messages(target_class):
     page = request.args.get('page', 1, type=int)
     messages = target_class.messages.options(selectinload(ChatMessage.sender).selectinload(User.profile)) \
-                                    .order_by(ChatMessage.timestamp.desc()) \
-                                    .paginate(page=page, per_page=50, error_out=False)
+                                     .order_by(ChatMessage.timestamp.desc()) \
+                                     .paginate(page=page, per_page=50, error_out=False)
     
     return jsonify({
         "success": True, 
@@ -1459,6 +1373,7 @@ def init_db_command():
 
 if __name__ == '__main__':
     socketio.run(app, debug=(not is_production))
+
 
 
 

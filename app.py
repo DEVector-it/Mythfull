@@ -75,7 +75,7 @@ SITE_CONFIG = {
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://myth-ai-coz4.onrender.com'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://myth-ai-w0wn.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
@@ -93,6 +93,7 @@ csp = {
     'style-src': ['\'self\'', '\'unsafe-inline\'', 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com', '\'nonce-{nonce}\''],
     'font-src': ['\'self\'', 'https://fonts.gstatic.com'],
     'img-src': ['*', 'data:'],
+    'media-src': ['*'], # Allow audio/video from any source
     'connect-src': [
         '\'self\'',
         f'wss://{prod_origin.split("//")[-1]}' if is_production else 'ws://localhost:5000',
@@ -232,7 +233,7 @@ class Subscription(db.Model):
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
-    value = db.Column(db.String(500))
+    value = db.Column(db.Text) # Use Text for potentially long URLs
 
 # ==============================================================================
 # --- 3. USER & SESSION MANAGEMENT ---
@@ -247,7 +248,6 @@ def load_user(user_id):
         guest = User(id=user_id, username="Guest", email=f"{user_id}@example.com", role="guest")
         guest.is_guest = True
         guest.profile = Profile(theme_preference='dark')
-        # CRITICAL FIX: Guest user needs a subscription object to avoid errors.
         guest.subscription = Subscription(status='free')
         return guest
     return User.query.options(selectinload(User.profile), selectinload(User.subscription)).get(user_id)
@@ -302,8 +302,6 @@ def after_request_func(response):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # CRITICAL FIX: Catch all server errors and return a proper JSON response.
-    # This prevents the "Server returned non-JSON response" error on the client.
     logging.error(f"An unhandled exception occurred: {e}", exc_info=True)
     response = jsonify(error="An internal server error occurred. The developers have been notified.")
     response.status_code = 500
@@ -324,11 +322,13 @@ HTML_CONTENT = """
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cinzel+Decorative:wght@700&display=swap" rel="stylesheet">
     <style nonce="{{ g.nonce }}">
         :root {
-            /* THEME UPDATE: Defaulting to "Edgy Purple" as requested */
             --brand-hue: 260; --bg-dark: #110D19; --bg-med: #211A2E; --bg-light: #3B2D4F;
             --glow-color: hsl(var(--brand-hue), 90%, 60%); --text-color: #EADFFF; --text-secondary-color: #A17DFF;
         }
-        body { background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color); }
+        body { 
+            background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color); 
+            background-size: cover; background-position: center; background-attachment: fixed; transition: background-image 0.5s ease-in-out;
+        }
         .font-title { font-family: 'Cinzel Decorative', cursive; }
         .glassmorphism { background: rgba(33, 26, 46, 0.5); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(161, 125, 255, 0.1); }
         .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(var(--brand-hue), 80%, 50%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 10px hsla(var(--brand-hue), 80%, 50%, 0.3); }
@@ -339,13 +339,11 @@ HTML_CONTENT = """
         .fade-in { animation: fadeIn 0.5s ease-out forwards; } @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
         .active-tab { background-color: var(--bg-light) !important; color: white !important; position:relative; }
         .active-tab::after { content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 2px; background: var(--glow-color); border-radius: 2px; }
-        .dynamic-bg { background: linear-gradient(-45deg, #110D19, #3B2D4F, #211A2E, #110D19); background-size: 400% 400%; animation: gradientBG 20s ease infinite; }
+        .dynamic-bg { background: linear-gradient(-45deg, var(--bg-dark), var(--bg-light), var(--bg-med), var(--bg-dark)); background-size: 400% 400%; animation: gradientBG 20s ease infinite; }
         @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .full-screen-loader { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17, 13, 25, 0.9); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; flex-direction: column; z-index: 1001; transition: opacity 0.3s ease; }
         .waiting-text { margin-top: 1rem; font-size: 1.25rem; color: var(--text-secondary-color); animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-        .chat-message-container:hover .message-actions { opacity: 1; }
-        .message-actions { opacity: 0; transition: opacity 0.2s ease-in-out; }
     </style>
     <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
@@ -353,6 +351,7 @@ HTML_CONTENT = """
     <div id="app-container" class="relative min-h-screen w-full overflow-x-hidden flex flex-col"></div>
     <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
     <div id="modal-container"></div>
+    <div id="music-player-container" class="fixed bottom-4 left-4 z-50"></div>
     <div class="fixed bottom-4 right-4 text-xs text-gray-400 z-0">© 2025 Myth AI</div>
 
     <template id="template-welcome-screen">
@@ -425,6 +424,7 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
+    
     <template id="template-my-classes">
         <div class="fade-in">
             <div id="class-view-header" class="flex justify-between items-center mb-6">
@@ -468,6 +468,7 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
+
     <template id="template-profile">
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
@@ -502,19 +503,23 @@ HTML_CONTENT = """
             <div id="billing-actions"></div>
         </div>
     </template>
+
     <template id="template-leaderboard-view">
         <div class="fade-in max-w-4xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">Leaderboard</h2>
             <div id="leaderboard-list" class="glassmorphism p-4 rounded-lg"></div>
         </div>
     </template>
+
     <template id="template-admin-dashboard">
        <div class="fade-in">
             <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                <div id="admin-users-view-container"></div>
-                <div id="admin-settings-view-container"></div>
+            <div class="flex border-b border-gray-700 mb-4">
+                <button data-tab="users" class="admin-view-tab py-2 px-4 text-gray-300 hover:text-white">Users</button>
+                <button data-tab="settings" class="admin-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
+                <button data-tab="appearance" class="admin-view-tab py-2 px-4 text-gray-300 hover:text-white">Appearance</button>
             </div>
+            <div id="admin-view-content"></div>
        </div>
     </template>
     <template id="template-admin-users-view">
@@ -539,9 +544,26 @@ HTML_CONTENT = """
                         <option value="golden">Golden</option>
                         <option value="dark">Dark</option>
                         <option value="edgy_purple">Edgy Purple</option>
+                        <option value="light_green">Light Green</option>
                     </select>
                 </div>
                 <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button>
+            </form>
+        </div>
+    </template>
+    <template id="template-admin-appearance-view">
+        <div class="glassmorphism p-4 rounded-lg">
+            <h3 class="text-2xl font-bold mb-4">Site Appearance</h3>
+            <form id="admin-appearance-form" class="space-y-4">
+                <div>
+                    <label for="background-image-url" class="block text-sm font-medium text-gray-300 mb-1">Background Image URL</label>
+                    <input id="background-image-url" name="background_image_url" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="https://example.com/image.gif">
+                </div>
+                <div>
+                    <label for="music-url" class="block text-sm font-medium text-gray-300 mb-1">Background Music URL</label>
+                    <input id="music-url" name="music_url" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="https://example.com/music.mp3">
+                </div>
+                <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Appearance</button>
             </form>
         </div>
     </template>
@@ -553,51 +575,87 @@ HTML_CONTENT = """
                     appContainer: document.getElementById('app-container'), 
                     toastContainer: document.getElementById('toast-container'),
                     modalContainer: document.getElementById('modal-container'),
+                    musicPlayerContainer: document.getElementById('music-player-container'),
                 };
                 let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', siteSettings: {}, currentClass: null, socket: null, classCache: new Map() };
 
                 const themes = {
                     golden: { '--brand-hue': 45, '--bg-dark': '#1A120B', '--bg-med': '#2c241e', '--bg-light': '#4a3f35', '--text-color': '#F5EFE6', '--text-secondary-color': '#AE8E6A' },
                     dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
-                    edgy_purple: { '--brand-hue': 260, '--bg-dark': '#110D19', '--bg-med': '#211A2E', '--bg-light': '#3B2D4F', '--text-color': '#EADFFF', '--text-secondary-color': '#A17DFF' }
+                    edgy_purple: { '--brand-hue': 260, '--bg-dark': '#110D19', '--bg-med': '#211A2E', '--bg-light': '#3B2D4F', '--text-color': '#EADFFF', '--text-secondary-color': '#A17DFF' },
+                    light_green: { '--brand-hue': 140, '--bg-dark': '#131f17', '--bg-med': '#1a2e23', '--bg-light': '#274a34', '--text-color': '#e1f2e9', '--text-secondary-color': '#6fdc9d' }
                 };
                 const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,14.7C30.5,14.7,14.7,30.5,14.7,50S30.5,85.3,50,85.3S85.3,69.5,85.3,50S69.5,14.7,50,14.7z M50,77.6 C34.8,77.6,22.4,65.2,22.4,50S34.8,22.4,50,22.4s27.6,12.4,27.6,27.6S65.2,77.6,50,77.6z"/><circle cx="50" cy="50" r="10" fill="white"/></svg>`;
                 
+                // --- UTILITY FUNCTIONS ---
                 function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
                 function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
-                function applyTheme(userPreference) { const siteTheme = appState.siteSettings.site_wide_theme; const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference; const t = themes[themeToApply] || themes.edgy_purple; Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v)); }
+                
+                function applyTheme(userPreference) {
+                    const siteTheme = appState.siteSettings.site_wide_theme;
+                    const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference;
+                    const t = themes[themeToApply] || themes.edgy_purple;
+                    Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
+                }
+
+                function applyCustomizations(settings) {
+                    // Apply custom background
+                    if (settings.background_image_url) {
+                        document.body.style.backgroundImage = `url(${settings.background_image_url})`;
+                        document.querySelectorAll('.dynamic-bg').forEach(el => el.classList.remove('dynamic-bg'));
+                    } else {
+                        document.body.style.backgroundImage = 'none';
+                    }
+
+                    // Apply custom music
+                    DOMElements.musicPlayerContainer.innerHTML = '';
+                    if (settings.music_url) {
+                        const audio = new Audio(settings.music_url);
+                        audio.loop = true;
+                        audio.autoplay = true;
+                        audio.muted = true; // Required by browsers for autoplay
+                        
+                        const player = document.createElement('div');
+                        player.className = 'glassmorphism p-2 rounded-full flex items-center gap-2';
+                        const btn = document.createElement('button');
+                        btn.className = 'text-2xl';
+                        btn.textContent = '🔇';
+                        
+                        btn.onclick = () => {
+                            if (audio.muted) {
+                                audio.muted = false;
+                                audio.play(); // Attempt to play again on user interaction
+                                btn.textContent = '🔊';
+                            } else {
+                                audio.muted = true;
+                                btn.textContent = '🔇';
+                            }
+                        };
+                        player.appendChild(btn);
+                        DOMElements.musicPlayerContainer.appendChild(player);
+                        // Try to play after a short delay
+                        setTimeout(() => audio.play().catch(e => console.log("Autoplay blocked.")), 500);
+                    }
+                }
+
                 function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
                 function setButtonLoadingState(button, isLoading) { if (!button) return; if (isLoading) { button.disabled = true; button.dataset.originalText = button.innerHTML; button.innerHTML = `<svg class="animate-spin h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`; } else { button.disabled = false; if (button.dataset.originalText) { button.innerHTML = button.dataset.originalText; } } }
                 async function apiCall(endpoint, options = {}) { try { const csrfToken = document.querySelector('meta[name="csrf-token"]').content; if (!options.headers) options.headers = {}; options.headers['X-CSRFToken'] = csrfToken; if (options.body && typeof options.body === 'object') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); } const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); const contentType = response.headers.get("content-type"); if (!contentType || !contentType.includes("application/json")) { const text = await response.text(); throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}...`); } const data = await response.json(); if (!response.ok) { if (response.status === 401) handleLogout(false); throw new Error(data.error || 'Request failed'); } return { success: true, ...data }; } catch (error) { showToast(error.message, 'error'); return { success: false, error: error.message }; } }
                 function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
                 function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
                 function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
-                function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); appState.socket.on('message_updated', (msg) => updateChatMessage(msg)); appState.socket.on('message_deleted', (data) => document.getElementById(`message-${data.message_id}`)?.remove()); }
                 
-                function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); if (user.role !== 'guest') connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
+                // --- AUTH & SESSION ---
+                function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); }
+                function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); applyCustomizations(settings); if (user.role !== 'guest') connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
                 function handleLogout(doApiCall = true) { if (doApiCall) apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
-                
                 function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); })); document.getElementById('guest-mode-btn').addEventListener('click', handleGuestLogin); }); }
                 function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
-                
-                function updateAuthView() {
-                    const isLogin = appState.isLoginView, role = appState.selectedRole;
-                    document.getElementById('auth-title').textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`;
-                    document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue' : 'Create your Account';
-                    document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up';
-                    document.getElementById('auth-toggle-btn').innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>";
-                    document.getElementById('email-field').style.display = isLogin ? 'none' : 'block';
-                    document.getElementById('email').required = !isLogin;
-                    document.getElementById('teacher-key-field').style.display = (!isLogin && role === 'teacher') ? 'block' : 'none';
-                    document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher';
-                    document.getElementById('admin-key-field').style.display = (isLogin && role === 'admin') ? 'block' : 'none';
-                    document.getElementById('admin-secret-key').required = isLogin && role === 'admin';
-                    document.getElementById('account_type').value = role;
-                }
-
+                function updateAuthView() { const isLogin = appState.isLoginView, role = appState.selectedRole; document.getElementById('auth-title').textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`; document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue' : 'Create your Account'; document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up'; document.getElementById('auth-toggle-btn').innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>"; document.getElementById('email-field').style.display = isLogin ? 'none' : 'block'; document.getElementById('email').required = !isLogin; document.getElementById('teacher-key-field').style.display = (!isLogin && role === 'teacher') ? 'block' : 'none'; document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher'; document.getElementById('admin-key-field').style.display = (isLogin && role === 'admin') ? 'block' : 'none'; document.getElementById('admin-secret-key').required = isLogin && role === 'admin'; document.getElementById('account_type').value = role; }
                 async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = Object.fromEntries(new FormData(form)); const endpoint = appState.isLoginView ? '/login' : '/signup'; const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; } setButtonLoadingState(btn, false); }
                 async function handleGuestLogin() { showFullScreenLoader('Entering Guest Mode...'); const result = await apiCall('/guest_login', { method: 'POST'}); if (result.success) { handleLoginSuccess(result.user, result.settings); } }
 
+                // --- DASHBOARD & TABS ---
                 function setupDashboard(user) {
                     renderPage('template-main-dashboard', () => {
                         document.getElementById('welcome-message').innerHTML = `Welcome, ${escapeHtml(user.username)}! <br> Streak: 🔥 ${user.streak}`;
@@ -628,7 +686,7 @@ HTML_CONTENT = """
                     }
                 }
                 
-                // --- Specific Tab Implementations ---
+                // --- FULL TAB IMPLEMENTATIONS ---
                 async function setupMyClassesTab(container) {
                     renderSubTemplate(container, 'template-my-classes', () => {
                         document.getElementById('back-to-classes-list').addEventListener('click', () => showClassList(true));
@@ -694,7 +752,7 @@ HTML_CONTENT = """
                     
                     const container = document.getElementById('selected-class-view');
                     renderSubTemplate(container, 'template-selected-class-view', () => {
-                        container.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab)));
+                        container.querySelector('.class-view-tab').addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab));
                         switchClassTab('chat');
                     });
                 }
@@ -815,9 +873,9 @@ HTML_CONTENT = """
                 }
 
                 async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); try { const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } } finally { setButtonLoadingState(btn, false); } }
-
+                
                 async function setupLeaderboardTab(container) {
-                     renderSubTemplate(container, 'template-leaderboard-view', async () => {
+                    renderSubTemplate(container, 'template-leaderboard-view', async () => {
                         const list = document.getElementById('leaderboard-list');
                         list.innerHTML = `<p class="text-gray-400">Loading leaderboard...</p>`;
                         const result = await apiCall('/leaderboard');
@@ -838,35 +896,71 @@ HTML_CONTENT = """
                 }
                 
                 async function setupAdminDashboardTab(container) {
-                    renderSubTemplate(container, 'template-admin-dashboard', async () => {
-                        const usersContainer = document.getElementById('admin-users-view-container');
-                        renderSubTemplate(usersContainer, 'template-admin-users-view', async () => {
-                            const result = await apiCall('/admin/users');
-                            if(result.success) {
-                                document.getElementById('users-table-body').innerHTML = result.users.map(user => `
-                                    <tr class="border-b border-gray-700/50">
-                                        <td class="p-3">${escapeHtml(user.username)}</td>
-                                        <td class="p-3">${escapeHtml(user.email)}</td>
-                                        <td class="p-3">${escapeHtml(user.role)}</td>
-                                    </tr>`).join('');
-                            }
-                        });
+                    renderSubTemplate(container, 'template-admin-dashboard', () => {
+                        container.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminTab(e.currentTarget.dataset.tab)));
+                        switchAdminTab('users');
+                    });
+                }
 
-                        const settingsContainer = document.getElementById('admin-settings-view-container');
-                        renderSubTemplate(settingsContainer, 'template-admin-settings-view', () => {
-                            document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default';
-                            document.getElementById('admin-settings-form').addEventListener('submit', async e => {
-                                e.preventDefault();
-                                const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
-                                const body = Object.fromEntries(new FormData(e.target));
-                                const result = await apiCall('/admin/settings', { method: 'POST', body });
-                                if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); }
-                                setButtonLoadingState(btn, false);
-                            });
+                function switchAdminTab(tab) {
+                    document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
+                    const contentContainer = document.getElementById('admin-view-content');
+                    if (tab === 'users') setupAdminUsersTab(contentContainer);
+                    else if (tab === 'settings') setupAdminSettingsTab(contentContainer);
+                    else if (tab === 'appearance') setupAdminAppearanceTab(contentContainer);
+                }
+
+                function setupAdminUsersTab(container) {
+                    renderSubTemplate(container, 'template-admin-users-view', async () => {
+                        const result = await apiCall('/admin/users');
+                        if (result.success) {
+                            document.getElementById('users-table-body').innerHTML = result.users.map(user => `
+                                <tr class="border-b border-gray-700/50">
+                                    <td class="p-3">${escapeHtml(user.username)}</td>
+                                    <td class="p-3">${escapeHtml(user.email)}</td>
+                                    <td class="p-3">${escapeHtml(user.role)}</td>
+                                </tr>`).join('');
+                        }
+                    });
+                }
+
+                function setupAdminSettingsTab(container) {
+                    renderSubTemplate(container, 'template-admin-settings-view', () => {
+                        document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default';
+                        document.getElementById('admin-settings-form').addEventListener('submit', async e => {
+                            e.preventDefault();
+                            const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
+                            const body = { site_wide_theme: document.getElementById('site-wide-theme-select').value };
+                            const result = await apiCall('/admin/settings', { method: 'POST', body });
+                            if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); }
+                            setButtonLoadingState(btn, false);
                         });
                     });
                 }
 
+                function setupAdminAppearanceTab(container) {
+                    renderSubTemplate(container, 'template-admin-appearance-view', () => {
+                        document.getElementById('background-image-url').value = appState.siteSettings.background_image_url || '';
+                        document.getElementById('music-url').value = appState.siteSettings.music_url || '';
+                        document.getElementById('admin-appearance-form').addEventListener('submit', async e => {
+                            e.preventDefault();
+                            const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
+                            const body = {
+                                background_image_url: document.getElementById('background-image-url').value,
+                                music_url: document.getElementById('music-url').value
+                            };
+                            const result = await apiCall('/admin/appearance', { method: 'POST', body });
+                            if (result.success) {
+                                showToast('Appearance settings updated!', 'success');
+                                appState.siteSettings = result.settings;
+                                applyCustomizations(appState.siteSettings);
+                            }
+                            setButtonLoadingState(btn, false);
+                        });
+                    });
+                }
+
+                // --- MAIN APP INITIALIZATION ---
                 async function main() {
                     renderPage('template-welcome-screen');
                     setTimeout(async () => {
@@ -876,6 +970,7 @@ HTML_CONTENT = """
                             if (result.user) {
                                 handleLoginSuccess(result.user, result.settings);
                             } else {
+                                applyCustomizations(result.settings);
                                 setupRoleChoicePage();
                             }
                         } else {
@@ -964,9 +1059,9 @@ def login():
     session.regenerate()
 
     today = date.today()
-    if user.last_login.date() == today - timedelta(days=1):
+    if user.last_login and user.last_login.date() == today - timedelta(days=1):
         user.streak += 1
-    elif user.last_login.date() != today:
+    elif not user.last_login or user.last_login.date() != today:
         user.streak = 1
     user.last_login = datetime.utcnow()
     db.session.commit()
@@ -1090,15 +1185,36 @@ def get_all_users():
 @admin_required
 def update_admin_settings():
     data = request.json
+    allowed_keys = ['site_wide_theme']
     for key, value in data.items():
         clean_key = bleach.clean(key)
-        if clean_key not in ['site_wide_theme']: continue
+        if clean_key not in allowed_keys: continue
         
         setting = SiteSettings.query.filter_by(key=clean_key).first()
-        if setting: setting.value = bleach.clean(value)
-        else: db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
+        if setting:
+            setting.value = bleach.clean(value)
+        else:
+            db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
     db.session.commit()
     
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify({"success": True, "settings": settings})
+
+@app.route('/api/admin/appearance', methods=['POST'])
+@login_required
+@admin_required
+def update_admin_appearance():
+    data = request.json
+    allowed_keys = ['background_image_url', 'music_url']
+    for key in allowed_keys:
+        value = bleach.clean(data.get(key, ''))
+        setting = SiteSettings.query.filter_by(key=key).first()
+        if setting:
+            setting.value = value
+        else:
+            db.session.add(SiteSettings(key=key, value=value))
+    db.session.commit()
+
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "settings": settings})
 
@@ -1152,8 +1268,16 @@ def init_db_command():
     with app.app_context():
         db.create_all()
         logging.info("Database tables created.")
-        if not SiteSettings.query.filter_by(key='site_wide_theme').first():
-            db.session.add(SiteSettings(key='site_wide_theme', value='default'))
+        
+        default_settings = {
+            'site_wide_theme': 'default',
+            'background_image_url': '',
+            'music_url': ''
+        }
+        for key, value in default_settings.items():
+            if not SiteSettings.query.filter_by(key=key).first():
+                db.session.add(SiteSettings(key=key, value=value))
+        
         db.session.commit()
         logging.info("Default settings seeded.")
 

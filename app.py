@@ -324,7 +324,7 @@ def handle_exception(e):
     response.status_code = 500
     return response
 
-@app.route('/uploads/<filename>')
+@app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
@@ -456,7 +456,116 @@ def update_profile():
     db.session.commit()
     return jsonify({"success": True, "profile": {"bio": profile.bio, "avatar": profile.avatar, "theme_preference": profile.theme_preference}})
 
-# ... (The rest of the API routes are included in the full HTML_CONTENT block) ...
+@app.route('/api/leaderboard', methods=['GET'])
+@login_required
+def get_leaderboard():
+    top_users = User.query.options(selectinload(User.profile)).order_by(User.points.desc()).limit(10).all()
+    return jsonify({"success": True, "users": [user.to_dict() for user in top_users]})
+
+# --- Class & Content API Routes ---
+@app.route('/api/classes', methods=['GET'])
+@login_required
+def get_classes():
+    if getattr(current_user, 'is_guest', False):
+        return jsonify({"success": True, "classes": []})
+
+    query = current_user.taught_classes if current_user.role == 'teacher' else current_user.enrolled_classes
+    classes = query.options(selectinload(Class.teacher)).all()
+
+    return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
+
+@app.route('/api/classes/create', methods=['POST'])
+@login_required
+@teacher_required
+def create_class():
+    name = bleach.clean(request.json.get('name'))
+    if not name or len(name) > 100:
+        return jsonify({"error": "Class name is required and must be under 100 characters."}), 400
+
+    code = secrets.token_urlsafe(6).upper()
+    while Class.query.filter_by(code=code).first():
+        code = secrets.token_urlsafe(6).upper()
+
+    new_class = Class(name=name, teacher_id=current_user.id, code=code)
+    db.session.add(new_class)
+    db.session.commit()
+    return jsonify({"success": True, "class": new_class.to_dict()}), 201
+
+@app.route('/api/classes/join', methods=['POST'])
+@login_required
+@role_required(['student'])
+def join_class():
+    code = bleach.clean(request.json.get('code', '')).upper()
+    if not code: return jsonify({"error": "Class code is required."}), 400
+
+    target_class = Class.query.filter_by(code=code).first()
+    if not target_class: return jsonify({"error": "Invalid class code."}), 404
+    if current_user in target_class.students: return jsonify({"error": "You are already in this class."}), 409
+
+    target_class.students.append(current_user)
+    db.session.commit()
+    return jsonify({"success": True, "class_name": target_class.name})
+
+@app.route('/api/classes/<string:class_id>/messages', methods=['GET'])
+@login_required
+@class_member_required
+def get_messages(target_class):
+    page = request.args.get('page', 1, type=int)
+    messages = target_class.messages.options(selectinload(ChatMessage.sender).selectinload(User.profile)) \
+                                     .order_by(ChatMessage.timestamp.desc()) \
+                                     .paginate(page=page, per_page=50, error_out=False)
+
+    return jsonify({
+        "success": True,
+        "messages": [m.to_dict() for m in reversed(messages.items)],
+        "has_next": messages.has_next
+    })
+
+# --- Admin API Routes ---
+@app.route('/api/admin/users', methods=['GET'])
+@login_required
+@admin_required
+def get_all_users():
+    users = User.query.options(selectinload(User.profile)).all()
+    return jsonify({"success": True, "users": [user.to_dict(include_email=True) for user in users]})
+
+@app.route('/api/admin/settings', methods=['POST'])
+@login_required
+@admin_required
+def update_admin_settings():
+    data = request.json
+    allowed_keys = ['site_wide_theme']
+    for key, value in data.items():
+        clean_key = bleach.clean(key)
+        if clean_key not in allowed_keys: continue
+
+        setting = SiteSettings.query.filter_by(key=clean_key).first()
+        if setting:
+            setting.value = bleach.clean(value)
+        else:
+            db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
+    db.session.commit()
+
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify({"success": True, "settings": settings})
+
+@app.route('/api/admin/appearance', methods=['POST'])
+@login_required
+@admin_required
+def update_admin_appearance():
+    data = request.json
+    allowed_keys = ['background_image_url', 'music_url']
+    for key in allowed_keys:
+        value = bleach.clean(data.get(key, ''))
+        setting = SiteSettings.query.filter_by(key=key).first()
+        if setting:
+            setting.value = value
+        else:
+            db.session.add(SiteSettings(key=key, value=value))
+    db.session.commit()
+
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify({"success": True, "settings": settings})
 
 # ==============================================================================
 # --- 6. SOCKET.IO EVENTS ---

@@ -2,7 +2,6 @@ Flask
 Flask-Login
 Flask-SQLAlchemy
 Flask-SocketIO
-eventlet
 python-dotenv
 Flask-Cors
 Flask-Talisman
@@ -15,3 +14,5 @@ stripe
 google-generativeai
 password-strength
 click
+gunicorn
+eventlet

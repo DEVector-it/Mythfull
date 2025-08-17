@@ -16,3 +16,4 @@ password-strength
 click
 gunicorn
 eventlet
+Flask-WTF

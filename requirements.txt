@@ -1,4 +1,4 @@
-
+Flask
 Flask-Login
 Flask-SQLAlchemy
 Flask-SocketIO
@@ -16,5 +16,4 @@ password-strength
 click
 gunicorn
 eventlet
-
-flask-WtF
+Flask-WTF

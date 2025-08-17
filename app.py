@@ -75,7 +75,7 @@ SITE_CONFIG = {
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://myth-ai-w0wn.onrender.com'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythfull-1.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
@@ -196,7 +196,7 @@ class Class(db.Model):
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
     messages = db.relationship('ChatMessage', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
-    
+
     def to_dict(self):
         return {
             'id': self.id, 'name': self.name, 'code': self.code,
@@ -240,7 +240,7 @@ class SiteSettings(db.Model):
 # ==============================================================================
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = "render_spa" 
+login_manager.login_view = "render_spa"
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -325,8 +325,8 @@ HTML_CONTENT = """
             --brand-hue: 260; --bg-dark: #110D19; --bg-med: #211A2E; --bg-light: #3B2D4F;
             --glow-color: hsl(var(--brand-hue), 90%, 60%); --text-color: #EADFFF; --text-secondary-color: #A17DFF;
         }
-        body { 
-            background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color); 
+        body {
+            background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color);
             background-size: cover; background-position: center; background-attachment: fixed; transition: background-image 0.5s ease-in-out;
         }
         .font-title { font-family: 'Cinzel Decorative', cursive; }
@@ -424,7 +424,7 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
-    
+
     <template id="template-my-classes">
         <div class="fade-in">
             <div id="class-view-header" class="flex justify-between items-center mb-6">
@@ -567,12 +567,12 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-    
+
     <script nonce="{{ g.nonce }}">
         document.addEventListener('DOMContentLoaded', () => {
             try {
-                const DOMElements = { 
-                    appContainer: document.getElementById('app-container'), 
+                const DOMElements = {
+                    appContainer: document.getElementById('app-container'),
                     toastContainer: document.getElementById('toast-container'),
                     modalContainer: document.getElementById('modal-container'),
                     musicPlayerContainer: document.getElementById('music-player-container'),
@@ -586,11 +586,11 @@ HTML_CONTENT = """
                     light_green: { '--brand-hue': 140, '--bg-dark': '#131f17', '--bg-med': '#1a2e23', '--bg-light': '#274a34', '--text-color': '#e1f2e9', '--text-secondary-color': '#6fdc9d' }
                 };
                 const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,14.7C30.5,14.7,14.7,30.5,14.7,50S30.5,85.3,50,85.3S85.3,69.5,85.3,50S69.5,14.7,50,14.7z M50,77.6 C34.8,77.6,22.4,65.2,22.4,50S34.8,22.4,50,22.4s27.6,12.4,27.6,27.6S65.2,77.6,50,77.6z"/><circle cx="50" cy="50" r="10" fill="white"/></svg>`;
-                
+
                 // --- UTILITY FUNCTIONS ---
                 function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
                 function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
-                
+
                 function applyTheme(userPreference) {
                     const siteTheme = appState.siteSettings.site_wide_theme;
                     const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference;
@@ -614,13 +614,13 @@ HTML_CONTENT = """
                         audio.loop = true;
                         audio.autoplay = true;
                         audio.muted = true; // Required by browsers for autoplay
-                        
+
                         const player = document.createElement('div');
                         player.className = 'glassmorphism p-2 rounded-full flex items-center gap-2';
                         const btn = document.createElement('button');
                         btn.className = 'text-2xl';
                         btn.textContent = '🔇';
-                        
+
                         btn.onclick = () => {
                             if (audio.muted) {
                                 audio.muted = false;
@@ -644,7 +644,7 @@ HTML_CONTENT = """
                 function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
                 function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
                 function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
-                
+
                 // --- AUTH & SESSION ---
                 function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); }
                 function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); applyCustomizations(settings); if (user.role !== 'guest') connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
@@ -685,7 +685,7 @@ HTML_CONTENT = """
                         setups[tab](document.getElementById('dashboard-content'));
                     }
                 }
-                
+
                 // --- FULL TAB IMPLEMENTATIONS ---
                 async function setupMyClassesTab(container) {
                     renderSubTemplate(container, 'template-my-classes', () => {
@@ -693,7 +693,7 @@ HTML_CONTENT = """
                         showClassList(false);
                     });
                 }
-                
+
                 async function showClassList(isRefresh) {
                     document.getElementById('classes-main-view').classList.remove('hidden');
                     const selectedView = document.getElementById('selected-class-view');
@@ -716,7 +716,7 @@ HTML_CONTENT = """
 
                     const classesList = document.getElementById('classes-list');
                     classesList.innerHTML = '<p class="text-gray-400">Loading classes...</p>';
-                    
+
                     if (!isRefresh && appState.classCache.has('list')) {
                         renderClasses(appState.classCache.get('list'));
                     } else {
@@ -727,7 +727,7 @@ HTML_CONTENT = """
                         }
                     }
                 }
-                
+
                 function renderClasses(classes) {
                     const classesList = document.getElementById('classes-list');
                     if (classes.length === 0) {
@@ -749,14 +749,14 @@ HTML_CONTENT = """
                     document.getElementById('selected-class-view').classList.remove('hidden');
                     document.getElementById('back-to-classes-list').classList.remove('hidden');
                     document.getElementById('my-classes-title').textContent = className;
-                    
+
                     const container = document.getElementById('selected-class-view');
                     renderSubTemplate(container, 'template-selected-class-view', () => {
                         container.querySelector('.class-view-tab').addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab));
                         switchClassTab('chat');
                     });
                 }
-                
+
                 function switchClassTab(tab) {
                     document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
                     const contentContainer = document.getElementById('class-view-content');
@@ -768,17 +768,17 @@ HTML_CONTENT = """
                 async function setupClassChatTab(container) {
                     renderSubTemplate(container, 'template-class-chat-view', async () => {
                         if (appState.socket) appState.socket.emit('join', { room: appState.currentClass.id });
-                        
+
                         const chatMessages = document.getElementById('chat-messages');
                         chatMessages.innerHTML = '<p class="text-gray-400">Loading messages...</p>';
-                        
+
                         const result = await apiCall(`/classes/${appState.currentClass.id}/messages`);
                         if (result.success) {
                             chatMessages.innerHTML = '';
                             result.messages.forEach(msg => renderChatMessage(msg, false));
                             chatMessages.scrollTop = chatMessages.scrollHeight;
                         }
-                        
+
                         document.getElementById('chat-form').addEventListener('submit', (e) => {
                             e.preventDefault();
                             const input = document.getElementById('chat-input');
@@ -798,7 +798,7 @@ HTML_CONTENT = """
                     const messageEl = document.createElement('div');
                     messageEl.id = `message-${msg.id}`;
                     messageEl.className = `chat-message-container flex items-start gap-3 ${isCurrentUser ? 'justify-end' : ''}`;
-                    
+
                     messageEl.innerHTML = `
                         ${!isCurrentUser ? `<img src="${escapeHtml(msg.sender.profile?.avatar || `https://i.pravatar.cc/40?u=${msg.sender.id}`)}" class="w-8 h-8 rounded-full">` : ''}
                         <div class="flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}">
@@ -814,17 +814,17 @@ HTML_CONTENT = """
                     messagesContainer.appendChild(messageEl);
                     if (shouldScroll) messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
-                
+
                 async function handleJoinClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
                 async function handleCreateClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
-                
+
                 async function setupProfileTab(container) {
                     renderSubTemplate(container, 'template-profile', () => {
                         container.querySelectorAll('.profile-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchProfileTab(e.currentTarget.dataset.tab)));
                         switchProfileTab('settings');
                     });
                 }
-                
+
                 function switchProfileTab(tab) {
                     document.querySelectorAll('.profile-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
                     const contentContainer = document.getElementById('profile-view-content');
@@ -849,9 +849,9 @@ HTML_CONTENT = """
                         const statusContainer = document.getElementById('subscription-status');
                         const actionsContainer = document.getElementById('billing-actions');
                         const status = appState.currentUser.subscription_status;
-                        
+
                         statusContainer.innerHTML = `<p>Current Plan: <span class="font-bold capitalize ${status === 'active' ? 'text-green-400' : 'text-purple-400'}">${status}</span></p>`;
-                        
+
                         if (status !== 'active') {
                             actionsContainer.innerHTML = `<button id="upgrade-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`;
                             document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade);
@@ -860,7 +860,7 @@ HTML_CONTENT = """
                         }
                     });
                 }
-                
+
                 async function handleUpgrade() {
                     const btn = document.getElementById('upgrade-btn');
                     setButtonLoadingState(btn, true);
@@ -873,7 +873,7 @@ HTML_CONTENT = """
                 }
 
                 async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); try { const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } } finally { setButtonLoadingState(btn, false); } }
-                
+
                 async function setupLeaderboardTab(container) {
                     renderSubTemplate(container, 'template-leaderboard-view', async () => {
                         const list = document.getElementById('leaderboard-list');
@@ -894,7 +894,7 @@ HTML_CONTENT = """
                         }
                     });
                 }
-                
+
                 async function setupAdminDashboardTab(container) {
                     renderSubTemplate(container, 'template-admin-dashboard', () => {
                         container.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminTab(e.currentTarget.dataset.tab)));
@@ -1012,9 +1012,9 @@ def signup():
     data = request.json
     username = bleach.clean(data.get('username', '')).strip()
     email = bleach.clean(data.get('email', '')).strip()
-    password = data.get('password') 
+    password = data.get('password')
     role = bleach.clean(data.get('account_type', 'student'))
-    
+
     if not all([username, email, password, role]):
         return jsonify({"error": "Missing required fields."}), 400
 
@@ -1023,16 +1023,16 @@ def signup():
 
     if User.query.filter(or_(User.username == username, User.email == email)).first():
         return jsonify({"error": "Username or email already exists."}), 409
-    
+
     if role == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         logging.warning(f"SECURITY: Failed teacher signup attempt with incorrect key.")
         return jsonify({"error": "Invalid teacher secret key."}), 403
-        
+
     new_user = User(username=username, email=email, role=role)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
-    
+
     session.clear()
     session.regenerate()
     login_user(new_user)
@@ -1046,11 +1046,11 @@ def login():
     username = data.get('username')
     password = data.get('password')
     user = User.query.filter_by(username=username).first()
-    
+
     if not user or not user.check_password(password):
         logging.warning(f"SECURITY: Failed login attempt for username: {username} from IP {get_remote_address()}")
         return jsonify({"error": "Invalid username or password"}), 401
-    
+
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         logging.warning(f"SECURITY: Failed admin login for {username} with incorrect key.")
         return jsonify({"error": "Invalid admin secret key."}), 403
@@ -1065,12 +1065,12 @@ def login():
         user.streak = 1
     user.last_login = datetime.utcnow()
     db.session.commit()
-        
+
     login_user(user, remember=True)
     logging.info(f"SECURITY: User {user.username} logged in successfully.")
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "user": user.to_dict(include_email=True), "settings": settings})
-    
+
 @app.route('/api/logout', methods=['POST'])
 @login_required
 def logout():
@@ -1078,7 +1078,7 @@ def logout():
     logout_user()
     session.clear()
     return jsonify({"success": True})
-    
+
 @app.route('/api/guest_login', methods=['POST'])
 def guest_login():
     guest_id = f"guest_{uuid.uuid4()}"
@@ -1088,19 +1088,19 @@ def guest_login():
     login_user(guest_user)
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "user": guest_user.to_dict(), "settings": settings})
-    
+
 @app.route('/api/update_profile', methods=['POST'])
 @login_required
 def update_profile():
     if getattr(current_user, 'is_guest', False):
         return jsonify({"error": "Guests cannot save profile changes."}), 403
-        
+
     data = request.json
     profile = current_user.profile
     if not profile:
         profile = Profile(user_id=current_user.id)
         db.session.add(profile)
-        
+
     profile.bio = bleach.clean(data.get('bio', profile.bio))
     profile.avatar = bleach.clean(data.get('avatar', profile.avatar))
     profile.theme_preference = bleach.clean(data.get('theme_preference', profile.theme_preference))
@@ -1119,10 +1119,10 @@ def get_leaderboard():
 def get_classes():
     if getattr(current_user, 'is_guest', False):
         return jsonify({"success": True, "classes": []})
-    
+
     query = current_user.taught_classes if current_user.role == 'teacher' else current_user.enrolled_classes
     classes = query.options(selectinload(Class.teacher)).all()
-    
+
     return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
 
 @app.route('/api/classes/create', methods=['POST'])
@@ -1130,13 +1130,13 @@ def get_classes():
 @teacher_required
 def create_class():
     name = bleach.clean(request.json.get('name'))
-    if not name or len(name) > 100: 
+    if not name or len(name) > 100:
         return jsonify({"error": "Class name is required and must be under 100 characters."}), 400
-    
+
     code = secrets.token_urlsafe(6).upper()
     while Class.query.filter_by(code=code).first():
         code = secrets.token_urlsafe(6).upper()
-        
+
     new_class = Class(name=name, teacher_id=current_user.id, code=code)
     db.session.add(new_class)
     db.session.commit()
@@ -1148,11 +1148,11 @@ def create_class():
 def join_class():
     code = bleach.clean(request.json.get('code', '')).upper()
     if not code: return jsonify({"error": "Class code is required."}), 400
-    
+
     target_class = Class.query.filter_by(code=code).first()
     if not target_class: return jsonify({"error": "Invalid class code."}), 404
     if current_user in target_class.students: return jsonify({"error": "You are already in this class."}), 409
-        
+
     target_class.students.append(current_user)
     db.session.commit()
     return jsonify({"success": True, "class_name": target_class.name})
@@ -1165,9 +1165,9 @@ def get_messages(target_class):
     messages = target_class.messages.options(selectinload(ChatMessage.sender).selectinload(User.profile)) \
                                      .order_by(ChatMessage.timestamp.desc()) \
                                      .paginate(page=page, per_page=50, error_out=False)
-    
+
     return jsonify({
-        "success": True, 
+        "success": True,
         "messages": [m.to_dict() for m in reversed(messages.items)],
         "has_next": messages.has_next
     })
@@ -1189,14 +1189,14 @@ def update_admin_settings():
     for key, value in data.items():
         clean_key = bleach.clean(key)
         if clean_key not in allowed_keys: continue
-        
+
         setting = SiteSettings.query.filter_by(key=clean_key).first()
         if setting:
             setting.value = bleach.clean(value)
         else:
             db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
     db.session.commit()
-    
+
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "settings": settings})
 
@@ -1244,11 +1244,11 @@ def handle_send_message(data):
     if not current_user.is_authenticated or getattr(current_user, 'is_guest', False): return
     room = data['room']
     content = bleach.clean(data['content'])
-    
+
     msg = ChatMessage(class_id=room, sender_id=current_user.id, content=content)
     db.session.add(msg)
     db.session.commit()
-    
+
     emit('new_message', msg.to_dict(), room=room)
 
 # ==============================================================================
@@ -1268,7 +1268,7 @@ def init_db_command():
     with app.app_context():
         db.create_all()
         logging.info("Database tables created.")
-        
+
         default_settings = {
             'site_wide_theme': 'default',
             'background_image_url': '',
@@ -1277,7 +1277,7 @@ def init_db_command():
         for key, value in default_settings.items():
             if not SiteSettings.query.filter_by(key=key).first():
                 db.session.add(SiteSettings(key=key, value=value))
-        
+
         db.session.commit()
         logging.info("Default settings seeded.")
 

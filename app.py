@@ -1283,8 +1283,3 @@ def init_db_command():
 
 if __name__ == '__main__':
     socketio.run(app, debug=(not is_production))
-
-
-
-
-

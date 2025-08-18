@@ -1,4 +1,4 @@
-
+# --- Imports ---
 import os
 import json
 import logging
@@ -30,30 +30,30 @@ from flask_limiter.util import get_remote_address
 from markupsafe import escape
 from flask_bcrypt import Bcrypt
 from flask import session
+from password_strength import PasswordPolicy
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
 # ==============================================================================
 
-# Ensure eventlet is installed for real-time features
+# Ensure critical dependencies are installed
 try:
     import eventlet
 except ImportError:
-    logging.critical("FATAL ERROR: The 'eventlet' package is required for real-time features.")
-    logging.critical("Please install it by running: pip install eventlet")
+    logging.critical("FATAL ERROR: The 'eventlet' package is required. Run: pip install eventlet")
     exit(1)
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [SECURITY] - %(message)s')
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
 
 # --- App Configuration ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///database.db'
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(16)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT') or secrets.token_hex(16)
+app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT') or secrets.token_hex(32)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=8)
 
 # --- Production Security Configuration ---
@@ -75,7 +75,7 @@ SITE_CONFIG = {
     "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythfull-1.onrender.com'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://myth-ai-io.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY'),
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
@@ -93,7 +93,7 @@ csp = {
     'style-src': ['\'self\'', '\'unsafe-inline\'', 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com', '\'nonce-{nonce}\''],
     'font-src': ['\'self\'', 'https://fonts.gstatic.com'],
     'img-src': ['*', 'data:'],
-    'media-src': ['*'], # Allow audio/video from any source
+    'media-src': ['*'],
     'connect-src': [
         '\'self\'',
         f'wss://{prod_origin.split("//")[-1]}' if is_production else 'ws://localhost:5000',
@@ -109,6 +109,9 @@ db = SQLAlchemy(app)
 socketio = SocketIO(app, cors_allowed_origins=prod_origin if is_production else "*", async_mode='eventlet')
 mail = Mail(app)
 stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
+
+# --- Password Policy ---
+password_policy = PasswordPolicy.from_names(length=12, uppercase=1, numbers=1, special=1)
 
 # --- AI Model Initialization ---
 if SITE_CONFIG.get("GEMINI_API_KEY"):
@@ -233,7 +236,16 @@ class Subscription(db.Model):
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
-    value = db.Column(db.Text) # Use Text for potentially long URLs
+    value = db.Column(db.Text)
+
+class IssueReport(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    page_url = db.Column(db.String(500), nullable=True)
+    user_agent = db.Column(db.Text, nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    user = db.relationship('User', backref='issue_reports')
 
 # ==============================================================================
 # --- 3. USER & SESSION MANAGEMENT ---
@@ -297,7 +309,7 @@ def after_request_func(response):
     if hasattr(g, 'request_start_time'):
         duration = time.time() - g.request_start_time
         if duration > 0.5:
-            logging.warning(f"Slow request: {request.path} took {duration:.2f}s")
+            logging.warning(f"PERFORMANCE: Slow request: {request.path} took {duration:.2f}s")
     return response
 
 @app.errorhandler(Exception)
@@ -356,92 +368,40 @@ HTML_CONTENT = """
 
     <template id="template-welcome-screen">
         <div class="relative h-screen w-screen flex flex-col items-center justify-center overflow-hidden bg-bg-dark">
-            <!-- Background with subtle particle effects -->
             <div class="absolute inset-0 overflow-hidden">
                 <div class="particles"></div>
                 <div class="gradient-overlay"></div>
             </div>
-
-            <!-- Main content container -->
             <div class="relative z-10 flex flex-col items-center text-center px-4">
-                <!-- Animated Logo -->
                 <div id="logo-container-welcome" class="w-32 h-32 mb-6 transform hover:scale-110 transition-transform duration-500"></div>
-
-                <!-- Title with gradient and glow effect -->
-                <h1 class="text-6xl md:text-7xl font-title brand-gradient-text animate-pulse-slow">
-                    Myth AI
-                </h1>
+                <h1 class="text-6xl md:text-7xl font-title brand-gradient-text animate-pulse-slow">Myth AI</h1>
                 <p class="text-xl md:text-2xl text-text-secondary-color mt-4 max-w-lg animate-fade-in-up">
                     Embark on a journey of knowledge with an AI-powered learning experience.
                 </p>
-
-                <!-- Call-to-action button -->
                 <button id="enter-portal-btn" class="mt-8 brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg text-lg transform hover:scale-105 transition-all duration-300">
                     Enter the Portal
                 </button>
-
-                <!-- Subtle tagline -->
                 <p class="mt-6 text-sm text-gray-400 animate-fade-in-up delay-200">
                     Powered by xAI &bull; Unleashing Limitless Learning
                 </p>
             </div>
-
-            <!-- CSS for enhanced styling and animations -->
             <style nonce="{{ g.nonce }}">
-                .gradient-overlay {
-                    position: absolute;
-                    inset: 0;
-                    background: radial-gradient(circle at center, rgba(161, 125, 255, 0.15) 0%, transparent 70%);
-                }
-                .particles {
-                    position: absolute;
-                    inset: 0;
-                    background: transparent;
-                    animation: particles 20s linear infinite;
-                }
+                .gradient-overlay { position: absolute; inset: 0; background: radial-gradient(circle at center, hsla(var(--brand-hue), 90%, 60%, 0.15) 0%, transparent 70%); }
+                .particles { position: absolute; inset: 0; background: transparent; animation: particles 20s linear infinite; }
                 .particles::before {
-                    content: '';
-                    position: absolute;
-                    width: 2px;
-                    height: 2px;
-                    background: rgba(161, 125, 255, 0.3);
-                    box-shadow: 
-                        10vw 20vh 2px rgba(161, 125, 255, 0.2),
-                        30vw 40vh 2px rgba(161, 125, 255, 0.3),
-                        50vw 10vh 2px rgba(161, 125, 255, 0.25),
-                        70vw 70vh 2px rgba(161, 125, 255, 0.2),
-                        90vw 30vh 2px rgba(161, 125, 255, 0.3);
+                    content: ''; position: absolute; width: 2px; height: 2px; background: hsla(var(--brand-hue), 90%, 60%, 0.3);
+                    box-shadow: 10vw 20vh 2px hsla(var(--brand-hue), 90%, 60%, 0.2), 30vw 40vh 2px hsla(var(--brand-hue), 90%, 60%, 0.3), 50vw 10vh 2px hsla(var(--brand-hue), 90%, 60%, 0.25), 70vw 70vh 2px hsla(var(--brand-hue), 90%, 60%, 0.2), 90vw 30vh 2px hsla(var(--brand-hue), 90%, 60%, 0.3);
                     animation: float 15s ease-in-out infinite;
                 }
-                @keyframes float {
-                    0%, 100% { transform: translateY(0); opacity: 0.5; }
-                    50% { transform: translateY(-20px); opacity: 0.8; }
-                }
-                @keyframes particles {
-                    0% { transform: translateY(0); }
-                    100% { transform: translateY(-1000px); }
-                }
-                .animate-pulse-slow {
-                    animation: pulse-slow 3s ease-in-out infinite;
-                }
-                @keyframes pulse-slow {
-                    0%, 100% { transform: scale(1); opacity: 1; }
-                    50% { transform: scale(1.02); opacity: 0.95; }
-                }
-                .animate-fade-in-up {
-                    animation: fade-in-up 0.8s ease-out forwards;
-                }
-                @keyframes fade-in-up {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to { opacity: 1; transform: translateY(0); }
-                }
+                @keyframes float { 0%, 100% { transform: translateY(0); opacity: 0.5; } 50% { transform: translateY(-20px); opacity: 0.8; } }
+                @keyframes particles { 0% { transform: translateY(0); } 100% { transform: translateY(-1000px); } }
+                .animate-pulse-slow { animation: pulse-slow 3s ease-in-out infinite; }
+                @keyframes pulse-slow { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.02); opacity: 0.95; } }
+                .animate-fade-in-up { animation: fade-in-up 0.8s ease-out forwards; }
+                @keyframes fade-in-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
                 .delay-200 { animation-delay: 0.2s; }
-                #enter-portal-btn {
-                    box-shadow: 0 0 15px hsla(var(--brand-hue), 70%, 40%, 0.4);
-                }
-                #enter-portal-btn:hover {
-                    box-shadow: 0 0 20px hsla(var(--brand-hue), 70%, 40%, 0.6);
-                }
+                #enter-portal-btn { box-shadow: 0 0 15px hsla(var(--brand-hue), 70%, 40%, 0.4); }
+                #enter-portal-btn:hover { box-shadow: 0 0 20px hsla(var(--brand-hue), 70%, 40%, 0.6); }
             </style>
         </div>
     </template>
@@ -475,6 +435,7 @@ HTML_CONTENT = """
                 <div id="welcome-message" class="mb-4 text-center text-sm text-gray-300 p-2 border border-gray-600 rounded-md"></div>
                 <nav id="nav-links" class="flex-1 flex flex-col gap-2"></nav>
                 <div class="mt-auto">
+                    <button id="report-issue-btn" class="w-full text-left text-gray-300 hover:bg-purple-800/50 p-3 rounded-md transition-colors mb-2">Report Issue</button>
                     <button id="logout-btn" class="w-full text-left text-gray-300 hover:bg-red-800/50 p-3 rounded-md transition-colors">Logout</button>
                 </div>
             </aside>
@@ -508,7 +469,6 @@ HTML_CONTENT = """
             </div>
         </div>
     </template>
-
     <template id="template-my-classes">
         <div class="fade-in">
             <div id="class-view-header" class="flex justify-between items-center mb-6">
@@ -552,7 +512,6 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-
     <template id="template-profile">
         <div class="fade-in max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
@@ -587,14 +546,12 @@ HTML_CONTENT = """
             <div id="billing-actions"></div>
         </div>
     </template>
-
     <template id="template-leaderboard-view">
         <div class="fade-in max-w-4xl mx-auto">
             <h2 class="text-3xl font-bold mb-6 text-white">Leaderboard</h2>
             <div id="leaderboard-list" class="glassmorphism p-4 rounded-lg"></div>
         </div>
     </template>
-
     <template id="template-admin-dashboard">
        <div class="fade-in">
             <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
@@ -651,7 +608,24 @@ HTML_CONTENT = """
             </form>
         </div>
     </template>
-
+    <template id="template-report-issue-modal">
+        <div id="report-issue-overlay" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-[1000] fade-in">
+            <div class="glassmorphism p-6 rounded-lg max-w-lg w-full m-4">
+                <h3 class="text-2xl font-bold mb-4">Report an Issue</h3>
+                <form id="report-issue-form">
+                    <textarea id="issue-description" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" rows="5" placeholder="Please describe the issue in detail..." required></textarea>
+                    <div class="mt-4 flex justify-between items-center">
+                        <button type="button" id="copy-debug-info-btn" class="text-sm text-purple-400 hover:text-purple-300">Copy Debug Info</button>
+                        <div>
+                            <button type="button" id="cancel-report-btn" class="py-2 px-4 rounded-lg">Cancel</button>
+                            <button type="submit" id="submit-report-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg ml-2">Submit Report</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </template>
+    
     <script nonce="{{ g.nonce }}">
         document.addEventListener('DOMContentLoaded', () => {
             try {
@@ -683,42 +657,30 @@ HTML_CONTENT = """
                 }
 
                 function applyCustomizations(settings) {
-                    // Apply custom background
                     if (settings.background_image_url) {
                         document.body.style.backgroundImage = `url(${settings.background_image_url})`;
                         document.querySelectorAll('.dynamic-bg').forEach(el => el.classList.remove('dynamic-bg'));
                     } else {
                         document.body.style.backgroundImage = 'none';
                     }
-
-                    // Apply custom music
                     DOMElements.musicPlayerContainer.innerHTML = '';
                     if (settings.music_url) {
                         const audio = new Audio(settings.music_url);
-                        audio.loop = true;
-                        audio.autoplay = true;
-                        audio.muted = true; // Required by browsers for autoplay
-
+                        audio.loop = true; audio.autoplay = true; audio.muted = true;
                         const player = document.createElement('div');
                         player.className = 'glassmorphism p-2 rounded-full flex items-center gap-2';
                         const btn = document.createElement('button');
-                        btn.className = 'text-2xl';
-                        btn.textContent = '🔇';
-
+                        btn.className = 'text-2xl'; btn.textContent = '🔇';
                         btn.onclick = () => {
                             if (audio.muted) {
-                                audio.muted = false;
-                                audio.play(); // Attempt to play again on user interaction
-                                btn.textContent = '🔊';
+                                audio.muted = false; audio.play(); btn.textContent = '🔊';
                             } else {
-                                audio.muted = true;
-                                btn.textContent = '🔇';
+                                audio.muted = true; btn.textContent = '🔇';
                             }
                         };
                         player.appendChild(btn);
                         DOMElements.musicPlayerContainer.appendChild(player);
-                        // Try to play after a short delay
-                        setTimeout(() => audio.play().catch(e => console.log("Autoplay blocked.")), 500);
+                        setTimeout(() => audio.play().catch(e => console.log("Autoplay blocked by browser.")), 500);
                     }
                 }
 
@@ -757,6 +719,7 @@ HTML_CONTENT = """
                         navLinks.innerHTML = tabs.map(tab => `<button data-tab="${escapeHtml(tab.id)}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${escapeHtml(tab.label)}</button>`).join('');
                         navLinks.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
                         document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
+                        document.getElementById('report-issue-btn').addEventListener('click', setupReportIssueModal);
                         switchTab(appState.currentTab);
                     });
                 }
@@ -771,13 +734,7 @@ HTML_CONTENT = """
                 }
 
                 // --- FULL TAB IMPLEMENTATIONS ---
-                async function setupMyClassesTab(container) {
-                    renderSubTemplate(container, 'template-my-classes', () => {
-                        document.getElementById('back-to-classes-list').addEventListener('click', () => showClassList(true));
-                        showClassList(false);
-                    });
-                }
-
+                async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', () => { document.getElementById('back-to-classes-list').addEventListener('click', () => showClassList(true)); showClassList(false); }); }
                 async function showClassList(isRefresh) {
                     document.getElementById('classes-main-view').classList.remove('hidden');
                     const selectedView = document.getElementById('selected-class-view');
@@ -785,7 +742,6 @@ HTML_CONTENT = """
                     selectedView.innerHTML = '';
                     document.getElementById('back-to-classes-list').classList.add('hidden');
                     document.getElementById('my-classes-title').textContent = "My Classes";
-
                     const actionContainer = document.getElementById('class-action-container');
                     const role = appState.currentUser.role;
                     if (role !== 'guest') {
@@ -797,21 +753,15 @@ HTML_CONTENT = """
                     } else {
                         actionContainer.innerHTML = '<p class="text-center text-gray-400">Guest mode is read-only. Please sign up to create or join classes.</p>';
                     }
-
                     const classesList = document.getElementById('classes-list');
                     classesList.innerHTML = '<p class="text-gray-400">Loading classes...</p>';
-
                     if (!isRefresh && appState.classCache.has('list')) {
                         renderClasses(appState.classCache.get('list'));
                     } else {
                         const result = await apiCall('/classes');
-                        if (result.success) {
-                            appState.classCache.set('list', result.classes);
-                            renderClasses(result.classes);
-                        }
+                        if (result.success) { appState.classCache.set('list', result.classes); renderClasses(result.classes); }
                     }
                 }
-
                 function renderClasses(classes) {
                     const classesList = document.getElementById('classes-list');
                     if (classes.length === 0) {
@@ -826,43 +776,34 @@ HTML_CONTENT = """
                         classesList.querySelectorAll('.class-card').forEach(card => card.addEventListener('click', (e) => showClassDetail(e.currentTarget.dataset.classId, e.currentTarget.dataset.className)));
                     }
                 }
-
                 function showClassDetail(classId, className) {
                     appState.currentClass = { id: classId, name: className };
                     document.getElementById('classes-main-view').classList.add('hidden');
                     document.getElementById('selected-class-view').classList.remove('hidden');
                     document.getElementById('back-to-classes-list').classList.remove('hidden');
                     document.getElementById('my-classes-title').textContent = className;
-
                     const container = document.getElementById('selected-class-view');
                     renderSubTemplate(container, 'template-selected-class-view', () => {
                         container.querySelector('.class-view-tab').addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab));
                         switchClassTab('chat');
                     });
                 }
-
                 function switchClassTab(tab) {
                     document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
                     const contentContainer = document.getElementById('class-view-content');
-                    if (tab === 'chat') {
-                        setupClassChatTab(contentContainer);
-                    }
+                    if (tab === 'chat') { setupClassChatTab(contentContainer); }
                 }
-
                 async function setupClassChatTab(container) {
                     renderSubTemplate(container, 'template-class-chat-view', async () => {
                         if (appState.socket) appState.socket.emit('join', { room: appState.currentClass.id });
-
                         const chatMessages = document.getElementById('chat-messages');
                         chatMessages.innerHTML = '<p class="text-gray-400">Loading messages...</p>';
-
                         const result = await apiCall(`/classes/${appState.currentClass.id}/messages`);
                         if (result.success) {
                             chatMessages.innerHTML = '';
                             result.messages.forEach(msg => renderChatMessage(msg, false));
                             chatMessages.scrollTop = chatMessages.scrollHeight;
                         }
-
                         document.getElementById('chat-form').addEventListener('submit', (e) => {
                             e.preventDefault();
                             const input = document.getElementById('chat-input');
@@ -874,7 +815,6 @@ HTML_CONTENT = """
                         });
                     });
                 }
-
                 function renderChatMessage(msg, shouldScroll) {
                     const messagesContainer = document.getElementById('chat-messages');
                     if (!messagesContainer) return;
@@ -882,7 +822,6 @@ HTML_CONTENT = """
                     const messageEl = document.createElement('div');
                     messageEl.id = `message-${msg.id}`;
                     messageEl.className = `chat-message-container flex items-start gap-3 ${isCurrentUser ? 'justify-end' : ''}`;
-
                     messageEl.innerHTML = `
                         ${!isCurrentUser ? `<img src="${escapeHtml(msg.sender.profile?.avatar || `https://i.pravatar.cc/40?u=${msg.sender.id}`)}" class="w-8 h-8 rounded-full">` : ''}
                         <div class="flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}">
@@ -893,153 +832,70 @@ HTML_CONTENT = """
                             <div class="bg-bg-med p-3 rounded-lg max-w-xs md:max-w-md relative">
                                 <p id="message-content-${msg.id}">${escapeHtml(msg.content)}</p>
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                     messagesContainer.appendChild(messageEl);
                     if (shouldScroll) messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
-
                 async function handleJoinClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
                 async function handleCreateClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
-
-                async function setupProfileTab(container) {
-                    renderSubTemplate(container, 'template-profile', () => {
-                        container.querySelectorAll('.profile-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchProfileTab(e.currentTarget.dataset.tab)));
-                        switchProfileTab('settings');
-                    });
-                }
-
-                function switchProfileTab(tab) {
-                    document.querySelectorAll('.profile-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
-                    const contentContainer = document.getElementById('profile-view-content');
-                    if (tab === 'settings') setupProfileSettingsTab(contentContainer);
-                    else if (tab === 'billing') setupProfileBillingTab(contentContainer);
-                }
-
-                async function setupProfileSettingsTab(container) {
-                    renderSubTemplate(container, 'template-profile-settings', () => {
-                        const profile = appState.currentUser.profile;
-                        document.getElementById('bio').value = profile.bio || '';
-                        document.getElementById('avatar').value = profile.avatar || '';
-                        const themeSelect = document.getElementById('theme-select');
-                        themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase())}</option>`).join('');
-                        themeSelect.value = profile.theme_preference || 'edgy_purple';
-                        document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile);
-                    });
-                }
-
-                async function setupProfileBillingTab(container) {
-                    renderSubTemplate(container, 'template-profile-billing', () => {
-                        const statusContainer = document.getElementById('subscription-status');
-                        const actionsContainer = document.getElementById('billing-actions');
-                        const status = appState.currentUser.subscription_status;
-
-                        statusContainer.innerHTML = `<p>Current Plan: <span class="font-bold capitalize ${status === 'active' ? 'text-green-400' : 'text-purple-400'}">${status}</span></p>`;
-
-                        if (status !== 'active') {
-                            actionsContainer.innerHTML = `<button id="upgrade-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`;
-                            document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade);
-                        } else {
-                            actionsContainer.innerHTML = `<p class="text-gray-400">You are on the Pro plan. Thank you for your support!</p>`;
-                        }
-                    });
-                }
-
-                async function handleUpgrade() {
-                    const btn = document.getElementById('upgrade-btn');
-                    setButtonLoadingState(btn, true);
-                    const result = await apiCall('/billing/create-checkout-session', { method: 'POST' });
-                    if (result.success) {
-                        const stripe = Stripe(result.public_key);
-                        stripe.redirectToCheckout({ sessionId: result.session_id });
-                    }
-                    setButtonLoadingState(btn, false);
-                }
-
+                async function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { container.querySelectorAll('.profile-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchProfileTab(e.currentTarget.dataset.tab))); switchProfileTab('settings'); }); }
+                function switchProfileTab(tab) { document.querySelectorAll('.profile-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('profile-view-content'); if (tab === 'settings') setupProfileSettingsTab(contentContainer); else if (tab === 'billing') setupProfileBillingTab(contentContainer); }
+                async function setupProfileSettingsTab(container) { renderSubTemplate(container, 'template-profile-settings', () => { const profile = appState.currentUser.profile; document.getElementById('bio').value = profile.bio || ''; document.getElementById('avatar').value = profile.avatar || ''; const themeSelect = document.getElementById('theme-select'); themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase())}</option>`).join(''); themeSelect.value = profile.theme_preference || 'edgy_purple'; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
+                async function setupProfileBillingTab(container) { renderSubTemplate(container, 'template-profile-billing', () => { const statusContainer = document.getElementById('subscription-status'); const actionsContainer = document.getElementById('billing-actions'); const status = appState.currentUser.subscription_status; statusContainer.innerHTML = `<p>Current Plan: <span class="font-bold capitalize ${status === 'active' ? 'text-green-400' : 'text-purple-400'}">${status}</span></p>`; if (status !== 'active') { actionsContainer.innerHTML = `<button id="upgrade-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } else { actionsContainer.innerHTML = `<p class="text-gray-400">You are on the Pro plan. Thank you for your support!</p>`; } }); }
+                async function handleUpgrade() { const btn = document.getElementById('upgrade-btn'); setButtonLoadingState(btn, true); const result = await apiCall('/billing/create-checkout-session', { method: 'POST' }); if (result.success) { const stripe = Stripe(result.public_key); stripe.redirectToCheckout({ sessionId: result.session_id }); } setButtonLoadingState(btn, false); }
                 async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); try { const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } } finally { setButtonLoadingState(btn, false); } }
+                async function setupLeaderboardTab(container) { renderSubTemplate(container, 'template-leaderboard-view', async () => { const list = document.getElementById('leaderboard-list'); list.innerHTML = `<p class="text-gray-400">Loading leaderboard...</p>`; const result = await apiCall('/leaderboard'); if (result.success) { if (result.users.length === 0) { list.innerHTML = `<p class="text-gray-400">No users on the leaderboard yet.</p>`; } else { list.innerHTML = `<ol class="list-decimal list-inside space-y-2">${result.users.map((user, index) => ` <li class="p-2 rounded-md flex items-center gap-4 ${index === 0 ? 'bg-yellow-500/20' : (index === 1 ? 'bg-gray-400/20' : (index === 2 ? 'bg-purple-700/20' : ''))}"> <span class="font-bold text-lg">${index + 1}.</span> <img src="${escapeHtml(user.profile.avatar || 'https://i.pravatar.cc/40?u=' + user.id)}" class="w-8 h-8 rounded-full"> <span class="flex-grow">${escapeHtml(user.username)}</span> <span class="font-bold">${user.points} pts</span> </li>`).join('')}</ol>`; } } }); }
+                async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', () => { container.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminTab(e.currentTarget.dataset.tab))); switchAdminTab('users'); }); }
+                function switchAdminTab(tab) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('admin-view-content'); if (tab === 'users') setupAdminUsersTab(contentContainer); else if (tab === 'settings') setupAdminSettingsTab(contentContainer); else if (tab === 'appearance') setupAdminAppearanceTab(contentContainer); }
+                function setupAdminUsersTab(container) { renderSubTemplate(container, 'template-admin-users-view', async () => { const result = await apiCall('/admin/users'); if (result.success) { document.getElementById('users-table-body').innerHTML = result.users.map(user => ` <tr class="border-b border-gray-700/50"> <td class="p-3">${escapeHtml(user.username)}</td> <td class="p-3">${escapeHtml(user.email)}</td> <td class="p-3">${escapeHtml(user.role)}</td> </tr>`).join(''); } }); }
+                function setupAdminSettingsTab(container) { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', async e => { e.preventDefault(); const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = { site_wide_theme: document.getElementById('site-wide-theme-select').value }; const result = await apiCall('/admin/settings', { method: 'POST', body }); if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); } setButtonLoadingState(btn, false); }); }); }
+                function setupAdminAppearanceTab(container) { renderSubTemplate(container, 'template-admin-appearance-view', () => { document.getElementById('background-image-url').value = appState.siteSettings.background_image_url || ''; document.getElementById('music-url').value = appState.siteSettings.music_url || ''; document.getElementById('admin-appearance-form').addEventListener('submit', async e => { e.preventDefault(); const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = { background_image_url: document.getElementById('background-image-url').value, music_url: document.getElementById('music-url').value }; const result = await apiCall('/admin/appearance', { method: 'POST', body }); if (result.success) { showToast('Appearance settings updated!', 'success'); appState.siteSettings = result.settings; applyCustomizations(appState.siteSettings); } setButtonLoadingState(btn, false); }); }); }
+                
+                function setupReportIssueModal() {
+                    renderSubTemplate(DOMElements.modalContainer, 'template-report-issue-modal', () => {
+                        const overlay = document.getElementById('report-issue-overlay');
+                        const form = document.getElementById('report-issue-form');
+                        const cancelBtn = document.getElementById('cancel-report-btn');
+                        const copyBtn = document.getElementById('copy-debug-info-btn');
+                        const submitBtn = document.getElementById('submit-report-btn');
 
-                async function setupLeaderboardTab(container) {
-                    renderSubTemplate(container, 'template-leaderboard-view', async () => {
-                        const list = document.getElementById('leaderboard-list');
-                        list.innerHTML = `<p class="text-gray-400">Loading leaderboard...</p>`;
-                        const result = await apiCall('/leaderboard');
-                        if (result.success) {
-                            if (result.users.length === 0) {
-                                list.innerHTML = `<p class="text-gray-400">No users on the leaderboard yet.</p>`;
-                            } else {
-                                list.innerHTML = `<ol class="list-decimal list-inside space-y-2">${result.users.map((user, index) => `
-                                    <li class="p-2 rounded-md flex items-center gap-4 ${index === 0 ? 'bg-yellow-500/20' : (index === 1 ? 'bg-gray-400/20' : (index === 2 ? 'bg-purple-700/20' : ''))}">
-                                        <span class="font-bold text-lg">${index + 1}.</span>
-                                        <img src="${escapeHtml(user.profile.avatar || 'https://i.pravatar.cc/40?u=' + user.id)}" class="w-8 h-8 rounded-full">
-                                        <span class="flex-grow">${escapeHtml(user.username)}</span>
-                                        <span class="font-bold">${user.points} pts</span>
-                                    </li>`).join('')}</ol>`;
-                            }
-                        }
-                    });
-                }
+                        const closeModal = () => {
+                            overlay.classList.remove('fade-in');
+                            overlay.style.opacity = '0';
+                            setTimeout(() => DOMElements.modalContainer.innerHTML = '', 300);
+                        };
 
-                async function setupAdminDashboardTab(container) {
-                    renderSubTemplate(container, 'template-admin-dashboard', () => {
-                        container.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminTab(e.currentTarget.dataset.tab)));
-                        switchAdminTab('users');
-                    });
-                }
+                        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+                        cancelBtn.addEventListener('click', closeModal);
 
-                function switchAdminTab(tab) {
-                    document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
-                    const contentContainer = document.getElementById('admin-view-content');
-                    if (tab === 'users') setupAdminUsersTab(contentContainer);
-                    else if (tab === 'settings') setupAdminSettingsTab(contentContainer);
-                    else if (tab === 'appearance') setupAdminAppearanceTab(contentContainer);
-                }
-
-                function setupAdminUsersTab(container) {
-                    renderSubTemplate(container, 'template-admin-users-view', async () => {
-                        const result = await apiCall('/admin/users');
-                        if (result.success) {
-                            document.getElementById('users-table-body').innerHTML = result.users.map(user => `
-                                <tr class="border-b border-gray-700/50">
-                                    <td class="p-3">${escapeHtml(user.username)}</td>
-                                    <td class="p-3">${escapeHtml(user.email)}</td>
-                                    <td class="p-3">${escapeHtml(user.role)}</td>
-                                </tr>`).join('');
-                        }
-                    });
-                }
-
-                function setupAdminSettingsTab(container) {
-                    renderSubTemplate(container, 'template-admin-settings-view', () => {
-                        document.getElementById('site-wide-theme-select').value = appState.siteSettings.site_wide_theme || 'default';
-                        document.getElementById('admin-settings-form').addEventListener('submit', async e => {
-                            e.preventDefault();
-                            const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
-                            const body = { site_wide_theme: document.getElementById('site-wide-theme-select').value };
-                            const result = await apiCall('/admin/settings', { method: 'POST', body });
-                            if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); }
-                            setButtonLoadingState(btn, false);
+                        copyBtn.addEventListener('click', () => {
+                            const debugInfo = `
+User ID: ${appState.currentUser.id}
+Username: ${appState.currentUser.username}
+Role: ${appState.currentUser.role}
+Current Page: ${window.location.href}
+User Agent: ${navigator.userAgent}
+                            `.trim();
+                            navigator.clipboard.writeText(debugInfo).then(() => {
+                                showToast('Debug info copied to clipboard!', 'success');
+                            }, () => {
+                                showToast('Failed to copy debug info.', 'error');
+                            });
                         });
-                    });
-                }
 
-                function setupAdminAppearanceTab(container) {
-                    renderSubTemplate(container, 'template-admin-appearance-view', () => {
-                        document.getElementById('background-image-url').value = appState.siteSettings.background_image_url || '';
-                        document.getElementById('music-url').value = appState.siteSettings.music_url || '';
-                        document.getElementById('admin-appearance-form').addEventListener('submit', async e => {
+                        form.addEventListener('submit', async (e) => {
                             e.preventDefault();
-                            const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true);
-                            const body = {
-                                background_image_url: document.getElementById('background-image-url').value,
-                                music_url: document.getElementById('music-url').value
-                            };
-                            const result = await apiCall('/admin/appearance', { method: 'POST', body });
+                            setButtonLoadingState(submitBtn, true);
+                            const description = document.getElementById('issue-description').value;
+                            const result = await apiCall('/report-issue', {
+                                method: 'POST',
+                                body: { description: description, page_url: window.location.href }
+                            });
                             if (result.success) {
-                                showToast('Appearance settings updated!', 'success');
-                                appState.siteSettings = result.settings;
-                                applyCustomizations(appState.siteSettings);
+                                showToast('Issue report submitted successfully. Thank you!', 'success');
+                                closeModal();
                             }
-                            setButtonLoadingState(btn, false);
+                            setButtonLoadingState(submitBtn, false);
                         });
                     });
                 }
@@ -1096,25 +952,25 @@ def status():
     return jsonify({"user": None, "settings": settings})
 
 @app.route('/api/signup', methods=['POST'])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per 15 minutes")
 def signup():
     data = request.json
     username = bleach.clean(data.get('username', '')).strip()
-    email = bleach.clean(data.get('email', '')).strip()
+    email = bleach.clean(data.get('email', '')).strip().lower()
     password = data.get('password')
     role = bleach.clean(data.get('account_type', 'student'))
 
     if not all([username, email, password, role]):
         return jsonify({"error": "Missing required fields."}), 400
 
-    if len(password) < 10 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password) or not re.search("[!@#$%^&*()_+-=[]{};':\"|,.<>/?]", password):
-        return jsonify({"error": "Password must be 10+ characters and include uppercase, lowercase, number, and special character."}), 400
+    if password_policy.test(password):
+        return jsonify({"error": "Password is too weak. Must be 12+ chars with uppercase, numbers, and symbols."}), 400
 
     if User.query.filter(or_(User.username == username, User.email == email)).first():
         return jsonify({"error": "Username or email already exists."}), 409
 
     if role == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
-        logging.warning(f"SECURITY: Failed teacher signup attempt with incorrect key.")
+        logging.warning(f"SECURITY: Failed teacher signup attempt with incorrect key from IP {get_remote_address()}.")
         return jsonify({"error": "Invalid teacher secret key."}), 403
 
     new_user = User(username=username, email=email, role=role)
@@ -1126,6 +982,7 @@ def signup():
     session.regenerate()
     login_user(new_user)
     settings = {s.key: s.value for s in SiteSettings.query.all()}
+    logging.info(f"SECURITY: New user signup successful for {username} from IP {get_remote_address()}.")
     return jsonify({"success": True, "user": new_user.to_dict(include_email=True), "settings": settings})
 
 @app.route('/api/login', methods=['POST'])
@@ -1141,7 +998,7 @@ def login():
         return jsonify({"error": "Invalid username or password"}), 401
 
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
-        logging.warning(f"SECURITY: Failed admin login for {username} with incorrect key.")
+        logging.warning(f"SECURITY: Failed admin login for {username} with incorrect key from IP {get_remote_address()}.")
         return jsonify({"error": "Invalid admin secret key."}), 403
 
     session.clear()
@@ -1156,7 +1013,7 @@ def login():
     db.session.commit()
 
     login_user(user, remember=True)
-    logging.info(f"SECURITY: User {user.username} logged in successfully.")
+    logging.info(f"SECURITY: User {user.username} logged in successfully from IP {get_remote_address()}.")
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "user": user.to_dict(include_email=True), "settings": settings})
 
@@ -1202,16 +1059,39 @@ def get_leaderboard():
     top_users = User.query.options(selectinload(User.profile)).order_by(User.points.desc()).limit(10).all()
     return jsonify({"success": True, "users": [user.to_dict() for user in top_users]})
 
+@app.route('/api/report-issue', methods=['POST'])
+@limiter.limit("5 per hour")
+@login_required
+def report_issue():
+    data = request.json
+    description = bleach.clean(data.get('description', ''))
+    page_url = bleach.clean(data.get('page_url', ''))
+
+    if not description:
+        return jsonify({"error": "Issue description cannot be empty."}), 400
+
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    user_id = current_user.id if current_user.is_authenticated and not getattr(current_user, 'is_guest', False) else None
+
+    new_report = IssueReport(
+        user_id=user_id,
+        page_url=page_url,
+        user_agent=user_agent,
+        description=description
+    )
+    db.session.add(new_report)
+    db.session.commit()
+    logging.info(f"SECURITY: New issue reported by user '{current_user.username if user_id else 'Guest'}'. URL: {page_url}. Issue: {description[:100]}...")
+    return jsonify({"success": True, "message": "Thank you for your feedback. Your report has been submitted."})
+
 # --- Class & Content API Routes ---
 @app.route('/api/classes', methods=['GET'])
 @login_required
 def get_classes():
     if getattr(current_user, 'is_guest', False):
         return jsonify({"success": True, "classes": []})
-
     query = current_user.taught_classes if current_user.role == 'teacher' else current_user.enrolled_classes
     classes = query.options(selectinload(Class.teacher)).all()
-
     return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
 
 @app.route('/api/classes/create', methods=['POST'])
@@ -1221,11 +1101,9 @@ def create_class():
     name = bleach.clean(request.json.get('name'))
     if not name or len(name) > 100:
         return jsonify({"error": "Class name is required and must be under 100 characters."}), 400
-
     code = secrets.token_urlsafe(6).upper()
     while Class.query.filter_by(code=code).first():
         code = secrets.token_urlsafe(6).upper()
-
     new_class = Class(name=name, teacher_id=current_user.id, code=code)
     db.session.add(new_class)
     db.session.commit()
@@ -1237,11 +1115,9 @@ def create_class():
 def join_class():
     code = bleach.clean(request.json.get('code', '')).upper()
     if not code: return jsonify({"error": "Class code is required."}), 400
-
     target_class = Class.query.filter_by(code=code).first()
     if not target_class: return jsonify({"error": "Invalid class code."}), 404
     if current_user in target_class.students: return jsonify({"error": "You are already in this class."}), 409
-
     target_class.students.append(current_user)
     db.session.commit()
     return jsonify({"success": True, "class_name": target_class.name})
@@ -1254,7 +1130,6 @@ def get_messages(target_class):
     messages = target_class.messages.options(selectinload(ChatMessage.sender).selectinload(User.profile)) \
                                      .order_by(ChatMessage.timestamp.desc()) \
                                      .paginate(page=page, per_page=50, error_out=False)
-
     return jsonify({
         "success": True,
         "messages": [m.to_dict() for m in reversed(messages.items)],
@@ -1278,14 +1153,10 @@ def update_admin_settings():
     for key, value in data.items():
         clean_key = bleach.clean(key)
         if clean_key not in allowed_keys: continue
-
         setting = SiteSettings.query.filter_by(key=clean_key).first()
-        if setting:
-            setting.value = bleach.clean(value)
-        else:
-            db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
+        if setting: setting.value = bleach.clean(value)
+        else: db.session.add(SiteSettings(key=clean_key, value=bleach.clean(value)))
     db.session.commit()
-
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "settings": settings})
 
@@ -1298,12 +1169,9 @@ def update_admin_appearance():
     for key in allowed_keys:
         value = bleach.clean(data.get(key, ''))
         setting = SiteSettings.query.filter_by(key=key).first()
-        if setting:
-            setting.value = value
-        else:
-            db.session.add(SiteSettings(key=key, value=value))
+        if setting: setting.value = value
+        else: db.session.add(SiteSettings(key=key, value=value))
     db.session.commit()
-
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify({"success": True, "settings": settings})
 
@@ -1333,11 +1201,9 @@ def handle_send_message(data):
     if not current_user.is_authenticated or getattr(current_user, 'is_guest', False): return
     room = data['room']
     content = bleach.clean(data['content'])
-
     msg = ChatMessage(class_id=room, sender_id=current_user.id, content=content)
     db.session.add(msg)
     db.session.commit()
-
     emit('new_message', msg.to_dict(), room=room)
 
 # ==============================================================================
@@ -1352,25 +1218,9 @@ def create_profile_for_new_user(mapper, connection, target):
 def shutdown_session(exception=None):
     db.session.remove()
 
-@app.before_first_request
 def initialize_database():
-    db.create_all()
-    default_settings = {
-        'site_wide_theme': 'default',
-        'background_image_url': '',
-        'music_url': ''
-    }
-    for key, value in default_settings.items():
-        if not SiteSettings.query.filter_by(key=key).first():
-            db.session.add(SiteSettings(key=key, value=value))
-    db.session.commit()
-
-@app.cli.command("init-db")
-def init_db_command():
     with app.app_context():
         db.create_all()
-        logging.info("Database tables created.")
-
         default_settings = {
             'site_wide_theme': 'default',
             'background_image_url': '',
@@ -1379,9 +1229,25 @@ def init_db_command():
         for key, value in default_settings.items():
             if not SiteSettings.query.filter_by(key=key).first():
                 db.session.add(SiteSettings(key=key, value=value))
-
         db.session.commit()
         logging.info("Default settings seeded.")
 
+@app.cli.command("init-db")
+def init_db_command():
+    initialize_database()
+    logging.info("Database tables created and settings seeded via CLI.")
+
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+        # Seed initial settings if they don't exist
+        default_settings = {
+            'site_wide_theme': 'default',
+            'background_image_url': '',
+            'music_url': ''
+        }
+        for key, value in default_settings.items():
+            if not SiteSettings.query.filter_by(key=key).first():
+                db.session.add(SiteSettings(key=key, value=value))
+        db.session.commit()
     socketio.run(app, debug=(not is_production))

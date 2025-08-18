@@ -92,8 +92,8 @@ csp = {
     'script-src': ['\'self\'', 'https://cdn.tailwindcss.com', 'https://cdnjs.cloudflare.com', 'https://js.stripe.com', '\'nonce-{nonce}\''],
     'style-src': ['\'self\'', '\'unsafe-inline\'', 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com', '\'nonce-{nonce}\''],
     'font-src': ['\'self\'', 'https://fonts.gstatic.com'],
-    'img-src': ['*', 'data:'],
-    'media-src': ['*'],
+    'img-src': ['\'self\'', 'data:', 'https://i.pravatar.cc'], # Allow self, data, and pravatar for avatars
+    'media-src': ['\'self\''], # Allow media only from your own domain
     'connect-src': [
         '\'self\'',
         f'wss://{prod_origin.split("//")[-1]}' if is_production else 'ws://localhost:5000',

@@ -1084,6 +1084,7 @@ def report_issue():
     logging.info(f"SECURITY: New issue reported by user '{current_user.username if user_id else 'Guest'}'. URL: {page_url}. Issue: {description[:100]}...")
     return jsonify({"success": True, "message": "Thank you for your feedback. Your report has been submitted."})
 
+
 # --- Class & Content API Routes ---
 @app.route('/api/classes', methods=['GET'])
 @login_required
@@ -1219,6 +1220,7 @@ def shutdown_session(exception=None):
     db.session.remove()
 
 def initialize_database():
+    """Creates database tables and seeds initial settings."""
     with app.app_context():
         db.create_all()
         default_settings = {
@@ -1234,20 +1236,17 @@ def initialize_database():
 
 @app.cli.command("init-db")
 def init_db_command():
+    """CLI command to initialize the database."""
     initialize_database()
-    logging.info("Database tables created and settings seeded via CLI.")
+    logging.info("Database initialized via CLI.")
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        # Seed initial settings if they don't exist
-        default_settings = {
-            'site_wide_theme': 'default',
-            'background_image_url': '',
-            'music_url': ''
-        }
-        for key, value in default_settings.items():
-            if not SiteSettings.query.filter_by(key=key).first():
-                db.session.add(SiteSettings(key=key, value=value))
-        db.session.commit()
+    # For local development, check if the database exists and initialize if not.
+    db_is_sqlite = 'sqlite' in app.config['SQLALCHEMY_DATABASE_URI']
+    db_file_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
+
+    if db_is_sqlite and not os.path.exists(db_file_path):
+        logging.info("SQLite database not found. Initializing for development...")
+        initialize_database()
+
     socketio.run(app, debug=(not is_production))

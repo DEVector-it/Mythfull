@@ -48,10 +48,10 @@ SITE_CONFIG = {
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythsg.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY', 'SUPER-SECRET-TEACHER-KEY'),
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
-    "ADMIN_DEFAULT_PASSWORD": os.environ.get('ADMIN_DEFAULT_PASSWORD', 'adminpassword'), # STABILITY: Secure default
+    "ADMIN_DEFAULT_PASSWORD": os.environ.get('ADMIN_DEFAULT_PASSWORD', 'adminpassword'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
     "GEMINI_API_KEY": os.environ.get('GEMINI_API_KEY'),
     "SUPPORT_EMAIL": os.environ.get('MAIL_SENDER')
@@ -395,9 +395,9 @@ HTML_CONTENT = """
         <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
             <div class="glassmorphism p-8 rounded-xl text-center max-w-3xl">
                 <div id="logo-container-welcome" class="mx-auto mb-4 h-24 w-24"></div>
-                <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">A New Era of Learning</h1>
+                <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">Welcome to Myth AI</h1>
                 <p class="text-gray-300 mb-2 max-w-2xl mx-auto">
-                    Myth AI is a secure, private learning environment where artificial intelligence is used to spark curiosity, not to cheat.
+                    A new era of learning, powered by modern methods.
                 </p>
                 <p class="text-gray-400 text-sm mb-8">Made with care by Hossein</p>
                 <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -519,12 +519,8 @@ HTML_CONTENT = """
                         <stop offset="100%" style="stop-color:hsl(var(--brand-hue), 90%, 40%);" />
                     </linearGradient>
                 </defs>
-                <circle cx="50" cy="50" r="45" fill="url(#logoGradient)"/>
-                <circle cx="28" cy="68" r="8" fill="white"/>
-                <circle cx="50" cy="32" r="8" fill="white"/>
-                <circle cx="72" cy="68" r="8" fill="white"/>
-                <path d="M31 61 L 47 40" stroke="white" stroke-width="5" stroke-linecap="round"/>
-                <path d="M53 40 L 69 61" stroke="white" stroke-width="5" stroke-linecap="round"/>
+                <path fill="url(#logoGradient)" d="M50,5 C74.85,5 95,25.15 95,50 C95,74.85 74.85,95 50,95 C25.15,95 5,74.85 5,50 C5,25.15 25.15,5 50,5 Z" />
+                <path fill="white" d="M30,70 L30,55 C30,40 40,30 50,30 C60,30 70,40 70,55 L70,70 L60,70 L60,55 C60,45 55,40 50,40 C45,40 40,45 40,55 L40,70 Z" />
             </svg>
         `;
         const aiAvatarSvg = 'data:image/svg+xml;base64,' + btoa(svgLogo);
@@ -556,7 +552,7 @@ HTML_CONTENT = """
         
         function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => { btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); }); }); document.getElementById('back-to-landing').addEventListener('click', main); }); }
         function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
-        function updateAuthView() { const title = document.getElementById('auth-title'); const subtitle = document.getElementById('auth-subtitle'); const submitBtn = document.getElementById('auth-submit-btn'); const toggleBtn = document.getElementById('auth-toggle-btn'); const emailField = document.getElementById('email-field'); const teacherKeyField = document.getElementById('teacher-key-field'); const adminKeyField = document.getElementById('admin-key-field'); const usernameInput = document.getElementById('username'); document.getElementById('account_type').value = appState.selectedRole; title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`; adminKeyField.classList.add('hidden'); teacherKeyField.classList.add('hidden'); usernameInput.disabled = false; if (appState.selectedRole === 'admin') { toggleBtn.classList.add('hidden'); if(appState.isLoginView) { adminKeyField.classList.remove('hidden'); document.getElementById('admin-secret-key').required = true; } } else { toggleBtn.classList.remove('hidden'); } if (appState.isLoginView) { subtitle.textContent = 'Sign in to continue'; submitBtn.textContent = 'Login'; toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>"; emailField.classList.add('hidden'); document.getElementById('email').required = false; } else { subtitle.textContent = 'Create your Account'; submitBtn.textContent = 'Sign Up'; toggleBtn.innerHTML = "Already have an account? <span class='font-semibold'>Login</span>"; emailField.classList.remove('hidden'); document.getElementById('email').required = true; if (appState.selectedRole === 'teacher') { teacherKeyField.classList.remove('hidden'); document.getElementById('teacher-secret-key').required = true; } } }
+        function updateAuthView() { const title = document.getElementById('auth-title'); const subtitle = document.getElementById('auth-subtitle'); const submitBtn = document.getElementById('auth-submit-btn'); const toggleBtn = document.getElementById('auth-toggle-btn'); const emailField = document.getElementById('email-field'); const teacherKeyField = document.getElementById('teacher-key-field'); const adminKeyField = document.getElementById('admin-key-field'); const usernameInput = document.getElementById('username'); document.getElementById('account_type').value = appState.selectedRole; title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`; adminKeyField.classList.add('hidden'); teacherKeyField.classList.add('hidden'); usernameInput.disabled = false; if (appState.selectedRole === 'admin') { toggleBtn.classList.add('hidden'); if(appState.isLoginView) { adminKeyField.classList.remove('hidden'); document.getElementById('admin-secret-key').required = true; } else { /* BUG FIX: Hide signup for admin */ appState.isLoginView = true; updateAuthView(); return; } } else { toggleBtn.classList.remove('hidden'); } if (appState.isLoginView) { subtitle.textContent = 'Sign in to continue'; submitBtn.textContent = 'Login'; toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>"; emailField.classList.add('hidden'); document.getElementById('email').required = false; } else { subtitle.textContent = 'Create your Account'; submitBtn.textContent = 'Sign Up'; toggleBtn.innerHTML = "Already have an account? <span class='font-semibold'>Login</span>"; emailField.classList.remove('hidden'); document.getElementById('email').required = true; if (appState.selectedRole === 'teacher') { teacherKeyField.classList.remove('hidden'); document.getElementById('teacher-secret-key').required = true; } } }
         
         async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const button = form.querySelector('button[type="submit"]'); toggleButtonLoading(button, true); const endpoint = appState.isLoginView ? '/login' : '/signup'; const body = Object.fromEntries(new FormData(form)); const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; toggleButtonLoading(button, false, appState.isLoginView ? 'Login' : 'Sign Up'); } }
 
@@ -1343,6 +1339,3 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
-
-
-

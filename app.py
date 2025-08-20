@@ -510,7 +510,23 @@ HTML_CONTENT = """
         const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null, aiPersonas: {} };
         const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container'), backgroundMusic: document.getElementById('background-music') };
         
-        const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 90%, 40%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,5 C74.85,5 95,25.15 95,50 C95,74.85 74.85,95 50,95 C25.15,95 5,74.85 5,50 C5,25.15 25.15,5 50,5 Z M50,15 C30.67,15 15,30.67 15,50 C15,69.33 30.67,85 50,85 C69.33,85 85,69.33 85,50 C85,30.67 69.33,15 50,15 Z" /><path fill="white" d="M50,30 C55.52,30 60,34.48 60,40 L60,60 C60,65.52 55.52,70 50,70 C44.48,70 40,65.52 40,60 L40,40 C40,34.48 44.48,30 50,30 Z" /></svg>`;
+        // --- LOGO CHANGE ---
+        const svgLogo = `
+            <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" />
+                        <stop offset="100%" style="stop-color:hsl(var(--brand-hue), 90%, 40%);" />
+                    </linearGradient>
+                </defs>
+                <circle cx="50" cy="50" r="45" fill="url(#logoGradient)"/>
+                <circle cx="28" cy="68" r="8" fill="white"/>
+                <circle cx="50" cy="32" r="8" fill="white"/>
+                <circle cx="72" cy="68" r="8" fill="white"/>
+                <path d="M31 61 L 47 40" stroke="white" stroke-width="5" stroke-linecap="round"/>
+                <path d="M53 40 L 69 61" stroke="white" stroke-width="5" stroke-linecap="round"/>
+            </svg>
+        `;
         const aiAvatarSvg = 'data:image/svg+xml;base64,' + btoa(svgLogo);
 
         function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => { c.innerHTML = svgLogo; }); }
@@ -1327,5 +1343,6 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+
 
 

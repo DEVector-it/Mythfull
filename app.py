@@ -1,1463 +1,1331 @@
-# --- app.py ---
+# --- Imports ---
+import os
+import json
+import logging
+import time
+import uuid
+import secrets
+import requests
+from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string
+from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
+from datetime import datetime, date, timedelta
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+from dotenv import load_dotenv
+import stripe
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
+from flask_mail import Mail, Message
+from flask_talisman import Talisman
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event, or_, func, desc
+from sqlalchemy.engine import Engine
+from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_cors import CORS
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
 # ==============================================================================
-import os
-import secrets
-import logging
-from flask import Flask, render_template, g, request, jsonify
-from flask_talisman import Talisman
-from flask_wtf.csrf import generate_csrf
-from dotenv import load_dotenv
-
-# --- Local Imports ---
-from config import Config, setup_logging
-from extensions import db, bcrypt, login_manager, mail, socketio, csrf, limiter, talisman
-from models import User # Import User model for login_manager
-from routes.main import main_bp
-from routes.auth import auth_bp
-from routes.classes import classes_bp
-from routes.admin import admin_bp
-from routes.billing import billing_bp
-from sockets import register_socket_events
-from commands import register_commands
-
-# --- Setup ---
-setup_logging()
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def create_app(config_class=Config):
-    """
-    Application factory pattern.
-    Creates and configures the Flask application.
-    """
-    app = Flask(__name__, static_folder='static', template_folder='templates')
-    app.config.from_object(config_class)
+# --- Flask App Initialization ---
+app = Flask(__name__)
 
-    # --- Initialize Extensions ---
-    db.init_app(app)
-    bcrypt.init_app(app)
-    login_manager.init_app(app)
-    mail.init_app(app)
-    socketio.init_app(app, async_mode='eventlet', cors_allowed_origins="*")
-    csrf.init_app(app)
-    limiter.init_app(app)
-    talisman.init_app(
-        app,
-        content_security_policy=app.config['TALISMAN_CSP'],
-        force_https=app.config.get('IS_PRODUCTION', False),
-        strict_transport_security=app.config.get('IS_PRODUCTION', False),
-        frame_options='DENY',
-        referrer_policy='strict-origin-when-cross-origin'
-    )
+# --- App Configuration ---
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-very-secret-key-for-dev')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT', 'a-fallback-salt-for-dev')
 
-    # --- User Loader ---
-    @login_manager.user_loader
-    def load_user(user_id):
-        return User.query.get(user_id)
+# --- Security & CORS ---
+CORS(app, supports_credentials=True, origins="*")
+Talisman(app, content_security_policy=None)
 
-    # --- Register Blueprints ---
-    app.register_blueprint(main_bp)
-    app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(classes_bp, url_prefix='/api/classes')
-    app.register_blueprint(admin_bp, url_prefix='/api/admin')
-    app.register_blueprint(billing_bp, url_prefix='/api/billing')
+# --- Site-wide Configuration Dictionary ---
+SITE_CONFIG = {
+    "STRIPE_SECRET_KEY": os.environ.get('STRIPE_SECRET_KEY'),
+    "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
+    "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
+    "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'http://localhost:5000'),
+    "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY', 'SUPER-SECRET-TEACHER-KEY'),
+    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
+    "ADMIN_DEFAULT_PASSWORD": os.environ.get('ADMIN_DEFAULT_PASSWORD', 'adminpassword'), # STABILITY: Secure default
+    "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
+    "GEMINI_API_KEY": os.environ.get('GEMINI_API_KEY'),
+    "SUPPORT_EMAIL": os.environ.get('MAIL_SENDER')
+}
 
-    # --- Register Socket.IO Events ---
-    register_socket_events(socketio)
+# --- Trustworthy AI Personas ---
+AI_PERSONAS = {
+    'default': "a helpful and trustworthy AI assistant designed for learning.",
+    'socratic': "a tutor who asks guiding questions, in the style of Socrates, to help you discover the answer yourself.",
+    'collaborator': "a creative partner for brainstorming and exploring new ideas.",
+    'fact-checker': "a meticulous assistant who verifies information and provides sources.",
+    'concise': "an assistant that provides brief, to-the-point answers."
+}
 
-    # --- Register CLI Commands ---
-    register_commands(app)
 
-    # --- Request Hooks ---
-    @app.before_request
-    def before_request_func():
-        g.nonce = secrets.token_hex(16)
+# --- Initialize Extensions with the App ---
+stripe.api_key = SITE_CONFIG.get("STRIPE_SECRET_KEY")
+password_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+db = SQLAlchemy(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
+mail = Mail(app)
 
-    # --- Error Handling ---
-    @app.errorhandler(404)
-    def not_found_error(error):
-        # For API routes, return JSON. For others, let the SPA handle it.
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Not Found"}), 404
-        return render_template("index.html", csrf_token=generate_csrf(), nonce=g.get('nonce'))
+# --- Flask-Mail Configuration ---
+app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
+app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_SENDER')
 
-    @app.errorhandler(Exception)
-    def handle_exception(e):
-        logging.error(f"An unhandled exception occurred: {e}", exc_info=True)
-        return jsonify(error="An internal server error occurred."), 500
 
-    return app
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Remove database session at the end of the request to prevent leaks."""
+    db.session.remove()
 
-# --- Main Execution ---
-app = create_app()
-
-if __name__ == '__main__':
-    # Use eventlet for production-like async environment
-    import eventlet
-    eventlet.monkey_patch()
-    socketio.run(app, debug=not app.config.get('IS_PRODUCTION', False), host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
-# --- config.py ---
-import os
-import logging
-from datetime import timedelta
-from dotenv import load_dotenv
-
-load_dotenv()
-
-class Config:
-    # --- Basic App Config ---
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'a-very-secret-key'
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///database.db'
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
-
-    # --- Security Config ---
-    SECURITY_PASSWORD_SALT = os.environ.get('SECURITY_PASSWORD_SALT') or 'another-secret-salt'
-    IS_PRODUCTION = os.environ.get('FLASK_ENV') == 'production'
-
-    # --- Site-wide Keys & Settings ---
-    STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY')
-    STRIPE_PUBLIC_KEY = os.environ.get('STRIPE_PUBLIC_KEY')
-    STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET')
-    STRIPE_STUDENT_PRO_PRICE_ID = os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID')
-    YOUR_DOMAIN = os.environ.get('YOUR_DOMAIN', 'http://localhost:5000')
-    SECRET_TEACHER_KEY = os.environ.get('SECRET_TEACHER_KEY')
-    ADMIN_SECRET_KEY = os.environ.get('ADMIN_SECRET_KEY')
-    GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-    SUPPORT_EMAIL = os.environ.get('MAIL_SENDER')
-
-    # --- Flask-Mail Config ---
-    MAIL_SERVER = os.environ.get('MAIL_SERVER')
-    MAIL_PORT = int(os.environ.get('MAIL_PORT', 587))
-    MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
-    MAIL_USERNAME = os.environ.get('MAIL_USERNAME')
-    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')
-    MAIL_DEFAULT_SENDER = os.environ.get('MAIL_SENDER')
-
-    # --- Production Overrides ---
-    if IS_PRODUCTION:
-        SESSION_COOKIE_SECURE = True
-        REMEMBER_COOKIE_SECURE = True
-        SESSION_COOKIE_HTTPONLY = True
-        REMEMBER_COOKIE_HTTPONLY = True
-        SESSION_COOKIE_SAMESITE = 'Lax'
-
-    # --- Content Security Policy (CSP) for Talisman ---
-    PROD_ORIGIN = YOUR_DOMAIN.split("//")[-1]
-    TALISMAN_CSP = {
-        'default-src': '\'self\'',
-        'script-src': [
-            '\'self\'',
-            'https://cdn.tailwindcss.com',
-            'https://cdnjs.cloudflare.com',
-            'https://js.stripe.com',
-            '\'nonce-{nonce}\''
-        ],
-        'style-src': [
-            '\'self\'',
-            '\'unsafe-inline\'', # Kept for dynamic styles, but can be improved
-            'https://cdn.tailwindcss.com',
-            'https://fonts.googleapis.com',
-            '\'nonce-{nonce}\''
-        ],
-        'font-src': ['\'self\'', 'https://fonts.gstatic.com'],
-        'img-src': ['\'self\'', 'data:', 'https://i.pravatar.cc'],
-        'connect-src': [
-            '\'self\'',
-            f'wss://{PROD_ORIGIN}' if IS_PRODUCTION else 'ws://localhost:5000',
-            'https://api.stripe.com',
-            'https://generativelanguage.googleapis.com'
-        ],
-        'object-src': '\'none\'',
-        'base-uri': '\'self\'',
-        'form-action': '\'self\''
-    }
-
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [SECURITY] - %(message)s')
-    if Config.IS_PRODUCTION:
-        # Add more robust logging for production if needed (e.g., file handler)
-        pass
-
-# --- extensions.py ---
-from flask_sqlalchemy import SQLAlchemy
-from flask_bcrypt import Bcrypt
-from flask_login import LoginManager
-from flask_mail import Mail
-from flask_socketio import SocketIO
-from flask_wtf.csrf import CSRFProtect
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from flask_talisman import Talisman
-
-db = SQLAlchemy()
-bcrypt = Bcrypt()
-login_manager = LoginManager()
-mail = Mail()
-socketio = SocketIO()
-csrf = CSRFProtect()
-limiter = Limiter(key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
-talisman = Talisman()
-
-# --- models.py ---
-import uuid
-from datetime import datetime
-from extensions import db, bcrypt
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
-
-# Set PRAGMA for SQLite on connection to enforce foreign keys
+# ==============================================================================
+# --- 2. DATABASE MODELS ---
+# ==============================================================================
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    if db.get_app().config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
+    """Enable foreign key support for SQLite for data integrity."""
+    if app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-# Association Table for Students and Classes
+# --- Association Tables ---
 student_class_association = db.Table('student_class_association',
     db.Column('user_id', db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True),
     db.Column('class_id', db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), primary_key=True)
 )
 
-class User(db.Model):
+team_member_association = db.Table('team_member_association',
+    db.Column('user_id', db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True),
+    db.Column('team_id', db.String(36), db.ForeignKey('team.id', ondelete='CASCADE'), primary_key=True)
+)
+
+# --- Main Database Models ---
+class User(UserMixin, db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='student', index=True)
+    password_hash = db.Column(db.String(256), nullable=True)
+    role = db.Column(db.String(20), nullable=False, default='student')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Relationships
+    has_subscription = db.Column(db.Boolean, default=False)
+    stripe_customer_id = db.Column(db.String(120), nullable=True, index=True)
+    ai_persona = db.Column(db.String(50), nullable=True, default='default')
+    theme_preference = db.Column(db.String(50), nullable=True, default='dark')
+
     profile = db.relationship('Profile', back_populates='user', uselist=False, cascade="all, delete-orphan")
-    taught_classes = db.relationship('Class', back_populates='teacher', lazy='dynamic', foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
+    taught_classes = db.relationship('Class', back_populates='teacher', lazy=True, foreign_keys='Class.teacher_id', cascade="all, delete-orphan")
     enrolled_classes = db.relationship('Class', secondary=student_class_association, back_populates='students', lazy='dynamic')
-    subscription = db.relationship('Subscription', back_populates='user', uselist=False, cascade="all, delete-orphan")
+    teams = db.relationship('Team', secondary=team_member_association, back_populates='members', lazy='dynamic')
+    submissions = db.relationship('Submission', back_populates='student', lazy=True, cascade="all, delete-orphan")
+    quiz_attempts = db.relationship('QuizAttempt', back_populates='student', lazy=True, cascade="all, delete-orphan")
+    notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
 
-    # Flask-Login properties
-    @property
-    def is_active(self):
-        return True
-
-    @property
-    def is_authenticated(self):
-        return True
-
-    @property
-    def is_anonymous(self):
-        return False
-
-    def get_id(self):
-        return self.id
-
-    def set_password(self, password):
-        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
-
-    def check_password(self, password):
-        return bcrypt.check_password_hash(self.password_hash, password)
-
-    def to_dict(self, include_email=False):
-        profile_data = {
-            'bio': self.profile.bio if self.profile else '',
-            'avatar': self.profile.avatar if self.profile else '',
-            'theme_preference': self.profile.theme_preference if self.profile else 'edgy_purple',
+    def to_dict(self):
+        profile_data = {'bio': '', 'avatar': ''}
+        if self.profile:
+            profile_data['bio'] = self.profile.bio or ''
+            profile_data['avatar'] = self.profile.avatar or ''
+        return {
+            'id': self.id, 'username': self.username, 'email': self.email, 'role': self.role,
+            'created_at': self.created_at.isoformat(), 'has_subscription': self.has_subscription,
+            'profile': profile_data, 'ai_persona': self.ai_persona, 'theme_preference': self.theme_preference
         }
-        data = {
-            'id': self.id,
-            'username': self.username,
-            'role': self.role,
-            'profile': profile_data,
-            'subscription_status': self.subscription.status if self.subscription else 'free'
-        }
-        if include_email:
-            data['email'] = self.email
-        return data
 
 class Profile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
     bio = db.Column(db.Text, nullable=True)
     avatar = db.Column(db.String(500), nullable=True)
-    theme_preference = db.Column(db.String(50), nullable=True, default='edgy_purple')
     user = db.relationship('User', back_populates='profile')
+
+class Team(db.Model):
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(100), nullable=False)
+    code = db.Column(db.String(8), unique=True, nullable=False, index=True)
+    owner_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
+    owner = db.relationship('User', foreign_keys=[owner_id])
+    members = db.relationship('User', secondary=team_member_association, back_populates='teams', lazy='dynamic')
 
 class Class(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(100), nullable=False)
     code = db.Column(db.String(8), unique=True, nullable=False, index=True)
     teacher_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
-    
     teacher = db.relationship('User', back_populates='taught_classes', foreign_keys=[teacher_id])
     students = db.relationship('User', secondary=student_class_association, back_populates='enrolled_classes', lazy='dynamic')
-    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy='dynamic', cascade="all, delete-orphan")
-
-    def to_dict(self):
-        return {
-            'id': self.id, 'name': self.name, 'code': self.code,
-            'teacher_name': self.teacher.username,
-            'student_count': self.students.count()
-        }
+    messages = db.relationship('ChatMessage', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    assignments = db.relationship('Assignment', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
+    quizzes = db.relationship('Quiz', back_populates='class_obj', lazy=True, cascade="all, delete-orphan")
 
 class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False, index=True)
-    sender_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    sender_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=True)
     content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-    
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     class_obj = db.relationship('Class', back_populates='messages')
-    sender = db.relationship('User', backref='sent_messages')
+    sender = db.relationship('User')
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'class_id': self.class_id,
-            'sender': self.sender.to_dict() if self.sender else {'username': 'Unknown User', 'id': None, 'profile': {}},
-            'content': self.content,
-            'timestamp': self.timestamp.isoformat()
-        }
-
-class Subscription(db.Model):
+class Assignment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
-    stripe_customer_id = db.Column(db.String(255), unique=True)
-    stripe_subscription_id = db.Column(db.String(255), unique=True)
-    status = db.Column(db.String(50), default='free', index=True)
-    user = db.relationship('User', back_populates='subscription')
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    due_date = db.Column(db.DateTime, nullable=False)
+    class_obj = db.relationship('Class', back_populates='assignments')
+    submissions = db.relationship('Submission', back_populates='assignment', lazy='dynamic', cascade="all, delete-orphan")
+
+class Submission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    assignment_id = db.Column(db.Integer, db.ForeignKey('assignment.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    grade = db.Column(db.Float, nullable=True)
+    feedback = db.Column(db.Text, nullable=True)
+    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    assignment = db.relationship('Assignment', back_populates='submissions')
+    student = db.relationship('User', back_populates='submissions')
+
+class Quiz(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('class.id', ondelete='CASCADE'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    time_limit = db.Column(db.Integer, nullable=False)
+    class_obj = db.relationship('Class', back_populates='quizzes')
+    questions = db.relationship('Question', back_populates='quiz', lazy=True, cascade="all, delete-orphan")
+    attempts = db.relationship('QuizAttempt', back_populates='quiz', lazy='dynamic', cascade="all, delete-orphan")
+
+class Question(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    question_type = db.Column(db.String(50), nullable=False, default='multiple_choice')
+    quiz = db.relationship('Quiz', back_populates='questions')
+    choices = db.Column(db.JSON, nullable=False)
+
+class QuizAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    score = db.Column(db.Float, nullable=True)
+    start_time = db.Column(db.DateTime, default=datetime.utcnow)
+    end_time = db.Column(db.DateTime, nullable=True)
+    answers = db.Column(db.JSON, nullable=True)
+    quiz = db.relationship('Quiz', back_populates='attempts')
+    student = db.relationship('User', back_populates='quiz_attempts')
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    content = db.Column(db.String(500), nullable=False)
+    is_read = db.Column(db.Boolean, default=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', back_populates='notifications')
 
 class SiteSettings(db.Model):
     key = db.Column(db.String(50), primary_key=True)
-    value = db.Column(db.Text)
+    value = db.Column(db.String(500))
 
-# --- utils/decorators.py ---
-from functools import wraps
-from flask import jsonify, abort
-from flask_login import current_user
-from models import Class, student_class_association
-from extensions import db
-import logging
+class BackgroundMusic(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    url = db.Column(db.String(500), nullable=False)
+    uploaded_by = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
 
-def role_required(role_names):
-    if not isinstance(role_names, list):
-        role_names = [role_names]
+# ==============================================================================
+# --- 3. USER & SESSION MANAGEMENT ---
+# ==============================================================================
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(user_id)
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    return jsonify({"error": "Login required.", "logged_in": False}), 401
+
+def role_required(role_name):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             if not current_user.is_authenticated:
                 return jsonify({"error": "Login required."}), 401
-            if current_user.role != 'admin' and current_user.role not in role_names:
-                logging.warning(f"SECURITY: User {current_user.id} with role {current_user.role} attempted unauthorized access.")
-                abort(403)
+            if current_user.role != role_name and current_user.role != 'admin':
+                return jsonify({"error": f"{role_name.capitalize()} access required."}), 403
             return f(*args, **kwargs)
         return decorated_function
     return decorator
 
-admin_required = role_required(['admin'])
-teacher_required = role_required(['teacher'])
+admin_required = role_required('admin')
+teacher_required = role_required('teacher')
 
-def class_member_required(f):
-    @wraps(f)
-    def decorated_function(class_id, *args, **kwargs):
-        target_class = Class.query.get_or_404(class_id)
-        is_student = db.session.query(student_class_association.c.user_id).filter_by(user_id=current_user.id, class_id=class_id).first() is not None
-        is_teacher = target_class.teacher_id == current_user.id
-        is_admin = current_user.role == 'admin'
-        if not (is_student or is_teacher or is_admin):
-            logging.warning(f"SECURITY: User {current_user.id} attempted unauthorized access to class {class_id}.")
-            abort(403)
-        return f(target_class, *args, **kwargs)
-    return decorated_function
-
-# --- utils/helpers.py ---
-from flask import current_app, render_template
-from flask_mail import Message
-from itsdangerous import TimestampSigner, SignatureExpired, BadTimeSignature
-from extensions import mail
-
-def send_email(subject, recipients, template_name, **kwargs):
-    """Helper function to send emails."""
-    msg = Message(subject, sender=current_app.config['MAIL_DEFAULT_SENDER'], recipients=recipients)
-    msg.html = render_template(template_name, **kwargs)
-    try:
-        mail.send(msg)
-        return True
-    except Exception as e:
-        current_app.logger.error(f"Failed to send email: {e}")
-        return False
-
-def generate_reset_token(user_email):
-    """Generates a timed, signed token for password reset."""
-    signer = TimestampSigner(current_app.config['SECRET_KEY'])
-    return signer.sign(user_email.encode('utf-8')).decode('utf-8')
-
-def verify_reset_token(token, max_age_seconds=3600):
-    """Verifies a password reset token and returns the email if valid."""
-    signer = TimestampSigner(current_app.config['SECRET_KEY'])
-    try:
-        email = signer.unsign(token, max_age=max_age_seconds).decode('utf-8')
-        return email
-    except (SignatureExpired, BadTimeSignature):
-        return None
-
-# --- routes/main.py ---
-from flask import Blueprint, render_template, jsonify, g
-from flask_login import current_user
-from flask_wtf.csrf import generate_csrf
-from models import SiteSettings
-
-main_bp = Blueprint('main', __name__)
-
-@main_bp.route('/')
-@main_bp.route('/<path:path>')
-def render_spa(path=None):
-    """Serves the main Single-Page Application."""
-    return render_template("index.html", csrf_token=generate_csrf(), nonce=g.get('nonce'))
-
-@main_bp.route('/api/status')
-def status():
-    """Provides initial status, user info, and site settings to the frontend."""
-    settings_raw = SiteSettings.query.all()
-    settings = {s.key: s.value for s in settings_raw}
-    user_data = current_user.to_dict(include_email=True) if current_user.is_authenticated else None
-    return jsonify({"user": user_data, "settings": settings})
-
-# --- routes/auth.py ---
-import logging
-import bleach
-from flask import Blueprint, request, jsonify, current_app, session
-from flask_login import login_user, logout_user, current_user
-from sqlalchemy import or_
-from password_strength import PasswordPolicy
-
-from extensions import db, limiter
-from models import User, Profile, SiteSettings
-from utils.helpers import generate_reset_token, send_email, verify_reset_token
-
-auth_bp = Blueprint('auth', __name__)
-password_policy = PasswordPolicy.from_names(length=12, uppercase=1, numbers=1, special=1)
-
-@auth_bp.route('/signup', methods=['POST'])
-@limiter.limit("5 per 15 minutes")
-def signup():
-    data = request.json
-    username = bleach.clean(data.get('username', '')).strip()
-    email = bleach.clean(data.get('email', '')).strip().lower()
-    password = data.get('password')
-    role = bleach.clean(data.get('account_type', 'student'))
-
-    if not all([username, email, password, role]):
-        return jsonify({"error": "Missing required fields."}), 400
-    
-    if password_policy.test(password):
-        return jsonify({"error": "Password is too weak."}), 400
-
-    if User.query.filter(or_(User.username == username, User.email == email)).first():
-        return jsonify({"error": "Username or email already exists."}), 409
-
-    if role == 'teacher' and data.get('secret_key') != current_app.config['SECRET_TEACHER_KEY']:
-        return jsonify({"error": "Invalid teacher secret key."}), 403
-
-    new_user = User(username=username, email=email, role=role)
-    new_user.set_password(password)
-    db.session.add(new_user)
-    db.session.commit()
-    
-    # Create profile and subscription stubs
-    db.session.add(Profile(user_id=new_user.id))
-    db.session.commit()
-
-    login_user(new_user)
-    settings = {s.key: s.value for s in SiteSettings.query.all()}
-    return jsonify({"success": True, "user": new_user.to_dict(include_email=True), "settings": settings})
-
-@auth_bp.route('/login', methods=['POST'])
-@limiter.limit("10 per minute")
-def login():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    user = User.query.filter_by(username=username).first()
-
-    if not user or not user.check_password(password):
-        return jsonify({"error": "Invalid username or password"}), 401
-
-    if user.role == 'admin' and data.get('admin_secret_key') != current_app.config['ADMIN_SECRET_KEY']:
-        return jsonify({"error": "Invalid admin secret key."}), 403
-
-    login_user(user, remember=True)
-    settings = {s.key: s.value for s in SiteSettings.query.all()}
-    return jsonify({"success": True, "user": user.to_dict(include_email=True), "settings": settings})
-
-@auth_bp.route('/logout', methods=['POST'])
-def logout():
-    if current_user.is_authenticated:
-        logout_user()
-    return jsonify({"success": True})
-
-@auth_bp.route('/update_profile', methods=['POST'])
-def update_profile():
-    if not current_user.is_authenticated:
-        return jsonify({"error": "Authentication required"}), 401
-    
-    data = request.json
-    profile = current_user.profile
-    profile.bio = bleach.clean(data.get('bio', profile.bio))
-    profile.avatar = bleach.clean(data.get('avatar', profile.avatar))
-    profile.theme_preference = bleach.clean(data.get('theme_preference', profile.theme_preference))
-    db.session.commit()
-    return jsonify({"success": True, "profile": {"bio": profile.bio, "avatar": profile.avatar, "theme_preference": profile.theme_preference}})
-
-@auth_bp.route('/forgot_password', methods=['POST'])
-@limiter.limit("3 per hour")
-def forgot_password():
-    email = bleach.clean(request.json.get('email', '')).lower()
-    user = User.query.filter_by(email=email).first()
-    if user:
-        token = generate_reset_token(email)
-        reset_url = f"{current_app.config['YOUR_DOMAIN']}/reset-password/{token}"
-        send_email(
-            subject="Reset Your Password for Myth AI",
-            recipients=[email],
-            template_name="emails/password_reset.html",
-            reset_url=reset_url
-        )
-    # Always return success to prevent email enumeration
-    return jsonify({"success": True, "message": "If an account with that email exists, a reset link has been sent."})
-
-@auth_bp.route('/reset_password', methods=['POST'])
-@limiter.limit("5 per 15 minutes")
-def reset_password():
-    data = request.json
-    token = data.get('token')
-    new_password = data.get('password')
-
-    if not token or not new_password:
-        return jsonify({"error": "Token and password are required."}), 400
-
-    if password_policy.test(new_password):
-        return jsonify({"error": "New password is too weak."}), 400
-        
-    email = verify_reset_token(token)
-    if not email:
-        return jsonify({"error": "Invalid or expired token."}), 400
-        
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({"error": "User not found."}), 404
-        
-    user.set_password(new_password)
-    db.session.commit()
-    
-    # Log the user in after a successful password reset
-    login_user(user)
-    
-    return jsonify({"success": True, "message": "Password has been reset successfully."})
-
-# --- routes/classes.py ---
-import secrets
-import bleach
-from flask import Blueprint, request, jsonify
-from flask_login import login_required, current_user
-from sqlalchemy.orm import selectinload
-
-from extensions import db
-from models import Class, ChatMessage, User
-from utils.decorators import teacher_required, class_member_required
-
-classes_bp = Blueprint('classes', __name__)
-
-@classes_bp.route('/', methods=['GET'])
-@login_required
-def get_classes():
-    query = current_user.taught_classes if current_user.role == 'teacher' else current_user.enrolled_classes
-    classes = query.options(selectinload(Class.teacher)).all()
-    return jsonify({"success": True, "classes": [c.to_dict() for c in classes]})
-
-@classes_bp.route('/create', methods=['POST'])
-@login_required
-@teacher_required
-def create_class():
-    name = bleach.clean(request.json.get('name'))
-    if not name or len(name) > 100:
-        return jsonify({"error": "Invalid class name."}), 400
-    
-    code = secrets.token_urlsafe(6).upper()
-    while Class.query.filter_by(code=code).first():
-        code = secrets.token_urlsafe(6).upper()
-        
-    new_class = Class(name=name, teacher_id=current_user.id, code=code)
-    db.session.add(new_class)
-    db.session.commit()
-    return jsonify({"success": True, "class": new_class.to_dict()}), 201
-
-@classes_bp.route('/join', methods=['POST'])
-@login_required
-def join_class():
-    code = bleach.clean(request.json.get('code', '')).upper()
-    target_class = Class.query.filter_by(code=code).first()
-    if not target_class:
-        return jsonify({"error": "Invalid class code."}), 404
-    if current_user in target_class.students:
-        return jsonify({"error": "You are already in this class."}), 409
-        
-    target_class.students.append(current_user)
-    db.session.commit()
-    return jsonify({"success": True, "class_name": target_class.name})
-
-@classes_bp.route('/<string:class_id>/messages', methods=['GET'])
-@login_required
-@class_member_required
-def get_messages(target_class):
-    messages = target_class.messages.options(
-        selectinload(ChatMessage.sender).selectinload(User.profile)
-    ).order_by(ChatMessage.timestamp.asc()).limit(100).all()
-    return jsonify({"success": True, "messages": [m.to_dict() for m in messages]})
-
-# --- routes/admin.py ---
-from flask import Blueprint, request, jsonify
-from flask_login import login_required
-from sqlalchemy.orm import selectinload
-import bleach
-
-from extensions import db
-from models import User, SiteSettings
-from utils.decorators import admin_required
-
-admin_bp = Blueprint('admin', __name__)
-
-@admin_bp.route('/users', methods=['GET'])
-@login_required
-@admin_required
-def get_all_users():
-    users = User.query.options(selectinload(User.profile)).all()
-    return jsonify({"success": True, "users": [user.to_dict(include_email=True) for user in users]})
-
-@admin_bp.route('/settings', methods=['POST'])
-@login_required
-@admin_required
-def update_admin_settings():
-    data = request.json
-    allowed_keys = ['site_wide_theme', 'background_image_url', 'music_url']
-    for key, value in data.items():
-        clean_key = bleach.clean(key)
-        if clean_key not in allowed_keys: continue
-        
-        setting = SiteSettings.query.filter_by(key=clean_key).first()
-        clean_value = bleach.clean(value)
-        
-        if setting:
-            setting.value = clean_value
-        else:
-            db.session.add(SiteSettings(key=clean_key, value=clean_value))
-            
-    db.session.commit()
-    settings = {s.key: s.value for s in SiteSettings.query.all()}
-    return jsonify({"success": True, "settings": settings})
-
-# --- routes/billing.py ---
-import stripe
-from flask import Blueprint, request, jsonify, current_app
-from flask_login import login_required, current_user
-from models import Subscription
-from extensions import db
-
-billing_bp = Blueprint('billing', __name__)
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
-
-@billing_bp.route('/create-checkout-session', methods=['POST'])
-@login_required
-def create_checkout_session():
-    try:
-        # Create a Stripe Customer if one doesn't exist
-        if not current_user.subscription or not current_user.subscription.stripe_customer_id:
-            customer = stripe.Customer.create(email=current_user.email, name=current_user.username)
-            customer_id = customer.id
-            if current_user.subscription:
-                current_user.subscription.stripe_customer_id = customer_id
-            else:
-                sub = Subscription(user_id=current_user.id, stripe_customer_id=customer_id)
-                db.session.add(sub)
-            db.session.commit()
-        else:
-            customer_id = current_user.subscription.stripe_customer_id
-
-        checkout_session = stripe.checkout.Session.create(
-            customer=customer_id,
-            line_items=[{'price': current_app.config['STRIPE_STUDENT_PRO_PRICE_ID'], 'quantity': 1}],
-            mode='subscription',
-            success_url=current_app.config['YOUR_DOMAIN'] + '/?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url=current_app.config['YOUR_DOMAIN'] + '/',
-        )
-        return jsonify({
-            "session_id": checkout_session.id,
-            "public_key": current_app.config['STRIPE_PUBLIC_KEY']
-        })
-    except Exception as e:
-        return jsonify(error=str(e)), 403
-
-@billing_bp.route('/webhook', methods=['POST'])
-def stripe_webhook():
-    payload = request.data
-    sig_header = request.headers.get('Stripe-Signature')
-    endpoint_secret = current_app.config['STRIPE_WEBHOOK_SECRET']
-    event = None
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except ValueError as e:
-        # Invalid payload
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError as e:
-        # Invalid signature
-        return 'Invalid signature', 400
-
-    # Handle the event
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        customer_id = session.get('customer')
-        subscription_id = session.get('subscription')
-        
-        # Find user by customer_id and update their subscription
-        sub = Subscription.query.filter_by(stripe_customer_id=customer_id).first()
-        if sub:
-            sub.stripe_subscription_id = subscription_id
-            sub.status = 'active'
-            db.session.commit()
-            logging.info(f"Subscription activated for customer {customer_id}")
-
-    elif event['type'] == 'customer.subscription.deleted' or event['type'] == 'customer.subscription.updated':
-        session = event['data']['object']
-        subscription_id = session.get('id')
-        status = session.get('status')
-        
-        sub = Subscription.query.filter_by(stripe_subscription_id=subscription_id).first()
-        if sub:
-            # Handle states like 'canceled', 'past_due', etc.
-            sub.status = status if status != 'canceled' else 'free'
-            db.session.commit()
-            logging.info(f"Subscription status updated to {status} for subscription {subscription_id}")
-
-    return 'Success', 200
-
-
-# --- sockets.py ---
-import logging
-import bleach
-from flask_socketio import emit, join_room, leave_room
-from flask_login import current_user
-from extensions import db
-from models import Class, ChatMessage
-
-def register_socket_events(socketio):
-    @socketio.on('join')
-    def on_join(data):
-        if not current_user.is_authenticated: return
-        room = data['room']
-        target_class = Class.query.get(room)
-        if not target_class or (current_user not in target_class.students and target_class.teacher_id != current_user.id):
-            return
-        join_room(room)
-        logging.info(f"User {current_user.username} joined room {room}")
-
-    @socketio.on('leave')
-    def on_leave(data):
-        if not current_user.is_authenticated: return
-        room = data['room']
-        leave_room(room)
-        logging.info(f"User {current_user.username} left room {room}")
-
-    @socketio.on('send_message')
-    def handle_send_message(data):
-        if not current_user.is_authenticated: return
-        room = data['room']
-        content = bleach.clean(data['content'])
-        msg = ChatMessage(class_id=room, sender_id=current_user.id, content=content)
-        db.session.add(msg)
-        db.session.commit()
-        emit('new_message', msg.to_dict(), to=room)
-
-# --- commands.py ---
-import logging
-from extensions import db
-from models import SiteSettings
-
-def register_commands(app):
-    @app.cli.command("init-db")
-    def init_db_command():
-        """Creates database tables and seeds initial settings."""
-        db.create_all()
-        default_settings = {
-            'site_wide_theme': 'default',
-            'background_image_url': '',
-            'music_url': ''
-        }
-        for key, value in default_settings.items():
-            if not SiteSettings.query.filter_by(key=key).first():
-                db.session.add(SiteSettings(key=key, value=value))
-        db.session.commit()
-        logging.info("Database initialized and seeded.")
-
-# --- templates/index.html ---
+# ==============================================================================
+# --- 4. FRONTEND & CORE ROUTES ---
+# ==============================================================================
+HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Myth AI Portal</title>
-    <script src="https://js.stripe.com/v3/"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://js.stripe.com/v3/"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cinzel+Decorative:wght@700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
-</head>
-<body class="text-gray-200 antialiased">
-    <div id="app-container" class="relative min-h-screen w-full overflow-x-hidden flex flex-col"></div>
-    <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
-    <div id="modal-container"></div>
-    <div id="music-player-container" class="fixed bottom-4 left-4 z-50"></div>
-    <div class="fixed bottom-4 right-4 text-xs text-gray-400 z-0">Built by Devector</div>
-
-    <template id="template-welcome-screen">
-        <div class="relative h-screen w-screen flex flex-col items-center justify-center overflow-hidden bg-bg-dark">
-            <div class="absolute inset-0 overflow-hidden">
-                <div class="particles"></div>
-                <div class="gradient-overlay"></div>
-            </div>
-            <div class="relative z-10 flex flex-col items-center text-center px-4">
-                <div id="logo-container-welcome" class="w-32 h-32 mb-6 transform hover:scale-110 transition-transform duration-500"></div>
-                <h1 class="text-6xl md:text-7xl font-title brand-gradient-text animate-pulse-slow">Hi Myth!</h1>
-                <p class="text-xl md:text-2xl text-text-secondary-color mt-4 max-w-lg animate-fade-in-up">
-                    Let me help you with your homework.
-                </p>
-                <button id="enter-portal-btn" class="mt-8 brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg text-lg transform hover:scale-105 transition-all duration-300">
-                    Enter the Portal
-                </button>
-            </div>
-        </div>
-    </template>
-    <template id="template-full-screen-loader">
-        <div class="full-screen-loader fade-in">
-            <div id="logo-container-loader" class="h-16 w-16 mx-auto mb-4 animate-spin"></div>
-            <div class="waiting-text">Loading Portal...</div>
-        </div>
-    </template>
-    <template id="template-role-choice">
-        <div class="h-screen w-screen flex flex-col items-center justify-center dynamic-bg p-4">
-            <div class="text-center mb-8">
-                <div id="logo-container-role" class="w-24 h-24 mx-auto mb-2"></div>
-                <h1 class="text-5xl font-title brand-gradient-text">Select Your Role</h1>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl w-full">
-                <div class="role-btn glassmorphism p-6 rounded-lg text-center cursor-pointer hover:scale-105 transition-transform" data-role="student"><h2 class="text-2xl font-bold">Student</h2></div>
-                <div class="role-btn glassmorphism p-6 rounded-lg text-center cursor-pointer hover:scale-105 transition-transform" data-role="teacher"><h2 class="text-2xl font-bold">Teacher</h2></div>
-                <div class="role-btn glassmorphism p-6 rounded-lg text-center cursor-pointer hover:scale-105 transition-transform" data-role="admin"><h2 class="text-2xl font-bold">Admin</h2></div>
-            </div>
-        </div>
-    </template>
-    <template id="template-main-dashboard">
-        <div class="flex h-screen bg-bg-dark">
-            <aside class="w-64 bg-bg-med p-4 flex-col glassmorphism border-r border-gray-700/50 hidden md:flex">
-                <div class="flex items-center gap-2 mb-4">
-                    <div id="logo-container-dash" class="w-10 h-10"></div>
-                    <h1 id="dashboard-title" class="text-xl font-bold text-white"></h1>
-                </div>
-                <div id="welcome-message" class="mb-4 text-center text-sm text-gray-300 p-2 border border-gray-600 rounded-md"></div>
-                <nav id="nav-links" class="flex-1 flex flex-col gap-2"></nav>
-                <div class="mt-auto">
-                    <button id="logout-btn" class="w-full text-left text-gray-300 hover:bg-red-800/50 p-3 rounded-md transition-colors">Logout</button>
-                </div>
-            </aside>
-            <main id="dashboard-content" class="flex-1 p-4 md:p-6 overflow-y-auto"></main>
-        </div>
-    </template>
-     <template id="template-main-search-view">
-        <div class="fade-in flex flex-col items-center justify-center h-full">
-            <div id="logo-container-main" class="w-24 h-24 mb-4"></div>
-            <div class="w-full max-w-2xl">
-                <input type="text" placeholder="What do you want to know?" class="w-full p-4 bg-bg-med rounded-lg border border-gray-700/50 text-lg focus:ring-2 focus:ring-purple-500 outline-none">
-                <div class="flex justify-center gap-4 mt-4">
-                    <button class="dashboard-tab shiny-button bg-bg-med p-2 px-4 rounded-lg" data-tab="deep-search">DeepSearch</button>
-                    <button class="dashboard-tab shiny-button bg-bg-med p-2 px-4 rounded-lg" data-tab="create-images">Create Images</button>
-                    <button class="dashboard-tab shiny-button bg-bg-med p-2 px-4 rounded-lg" data-tab="latest-news">Latest News</button>
-                    <button class="dashboard-tab shiny-button bg-bg-med p-2 px-4 rounded-lg" data-tab="personas">Personas</button>
-                </div>
-            </div>
-        </div>
-    </template>
-    <template id="template-auth-form">
-        <div class="min-h-screen flex items-center justify-center dynamic-bg px-4">
-            <div class="max-w-md w-full glassmorphism p-8 rounded-2xl">
-                <button id="back-to-roles" class="text-sm text-gray-400 hover:text-white mb-4">&larr; Back</button>
-                <div class="text-center">
-                    <div id="logo-container-auth" class="w-16 h-16 mx-auto mb-2"></div>
-                    <h2 id="auth-title" class="text-3xl font-bold text-white"></h2>
-                    <p id="auth-subtitle" class="mt-2 text-gray-300"></p>
-                </div>
-                <form id="auth-form" class="mt-8 space-y-4">
-                    <input type="hidden" name="account_type" id="account_type">
-                    <div id="username-field"><input id="username" name="username" type="text" autocomplete="username" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Username"></div>
-                    <div id="email-field"><input id="email" name="email" type="email" autocomplete="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Email address"></div>
-                    <div><input id="password" name="password" type="password" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Password"></div>
-                    <div id="teacher-key-field" class="hidden"><input id="teacher-secret-key" name="secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg" placeholder="Teacher Secret Key"></div>
-                    <div id="admin-key-field" class="hidden"><input id="admin-secret-key" name="admin_secret_key" type="password" class="w-full p-3 bg-gray-700/50 rounded-lg" placeholder="Admin Secret Key"></div>
-                    <p id="auth-error" class="text-red-400 text-sm text-center h-4"></p>
-                    <div><button id="auth-submit-btn" type="submit" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Sign In</button></div>
-                </form>
-                <div class="mt-4 text-sm text-center">
-                    <button id="auth-toggle-btn" class="font-medium text-purple-400 hover:text-purple-300"></button>
-                    <span class="text-gray-400 mx-1">|</span>
-                    <button id="forgot-password-btn" class="font-medium text-purple-400 hover:text-purple-300">Forgot Password?</button>
-                </div>
-            </div>
-        </div>
-    </template>
-    <template id="template-reset-password-form">
-        <div class="min-h-screen flex items-center justify-center dynamic-bg px-4">
-            <div class="max-w-md w-full glassmorphism p-8 rounded-2xl">
-                <div class="text-center">
-                    <div id="logo-container-reset" class="w-16 h-16 mx-auto mb-2"></div>
-                    <h2 class="text-3xl font-bold text-white">Reset Your Password</h2>
-                </div>
-                <form id="reset-password-form" class="mt-8 space-y-4">
-                    <div><input id="new-password" name="password" type="password" required class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="New Password"></div>
-                    <p id="reset-error" class="text-red-400 text-sm text-center h-4"></p>
-                    <div><button type="submit" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Set New Password</button></div>
-                </form>
-            </div>
-        </div>
-    </template>
-    <template id="template-my-classes">
-        <div class="fade-in">
-            <div class="flex justify-between items-center mb-6">
-                <h2 id="my-classes-title" class="text-3xl font-bold text-white">My Classes</h2>
-                <button id="back-to-classes-list" class="hidden shiny-button p-2 rounded-md">&larr; Back to List</button>
-            </div>
-            <div id="classes-main-view">
-                <div id="class-action-container" class="mb-6"></div>
-                <div id="classes-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-            </div>
-            <div id="selected-class-view" class="hidden"></div>
-        </div>
-    </template>
-    <template id="template-student-class-action">
-        <form id="join-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
-            <input type="text" name="code" placeholder="Enter Class Code" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
-            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Join</button>
-        </form>
-    </template>
-    <template id="template-teacher-class-action">
-        <form id="create-class-form" class="glassmorphism p-4 rounded-lg flex flex-col md:flex-row gap-2">
-            <input type="text" name="name" placeholder="New Class Name" class="flex-grow p-2 bg-gray-700/50 rounded-md border border-gray-600" required>
-            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create</button>
-        </form>
-    </template>
-    <template id="template-selected-class-view">
-        <div class="flex border-b border-gray-700 mb-4">
-            <button data-tab="chat" class="class-view-tab py-2 px-4 text-gray-300 hover:text-white">Chat</button>
-        </div>
-        <div id="class-view-content"></div>
-    </template>
-    <template id="template-class-chat-view">
-        <div class="flex flex-col h-[calc(100vh-15rem)]">
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4"></div>
-            <form id="chat-form" class="p-4 bg-bg-med glassmorphism mt-2 rounded-lg">
-                <div class="flex items-center gap-2">
-                    <input id="chat-input" type="text" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Type a message..." autocomplete="off">
-                    <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-5 rounded-lg">Send</button>
-                </div>
-            </form>
-        </div>
-    </template>
-    <template id="template-profile">
-        <div class="fade-in max-w-2xl mx-auto">
-            <h2 class="text-3xl font-bold mb-6 text-white">My Profile</h2>
-            <div class="flex border-b border-gray-700 mb-4">
-                <button data-tab="settings" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
-                <button data-tab="billing" class="profile-view-tab py-2 px-4 text-gray-300 hover:text-white">Billing</button>
-            </div>
-            <div id="profile-view-content"></div>
-        </div>
-    </template>
-    <template id="template-profile-settings">
-        <form id="profile-form" class="glassmorphism p-6 rounded-lg space-y-4">
-            <div>
-                <label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>
-                <select id="theme-select" name="theme_preference" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
-            </div>
-            <div>
-                <label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label>
-                <input id="avatar" name="avatar" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
-            </div>
-            <div>
-                <label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label>
-                <textarea id="bio" name="bio" rows="4" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></textarea>
-            </div>
-            <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Changes</button>
-        </form>
-    </template>
-    <template id="template-profile-billing">
-        <div class="glassmorphism p-6 rounded-lg space-y-4">
-            <h3 class="text-2xl font-bold">Subscription</h3>
-            <div id="subscription-status"></div>
-            <div id="billing-actions"></div>
-        </div>
-    </template>
-    <template id="template-admin-dashboard">
-       <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">Admin Dashboard</h2>
-            <div class="flex border-b border-gray-700 mb-4">
-                <button data-tab="users" class="admin-view-tab py-2 px-4 text-gray-300 hover:text-white">Users</button>
-                <button data-tab="settings" class="admin-view-tab py-2 px-4 text-gray-300 hover:text-white">Settings</button>
-            </div>
-            <div id="admin-view-content"></div>
-       </div>
-    </template>
-    <template id="template-admin-users-view">
-        <div class="glassmorphism p-4 rounded-lg">
-            <h3 class="text-2xl font-bold mb-4">User Management</h3>
-            <div class="overflow-auto max-h-96">
-                <table class="w-full text-left">
-                    <thead class="bg-bg-light sticky top-0"><tr><th class="p-3">Username</th><th class="p-3">Email</th><th class="p-3">Role</th></tr></thead>
-                    <tbody id="users-table-body"></tbody>
-                </table>
-            </div>
-        </div>
-    </template>
-    <template id="template-admin-settings-view">
-        <div class="glassmorphism p-4 rounded-lg">
-            <h3 class="text-2xl font-bold mb-4">Site Settings</h3>
-            <form id="admin-settings-form" class="space-y-4">
-                <div>
-                    <label for="site-wide-theme-select" class="block text-sm font-medium text-gray-300 mb-1">Global Theme</label>
-                    <select id="site-wide-theme-select" name="site_wide_theme" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select>
-                </div>
-                 <div>
-                    <label for="background-image-url" class="block text-sm font-medium text-gray-300 mb-1">Background Image URL</label>
-                    <input id="background-image-url" name="background_image_url" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
-                </div>
-                <div>
-                    <label for="music-url" class="block text-sm font-medium text-gray-300 mb-1">Background Music URL</label>
-                    <input id="music-url" name="music_url" type="url" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600">
-                </div>
-                <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button>
-            </form>
-        </div>
-    </template>
-    <template id="template-deep-search-view">
-        <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">DeepSearch</h2>
-            <p class="text-gray-400">This is the DeepSearch feature. In-depth analysis and research tools would go here.</p>
-        </div>
-    </template>
-    <template id="template-create-images-view">
-        <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">Create Images</h2>
-            <p class="text-gray-400">This is the Create Images feature. AI image generation prompts and results would go here.</p>
-        </div>
-    </template>
-    <template id="template-latest-news-view">
-        <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">Latest News</h2>
-            <p class="text-gray-400">This is the Latest News feature. A feed of current events and topics would go here.</p>
-        </div>
-    </template>
-    <template id="template-personas-view">
-        <div class="fade-in">
-            <h2 class="text-3xl font-bold mb-6 text-white">Personas</h2>
-            <p class="text-gray-400">This is the Personas feature. Users could select different AI personalities to chat with here.</p>
-        </div>
-    </template>
-
-    <script src="{{ url_for('static', filename='js/app.js') }}" nonce="{{ nonce }}"></script>
-</body>
-</html>
-
-# --- templates/emails/password_reset.html ---
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Password Reset</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; color: #333; }
-        .container { padding: 20px; max-width: 600px; margin: auto; border: 1px solid #ddd; border-radius: 5px; }
-        .button { background-color: #5a3fc0; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+        :root {
+            --brand-hue: 220; --bg-dark: #0F172A; --bg-med: #1E293B; --bg-light: #334155;
+            --glow-color: hsl(var(--brand-hue), 100%, 70%); --text-color: #E2E8F0; --text-secondary-color: #94A3B8;
+        }
+        body { background-color: var(--bg-dark); font-family: 'Inter', sans-serif; color: var(--text-color); }
+        .glassmorphism { background: rgba(31, 41, 55, 0.5); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .brand-gradient-text { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(var(--brand-hue), 90%, 65%)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .brand-gradient-bg { background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 55%), hsl(var(--brand-hue), 90%, 60%)); }
+        
+        .shiny-button { 
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease; 
+            box-shadow: 0 0 5px rgba(0,0,0,0.5);
+        }
+        .shiny-button:hover { 
+            transform: translateY(-2px); 
+            box-shadow: 0 4px 15px hsla(var(--brand-hue), 80%, 50%, 0.4);
+        }
+        .shiny-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        .fade-in { animation: fadeIn 0.5s ease-out forwards; }
+        .fade-out { animation: fadeOut 0.3s ease-in forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+        .active-tab { background-color: var(--bg-light) !important; color: white !important; position:relative; }
+        .active-tab::after { content: ''; position: absolute; bottom: 0; left: 10%; width: 80%; height: 2px; background: var(--glow-color); border-radius: 2px; }
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .ai-message .chat-bubble { background-color: #2E1A47; border-color: #8B5CF6; }
+        .user-message .chat-bubble { background-color: #1E40AF; border-color: #3B82F6; }
+        
+        .welcome-bg {
+            background: linear-gradient(-45deg, #0f172a, #1e3a8a, #4c1d95, #0f172a);
+            background-size: 400% 400%;
+            animation: gradientBG 20s ease infinite;
+        }
+        @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+
+        .full-screen-loader {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(8px);
+            display: flex; align-items: center; justify-content: center;
+            flex-direction: column; z-index: 1001; transition: opacity 0.3s ease;
+        }
+        .loader-dots { display: flex; gap: 1rem; }
+        .loader-dots div { width: 1rem; height: 1rem; background-color: hsl(var(--brand-hue), 90%, 60%); border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
+        .loader-dots .dot1 { animation-delay: -0.32s; }
+        .loader-dots .dot2 { animation-delay: -0.16s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1.0); } }
+        .waiting-text { margin-top: 2rem; font-size: 1.25rem; color: var(--text-secondary-color); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        
+        .btn-loader {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid hsl(var(--brand-hue), 90%, 60%);
+            border-radius: 50%;
+            width: 1.25rem;
+            height: 1.25rem;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* --- RESPONSIVENESS: Mobile Navigation --- */
+        #mobile-nav-toggle { display: none; }
+        @media (max-width: 768px) {
+            #mobile-nav-toggle { display: block; }
+            #main-nav {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease-in-out;
+                position: fixed;
+                height: 100%;
+                z-index: 40;
+            }
+            #main-nav.open {
+                transform: translateX(0);
+            }
+            #content-overlay {
+                display: none;
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background-color: rgba(0,0,0,0.5);
+                z-index: 30;
+            }
+            #content-overlay.active {
+                display: block;
+            }
+        }
     </style>
 </head>
-<body>
-    <div class="container">
-        <h2>Password Reset Request</h2>
-        <p>Hello,</p>
-        <p>You requested a password reset for your Myth AI account. Please click the button below to set a new password. This link is valid for one hour.</p>
-        <p style="text-align: center; margin: 20px 0;">
-            <a href="{{ reset_url }}" class="button">Reset Password</a>
-        </p>
-        <p>If you did not request this, please ignore this email.</p>
-        <p>Thanks,<br>The Myth AI Team</p>
+<body class="text-gray-200 antialiased">
+    <div id="app-container" class="relative h-screen w-screen overflow-hidden flex flex-col"></div>
+    <div id="toast-container" class="fixed top-6 right-6 z-[100] flex flex-col gap-2"></div>
+    <div id="modal-container"></div>
+    <div class="fixed bottom-4 left-4 text-xs text-gray-500">
+        &copy; <span id="current-year"></span> Myth AI | Made by Hossein
     </div>
-</body>
-</html>
+    <audio id="background-music" loop autoplay></audio>
 
-# --- static/js/app.js ---
-document.addEventListener('DOMContentLoaded', () => {
-    try {
-        const DOMElements = {
-            appContainer: document.getElementById('app-container'),
-            toastContainer: document.getElementById('toast-container'),
-            modalContainer: document.getElementById('modal-container'),
-            musicPlayerContainer: document.getElementById('music-player-container'),
+    <template id="template-landing-page">
+        <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
+            <div class="glassmorphism p-8 rounded-xl text-center max-w-3xl">
+                <div id="logo-container-welcome" class="mx-auto mb-4 h-24 w-24"></div>
+                <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">A New Era of Learning</h1>
+                <p class="text-gray-300 mb-2 max-w-2xl mx-auto">
+                    Myth AI is a secure, private learning environment where artificial intelligence is used to spark curiosity, not to cheat.
+                </p>
+                <p class="text-gray-400 text-sm mb-8">Made with care by Hossein</p>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                    <button id="go-to-login-btn" class="w-full sm:w-auto brand-gradient-bg shiny-button text-white font-bold py-3 px-8 rounded-lg text-lg">Login</button>
+                    <button id="go-to-signup-btn" class="w-full sm:w-auto bg-gray-600/50 hover:bg-gray-600 border border-gray-500 shiny-button text-white font-bold py-3 px-8 rounded-lg text-lg">Sign Up</button>
+                </div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="template-full-screen-loader">
+        <div class="full-screen-loader fade-in">
+            <div class="loader-dots">
+                <div class="dot1"></div><div class="dot2"></div><div class="dot3"></div>
+            </div>
+            <div class="waiting-text">Preparing your adventure...</div>
+        </div>
+    </template>
+
+    <template id="template-role-choice">
+        <div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg">
+            <div class="w-full max-w-md text-center">
+                <button id="back-to-landing" class="text-sm text-blue-400 hover:text-blue-300 mb-6">&larr; Back to Welcome</button>
+                <div class="flex items-center justify-center gap-3 mb-4">
+                    <div id="logo-container-role" class="h-16 w-16"></div>
+                    <h1 class="text-5xl font-bold brand-gradient-text">Myth AI</h1>
+                </div>
+                <p class="text-gray-400 text-lg mb-10">Select your role to continue</p>
+                <div class="space-y-4">
+                    <button data-role="student" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-blue-400 border border-transparent">
+                        <div><h2 class="text-xl font-bold text-white">Student Portal</h2><p class="text-gray-400">Join classes, submit assignments, and learn with AI.</p></div><span class="text-2xl">&rarr;</span>
+                    </button>
+                    <button data-role="teacher" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-purple-400 border border-transparent">
+                        <div><h2 class="text-xl font-bold text-white">Teacher Portal</h2><p class="text-gray-400">Create classes, manage students, and assign quizzes.</p></div><span class="text-2xl">&rarr;</span>
+                    </button>
+                    <button data-role="admin" class="role-btn w-full text-left p-6 glassmorphism rounded-lg flex items-center justify-between transition-all hover:border-red-400 border border-transparent">
+                        <div><h2 class="text-xl font-bold text-white">Admin Portal</h2><p class="text-gray-400">Manage users, classes, and site settings.</p></div><span class="text-2xl">&rarr;</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="template-main-dashboard">
+        <div class="flex h-full w-full bg-gray-800 fade-in relative md:static">
+            <!-- RESPONSIVENESS: Main Navigation Sidebar -->
+            <nav id="main-nav" class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10 md:relative md:translate-x-0">
+                <div class="flex items-center gap-3 mb-6">
+                    <div id="logo-container-dash" class="h-8 w-8"></div>
+                    <h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2>
+                </div>
+                <div id="nav-links" class="flex flex-col gap-2"></div>
+                <div class="mt-auto flex flex-col gap-4">
+                    <div id="adsense-container" class="w-full h-48 bg-gray-700/50 rounded-lg flex items-center justify-center text-gray-500 text-sm">Ad Placeholder</div>
+                    <div id="notification-bell-container" class="relative"></div>
+                    <button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button>
+                </div>
+            </nav>
+            <!-- RESPONSIVENESS: Content Overlay for Mobile Nav -->
+            <div id="content-overlay"></div>
+            <main class="flex-1 p-8 overflow-y-auto">
+                 <!-- RESPONSIVENESS: Mobile Nav Toggle Button -->
+                <button id="mobile-nav-toggle" class="absolute top-6 left-6 z-50 text-white md:hidden">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                </button>
+                <div id="dashboard-content" class="transition-opacity duration-300"></div>
+            </main>
+        </div>
+    </template>
+    
+    <template id="template-auth-form"><div class="flex flex-col items-center justify-center h-full w-full p-4 fade-in welcome-bg"><div class="w-full max-w-md glassmorphism rounded-2xl p-8 shadow-2xl"><button id="back-to-roles" class="text-sm text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Role Selection</button><h1 class="text-3xl font-bold text-center brand-gradient-text mb-2" id="auth-title">Portal Login</h1><p class="text-gray-400 text-center mb-6" id="auth-subtitle">Sign in to continue</p><form id="auth-form"><input type="hidden" id="account_type" name="account_type" value="student"><div id="email-field" class="hidden mb-4"><label for="email" class="block text-sm font-medium text-gray-300 mb-1">Email</label><input type="email" id="email" name="email" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label for="username" class="block text-sm font-medium text-gray-300 mb-1">Username</label><input type="text" id="username" name="username" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div class="mb-4"><label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label><input type="password" id="password" name="password" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" required></div><div id="teacher-key-field" class="hidden mb-4"><label for="teacher-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Teacher Key</label><input type="text" id="teacher-secret-key" name="secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for teacher sign up"></div><div id="admin-key-field" class="hidden mb-4"><label for="admin-secret-key" class="block text-sm font-medium text-gray-300 mb-1">Secret Admin Key</label><input type="password" id="admin-secret-key" name="admin_secret_key" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" placeholder="Required for admin login"></div><div class="flex justify-end mb-6"><button type="button" id="forgot-password-link" class="text-xs text-blue-400 hover:text-blue-300">Forgot Password?</button></div><button type="submit" id="auth-submit-btn" class="w-full brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg transition-opacity flex items-center justify-center h-12">Login</button><p id="auth-error" class="text-red-400 text-sm text-center h-4 mt-3"></p></form><div class="text-center mt-6"><button id="auth-toggle-btn" class="text-sm text-blue-400 hover:text-blue-300">Don't have an account? <span class="font-semibold">Sign Up</span></button></div></div></div></template>
+    <template id="template-my-classes"><h3 class="text-3xl font-bold text-white mb-6">My Classes</h3><div id="class-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="classes-list"></div><div id="selected-class-view" class="mt-8 hidden"></div></template>
+    <template id="template-team-mode"><h3 class="text-3xl font-bold text-white mb-6">Team Mode</h3><div id="team-action-container" class="mb-6"></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="teams-list"></div><div id="selected-team-view" class="mt-8 hidden"></div></template>
+    <template id="template-student-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a New Class</h4><div class="flex items-center gap-2"><input type="text" id="class-code" placeholder="Enter class code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center h-12 w-28">Join</button></div></div></template>
+    <template id="template-teacher-class-action"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Class</h4><div class="flex items-center gap-2"><input type="text" id="new-class-name" name="name" placeholder="New class name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-class-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center h-12 w-28">Create</button></div></div></template>
+    <template id="template-team-actions"><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Join a Team</h4><div class="flex items-center gap-2"><input type="text" id="team-code" placeholder="Enter team code" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="join-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Join</button></div></div><div class="glassmorphism p-4 rounded-lg"><h4 class="font-semibold text-lg mb-2 text-white">Create a New Team</h4><div class="flex items-center gap-2"><input type="text" id="new-team-name" placeholder="New team name" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="create-team-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Create</button></div></div></div></template>
+    <template id="template-selected-class-view"><div class="glassmorphism p-6 rounded-lg"><div class="flex justify-between items-start"><h4 class="text-2xl font-bold text-white mb-4">Class: <span id="selected-class-name"></span></h4><button id="back-to-classes-btn" class="text-sm text-blue-400 hover:text-blue-300">&larr; Back to All Classes</button></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="chat">Chat</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="assignments">Assignments</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="quizzes">Quizzes</button><button class="py-2 px-4 text-gray-300 hover:text-white class-view-tab whitespace-nowrap" data-tab="students">Students</button></div><div id="class-view-content"></div></div></template>
+    <template id="template-class-chat-view"><div id="chat-messages" class="bg-gray-900/50 p-4 rounded-lg h-96 overflow-y-auto mb-4 border border-gray-700 flex flex-col gap-4"></div><form id="chat-form" class="flex items-center gap-2"><input type="text" id="chat-input" placeholder="Ask the AI assistant or type an admin command..." class="flex-grow w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button type="submit" id="send-chat-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Send</button></form></template>
+    <template id="template-class-assignments-view"><div class="flex justify-between items-center mb-4"><h5 class="text-xl font-semibold text-white">Assignments</h5><div id="assignment-action-container"></div></div><div id="assignments-list" class="space-y-4"></div></template>
+    <template id="template-class-quizzes-view"><div class="flex justify-between items-center mb-4"><h5 class="text-xl font-semibold text-white">Quizzes</h5><div id="quiz-action-container"></div></div><div id="quizzes-list" class="space-y-4"></div></template>
+    <template id="template-class-students-view"><h5 class="text-xl font-semibold text-white mb-4">Enrolled Students</h5><ul id="class-students-list" class="space-y-2"></ul></template>
+    <template id="template-profile"><h3 class="text-3xl font-bold text-white mb-6">Customize Profile</h3><form id="profile-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="bio" class="block text-sm font-medium text-gray-300 mb-1">Bio</label><textarea id="bio" name="bio" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" rows="4"></textarea></div><div class="mb-4"><label for="avatar" class="block text-sm font-medium text-gray-300 mb-1">Avatar URL</label><input type="url" id="avatar" name="avatar" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Profile</button></form></template>
+    <template id="template-ai-settings"><h3 class="text-3xl font-bold text-white mb-6">AI Persona Settings</h3><form id="ai-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="ai-persona-select" class="block text-sm font-medium text-gray-300 mb-2">Choose your AI's personality</label><select id="ai-persona-select" name="ai_persona" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select><p class="text-xs text-gray-400 mt-2" id="ai-persona-description">Select a persona to see its description.</p></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save AI Settings</button></form></template>
+    <template id="template-billing"><h3 class="text-3xl font-bold text-white mb-6">Billing & Plans</h3><div id="billing-content" class="glassmorphism p-6 rounded-lg"></div></template>
+    <template id="template-admin-dashboard"><h3 class="text-3xl font-bold text-white mb-6">Admin Panel</h3><div id="admin-stats" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div><div class="flex border-b border-gray-600 mb-4 overflow-x-auto"><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="users">Users</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="classes">Classes</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="settings">Settings</button><button class="py-2 px-4 text-gray-300 hover:text-white admin-view-tab whitespace-nowrap" data-tab="music">Music</button></div><div id="admin-view-content"></div></main></div></template>
+    <template id="template-admin-users-view"><h4 class="text-xl font-bold text-white mb-4">User Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Username</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Created At</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-user-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
+    <template id="template-admin-classes-view"><h4 class="text-xl font-bold text-white mb-4">Class Management</h4><div class="overflow-x-auto glassmorphism p-4 rounded-lg"><table class="w-full text-left text-sm text-gray-300"><thead><tr class="border-b border-gray-600"><th class="p-3">Name</th><th class="p-3">Teacher</th><th class="p-3">Code</th><th class="p-3">Students</th><th class="p-3">Actions</th></tr></thead><tbody id="admin-class-list" class="divide-y divide-gray-700/50"></tbody></table></div></template>
+    <template id="template-admin-settings-view"><h4 class="text-xl font-bold text-white mb-4">Site Settings</h4><form id="admin-settings-form" class="glassmorphism p-6 rounded-lg max-w-lg"><div class="mb-4"><label for="setting-announcement" class="block text-sm font-medium text-gray-300 mb-1">Announcement Banner</label><input type="text" id="setting-announcement" name="announcement" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="setting-daily-message" class="block text-sm font-medium text-gray-300 mb-1">Message of the Day</label><input type="text" id="setting-daily-message" name="daily_message" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></div><div class="mb-4"><label for="ai-persona-input" class="block text-sm font-medium text-gray-300 mb-1">Default AI Persona (for new users)</label><select id="ai-persona-input" name="ai_persona" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600"></select></div><div class="mb-4"><label class="block text-sm font-medium text-gray-300 mb-1">Maintenance Mode</label><button type="button" id="maintenance-toggle-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">Toggle Maintenance Mode</button></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Save Settings</button></form></template>
+    <template id="template-admin-music-view"><h4 class="text-xl font-bold text-white mb-4">Background Music</h4><div class="flex items-center gap-2 mb-4"><input type="text" id="music-name" placeholder="Music Title" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><input type="url" id="music-url" placeholder="Music URL (MP3)" class="flex-grow p-3 bg-gray-700/50 rounded-lg border border-gray-600"><button id="add-music-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-4 rounded-lg">Add Music</button></div><ul id="music-list" class="space-y-2"></ul></template>
+    <template id="template-modal"><div class="modal-overlay fade-in"><div class="glassmorphism rounded-2xl p-8 shadow-2xl w-full max-w-2xl modal-content relative"><button class="absolute top-4 right-4 text-gray-400 hover:text-white text-2xl leading-none">&times;</button><div class="modal-body"></div></div></div></template>
+    <template id="template-privacy-policy"><h2 class="text-2xl font-bold text-white mb-4">Privacy Policy</h2><p class="text-gray-300">This is a placeholder for your privacy policy. You should replace this with your actual policy, detailing how you collect, use, and protect user data. Make sure to comply with relevant regulations like GDPR and CCPA.</p></template>
+    <template id="template-plans"><h2 class="text-2xl font-bold text-white mb-4">Subscription Plans</h2><div class="grid md:grid-cols-2 gap-6"><div class="glassmorphism p-6 rounded-lg"><h3 class="text-xl font-bold text-cyan-400">Free Plan</h3><p class="text-gray-400">Basic access for all users.</p></div><div class="glassmorphism p-6 rounded-lg border-2 border-purple-500"><h3 class="text-xl font-bold text-purple-400">Pro Plan</h3><p class="text-gray-400">Unlock unlimited AI interactions and advanced features.</p><button class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg" id="upgrade-from-modal-btn">Upgrade Now</button></div></div></template>
+    <template id="template-contact-form"><h2 class="text-2xl font-bold text-white mb-4">Contact Us</h2><form id="contact-form"><div class="mb-4"><label for="contact-name" class="block text-sm">Name</label><input type="text" id="contact-name" name="name" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-email" class="block text-sm">Email</label><input type="email" id="contact-email" name="email" class="w-full p-2 bg-gray-800 rounded" required></div><div class="mb-4"><label for="contact-message" class="block text-sm">Message</label><textarea id="contact-message" name="message" class="w-full p-2 bg-gray-800 rounded" rows="5" required></textarea></div><button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Send Message</button></form></template>
+    
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const BASE_URL = '';
+        const SITE_CONFIG = {
+            STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
+            STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
         };
-        let appState = { currentUser: null, isLoginView: true, selectedRole: 'student', siteSettings: {}, currentClass: null, socket: null };
-
+        
         const themes = {
-            golden: { '--brand-hue': 45, '--bg-dark': '#1A120B', '--bg-med': '#2c241e', '--bg-light': '#4a3f35', '--text-color': '#F5EFE6', '--text-secondary-color': '#AE8E6A' },
             dark: { '--brand-hue': 220, '--bg-dark': '#0F172A', '--bg-med': '#1E293B', '--bg-light': '#334155', '--text-color': '#E2E8F0', '--text-secondary-color': '#94A3B8' },
-            edgy_purple: { '--brand-hue': 260, '--bg-dark': '#110D19', '--bg-med': '#211A2E', '--bg-light': '#3B2D4F', '--text-color': '#EADFFF', '--text-secondary-color': '#A17DFF' },
-            light_green: { '--brand-hue': 140, '--bg-dark': '#131f17', '--bg-med': '#1a2e23', '--bg-light': '#274a34', '--text-color': '#e1f2e9', '--text-secondary-color': '#6fdc9d' }
+            light: { '--brand-hue': 200, '--bg-dark': '#F1F5F9', '--bg-med': '#E2E8F0', '--bg-light': '#CBD5E1', '--text-color': '#1E293B', '--text-secondary-color': '#475569' },
+            blue: { '--brand-hue': 210, '--bg-dark': '#0c1d3a', '--bg-med': '#1a2c4e', '--bg-light': '#2e4570', '--text-color': '#dbe8ff', '--text-secondary-color': '#a0b3d1' },
+            purple: { '--brand-hue': 260, '--bg-dark': '#1e1b3b', '--bg-med': '#2d2852', '--bg-light': '#453f78', '--text-color': '#e6e3ff', '--text-secondary-color': '#b8b4d9' },
         };
-        const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 80%, 50%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,14.7C30.5,14.7,14.7,30.5,14.7,50S30.5,85.3,50,85.3S85.3,69.5,85.3,50S69.5,14.7,50,14.7z M50,77.6 C34.8,77.6,22.4,65.2,22.4,50S34.8,22.4,50,22.4s27.6,12.4,27.6,27.6S65.2,77.6,50,77.6z"/><circle cx="50" cy="50" r="10" fill="white"/></svg>`;
 
-        // --- UTILITY FUNCTIONS ---
-        function escapeHtml(unsafe) { if (typeof unsafe !== 'string') return ''; return unsafe.replace(/[&<>"']/g, m => ({'&': '&amp;','<': '&lt;','>': '&gt;','"': '&quot;',"'": '&#039;'})[m]); }
-        function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => c.innerHTML = svgLogo); }
-
-        function applyTheme(userPreference) {
-            const siteTheme = appState.siteSettings.site_wide_theme;
-            const themeToApply = (siteTheme && siteTheme !== 'default') ? siteTheme : userPreference;
-            const t = themes[themeToApply] || themes.edgy_purple;
-            Object.entries(t).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
-        }
+        const appState = { currentUser: null, currentTab: 'my-classes', selectedClass: null, socket: null, stripe: null, quizTimer: null, isLoginView: true, selectedRole: null, aiPersonas: {} };
+        const DOMElements = { appContainer: document.getElementById('app-container'), toastContainer: document.getElementById('toast-container'), modalContainer: document.getElementById('modal-container'), backgroundMusic: document.getElementById('background-music') };
         
-        function applyCustomizations(settings) {
-            if (settings.background_image_url) {
-                document.body.style.backgroundImage = `url(${settings.background_image_url})`;
-                document.querySelectorAll('.dynamic-bg').forEach(el => el.classList.remove('dynamic-bg'));
-            } else {
-                document.body.style.backgroundImage = 'none';
-            }
-            DOMElements.musicPlayerContainer.innerHTML = '';
-            if (settings.music_url) {
-                const audio = new Audio(settings.music_url);
-                audio.loop = true; audio.autoplay = true; audio.muted = true;
-                const player = document.createElement('div');
-                player.className = 'glassmorphism p-2 rounded-full flex items-center gap-2';
-                const btn = document.createElement('button');
-                btn.className = 'text-2xl'; btn.textContent = '🔇';
-                btn.onclick = () => {
-                    if (audio.muted) {
-                        audio.muted = false; audio.play(); btn.textContent = '🔊';
-                    } else {
-                        audio.muted = true; btn.textContent = '🔇';
-                    }
-                };
-                player.appendChild(btn);
-                DOMElements.musicPlayerContainer.appendChild(player);
-                setTimeout(() => audio.play().catch(e => console.log("Autoplay blocked.")), 500);
-            }
-        }
+        const svgLogo = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:hsl(var(--brand-hue), 90%, 60%);" /><stop offset="100%" style="stop-color:hsl(var(--brand-hue), 90%, 40%);" /></linearGradient></defs><path fill="url(#logoGradient)" d="M50,5 C74.85,5 95,25.15 95,50 C95,74.85 74.85,95 50,95 C25.15,95 5,74.85 5,50 C5,25.15 25.15,5 50,5 Z M50,15 C30.67,15 15,30.67 15,50 C15,69.33 30.67,85 50,85 C69.33,85 85,69.33 85,50 C85,30.67 69.33,15 50,15 Z" /><path fill="white" d="M50,30 C55.52,30 60,34.48 60,40 L60,60 C60,65.52 55.52,70 50,70 C44.48,70 40,65.52 40,60 L40,40 C40,34.48 44.48,30 50,30 Z" /></svg>`;
+        const aiAvatarSvg = 'data:image/svg+xml;base64,' + btoa(svgLogo);
 
-        function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.transition = 'opacity 0.5s ease'; toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
-        function setButtonLoadingState(button, isLoading) { if (!button) return; if (isLoading) { button.disabled = true; button.dataset.originalText = button.innerHTML; button.innerHTML = `<svg class="animate-spin h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`; } else { button.disabled = false; if (button.dataset.originalText) { button.innerHTML = button.dataset.originalText; } } }
-        async function apiCall(endpoint, options = {}) { try { const csrfToken = document.querySelector('meta[name="csrf-token"]').content; if (!options.headers) options.headers = {}; options.headers['X-CSRFToken'] = csrfToken; if (options.body && typeof options.body === 'object') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); } const response = await fetch(`/api${endpoint}`, { credentials: 'include', ...options }); const data = await response.json(); if (!response.ok) { if (response.status === 401) handleLogout(false); throw new Error(data.error || 'Request failed'); } return { success: true, ...data }; } catch (error) { showToast(error.message, 'error'); return { success: false, error: error.message }; } }
-        function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); injectLogo(); }
-        function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!container || !template) return; container.innerHTML = ''; container.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
-        function showFullScreenLoader(message = 'Loading...') { renderPage('template-full-screen-loader', () => { document.querySelector('.waiting-text').textContent = message; }); }
+        function injectLogo() { document.querySelectorAll('[id^="logo-container-"]').forEach(c => { c.innerHTML = svgLogo; }); }
+        document.getElementById('current-year').textContent = new Date().getFullYear();
 
-        // --- AUTH & SESSION ---
-        function connectSocket() { if (appState.socket && appState.socket.connected) return; appState.socket = io({ transports: ['websocket'] }); appState.socket.on('connect', () => console.log('Socket connected')); appState.socket.on('disconnect', () => console.log('Socket disconnected')); appState.socket.on('new_message', (msg) => renderChatMessage(msg, true)); }
-        function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.siteSettings = settings; applyTheme(user.profile.theme_preference); applyCustomizations(settings); connectSocket(); showFullScreenLoader(); setTimeout(() => { setupDashboard(user); }, 1000); }
-        async function handleLogout(doApiCall = true) { if (doApiCall) await apiCall('/auth/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.href = '/'; }
-        function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); })); }); }
-        function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); document.getElementById('forgot-password-btn').addEventListener('click', handleForgotPassword); }); }
-        function updateAuthView() { const isLogin = appState.isLoginView, role = appState.selectedRole; document.getElementById('auth-title').textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} Portal`; document.getElementById('auth-subtitle').textContent = isLogin ? 'Sign in to continue' : 'Create your Account'; document.getElementById('auth-submit-btn').textContent = isLogin ? 'Login' : 'Sign Up'; document.getElementById('auth-toggle-btn').innerHTML = isLogin ? "Don't have an account? <span class='font-semibold'>Sign Up</span>" : "Already have an account? <span class='font-semibold'>Login</span>"; document.getElementById('email-field').style.display = isLogin ? 'none' : 'block'; document.getElementById('email').required = !isLogin; document.getElementById('teacher-key-field').style.display = (!isLogin && role === 'teacher') ? 'block' : 'none'; document.getElementById('teacher-secret-key').required = !isLogin && role === 'teacher'; document.getElementById('admin-key-field').style.display = (isLogin && role === 'admin') ? 'block' : 'none'; document.getElementById('admin-secret-key').required = isLogin && role === 'admin'; document.getElementById('account_type').value = role; }
-        async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = Object.fromEntries(new FormData(form)); const endpoint = appState.isLoginView ? '/auth/login' : '/auth/signup'; const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; } setButtonLoadingState(btn, false); }
-        async function handleForgotPassword() { const email = prompt("Please enter your email address to receive a password reset link:"); if (email) { showFullScreenLoader("Sending reset link..."); const result = await apiCall('/auth/forgot_password', { method: 'POST', body: { email } }); showToast(result.message, result.success ? 'success' : 'error'); setupAuthPage(); } }
-
-        // --- DASHBOARD & TABS ---
-        function setupDashboard(user) {
-            renderPage('template-main-dashboard', () => {
-                document.getElementById('welcome-message').innerHTML = `Welcome, ${escapeHtml(user.username)}!`;
-                let tabs = [
-                    { id: 'main-search', label: 'Home' },
-                    { id: 'deep-search', label: 'DeepSearch' },
-                    { id: 'create-images', label: 'Create Images' },
-                    { id: 'latest-news', label: 'Latest News' },
-                    { id: 'personas', label: 'Personas' },
-                    { id: 'profile', label: 'Profile' }
-                ];
-
-                if (['student', 'teacher'].includes(user.role)) {
-                    document.getElementById('dashboard-title').textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub";
-                    tabs.splice(1, 0, { id: 'my-classes', label: 'My Classes' });
-                } else if (user.role === 'admin') {
-                    document.getElementById('dashboard-title').textContent = "Admin Panel";
-                    tabs.unshift({ id: 'admin-dashboard', label: 'Admin' });
-                }
-                
-                appState.currentTab = 'main-search';
-
-                const navLinks = document.getElementById('nav-links');
-                navLinks.innerHTML = tabs.map(tab => `<button data-tab="${escapeHtml(tab.id)}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${escapeHtml(tab.label)}</button>`).join('');
-                
-                navLinks.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
-                document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true));
-                switchTab(appState.currentTab);
-            });
-        }
-        function switchTab(tab) {
-            const setups = {
-                'main-search': setupMainSearchTab,
-                'my-classes': setupMyClassesTab,
-                'profile': setupProfileTab,
-                'admin-dashboard': setupAdminDashboardTab,
-                'deep-search': setupDeepSearchTab,
-                'create-images': setupCreateImagesTab,
-                'latest-news': setupLatestNewsTab,
-                'personas': setupPersonasTab
-            };
-            if (setups[tab]) {
-                appState.currentTab = tab;
-                document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab));
-                setups[tab](document.getElementById('dashboard-content'));
-            }
-        }
-
-        // --- TAB IMPLEMENTATIONS ---
-        function setupMainSearchTab(container) {
-            renderSubTemplate(container, 'template-main-search-view', () => {
-                // Add event listeners to the buttons in the main search view
-                container.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab)));
-            });
-        }
-        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', () => { document.getElementById('back-to-classes-list').addEventListener('click', () => showClassList(true)); showClassList(false); }); }
-        async function showClassList(isRefresh) { document.getElementById('classes-main-view').classList.remove('hidden'); const selectedView = document.getElementById('selected-class-view'); selectedView.classList.add('hidden'); selectedView.innerHTML = ''; document.getElementById('back-to-classes-list').classList.add('hidden'); document.getElementById('my-classes-title').textContent = "My Classes"; const actionContainer = document.getElementById('class-action-container'); const role = appState.currentUser.role; const actionTemplateId = `template-${role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (role === 'student') document.getElementById('join-class-form').addEventListener('submit', handleJoinClass); else if (role === 'teacher') document.getElementById('create-class-form').addEventListener('submit', handleCreateClass); }); const classesList = document.getElementById('classes-list'); classesList.innerHTML = '<p class="text-gray-400">Loading classes...</p>'; const result = await apiCall('/classes/'); if (result.success) { renderClasses(result.classes); } }
-        function renderClasses(classes) { const classesList = document.getElementById('classes-list'); if (classes.length === 0) { classesList.innerHTML = `<p class="text-gray-400 col-span-full">You are not in any classes yet.</p>`; } else { classesList.innerHTML = classes.map(c => ` <div class="class-card glassmorphism p-4 rounded-lg cursor-pointer hover:scale-105 transition-transform" data-class-id="${escapeHtml(c.id)}" data-class-name="${escapeHtml(c.name)}"> <h3 class="text-xl font-bold">${escapeHtml(c.name)}</h3> <p class="text-sm text-gray-400">Teacher: ${escapeHtml(c.teacher_name)}</p> <p class="text-sm text-gray-400 mt-2">Code: <span class="font-mono bg-bg-dark p-1 rounded">${escapeHtml(c.code)}</span></p> </div>`).join(''); classesList.querySelectorAll('.class-card').forEach(card => card.addEventListener('click', (e) => showClassDetail(e.currentTarget.dataset.classId, e.currentTarget.dataset.className))); } }
-        function showClassDetail(classId, className) { appState.currentClass = { id: classId, name: className }; document.getElementById('classes-main-view').classList.add('hidden'); document.getElementById('selected-class-view').classList.remove('hidden'); document.getElementById('back-to-classes-list').classList.remove('hidden'); document.getElementById('my-classes-title').textContent = className; const container = document.getElementById('selected-class-view'); renderSubTemplate(container, 'template-selected-class-view', () => { container.querySelector('.class-view-tab').addEventListener('click', (e) => switchClassTab(e.currentTarget.dataset.tab)); switchClassTab('chat'); }); }
-        function switchClassTab(tab) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('class-view-content'); if (tab === 'chat') { setupClassChatTab(contentContainer); } }
-        async function setupClassChatTab(container) { renderSubTemplate(container, 'template-class-chat-view', async () => { if (appState.socket) appState.socket.emit('join', { room: appState.currentClass.id }); const chatMessages = document.getElementById('chat-messages'); chatMessages.innerHTML = '<p class="text-gray-400">Loading messages...</p>'; const result = await apiCall(`/classes/${appState.currentClass.id}/messages`); if (result.success) { chatMessages.innerHTML = ''; result.messages.forEach(msg => renderChatMessage(msg, false)); chatMessages.scrollTop = chatMessages.scrollHeight; } document.getElementById('chat-form').addEventListener('submit', (e) => { e.preventDefault(); const input = document.getElementById('chat-input'); const content = input.value.trim(); if (content && appState.socket) { appState.socket.emit('send_message', { room: appState.currentClass.id, content: content }); input.value = ''; } }); }); }
-        function renderChatMessage(msg, shouldScroll) { const messagesContainer = document.getElementById('chat-messages'); if (!messagesContainer) return; const isCurrentUser = msg.sender.id === appState.currentUser.id; const messageEl = document.createElement('div'); messageEl.className = `flex items-start gap-3 ${isCurrentUser ? 'justify-end' : ''}`; messageEl.innerHTML = ` ${!isCurrentUser ? `<img src="${escapeHtml(msg.sender.profile?.avatar || `https://i.pravatar.cc/40?u=${msg.sender.id}`)}" class="w-8 h-8 rounded-full">` : ''} <div class="flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}"> <div class="flex items-center gap-2"> ${!isCurrentUser ? `<span class="font-bold text-sm">${escapeHtml(msg.sender.username)}</span>` : ''} <span class="text-xs text-gray-400">${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span> </div> <div class="bg-bg-med p-3 rounded-lg max-w-xs md:max-w-md"><p>${escapeHtml(msg.content)}</p></div> </div>`; messagesContainer.appendChild(messageEl); if (shouldScroll) messagesContainer.scrollTop = messagesContainer.scrollHeight; }
-        async function handleJoinClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const code = e.target.elements.code.value; const result = await apiCall('/classes/join', { method: 'POST', body: { code } }); if (result.success) { showToast(`Joined ${result.class_name}!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
-        async function handleCreateClass(e) { e.preventDefault(); const btn = e.target.querySelector('button'); setButtonLoadingState(btn, true); const name = e.target.elements.name.value; const result = await apiCall('/classes/create', { method: 'POST', body: { name } }); if (result.success) { showToast(`Class "${result.class.name}" created!`, 'success'); showClassList(true); } setButtonLoadingState(btn, false); }
-        async function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { container.querySelectorAll('.profile-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchProfileTab(e.currentTarget.dataset.tab))); switchProfileTab('settings'); }); }
-        function switchProfileTab(tab) { document.querySelectorAll('.profile-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('profile-view-content'); if (tab === 'settings') setupProfileSettingsTab(contentContainer); else if (tab === 'billing') setupProfileBillingTab(contentContainer); }
-        async function setupProfileSettingsTab(container) { renderSubTemplate(container, 'template-profile-settings', () => { const profile = appState.currentUser.profile; document.getElementById('bio').value = profile.bio || ''; document.getElementById('avatar').value = profile.avatar || ''; const themeSelect = document.getElementById('theme-select'); themeSelect.innerHTML = Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>`).join(''); themeSelect.value = profile.theme_preference || 'edgy_purple'; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
-        async function setupProfileBillingTab(container) { renderSubTemplate(container, 'template-profile-billing', () => { const statusContainer = document.getElementById('subscription-status'); const actionsContainer = document.getElementById('billing-actions'); const status = appState.currentUser.subscription_status; statusContainer.innerHTML = `<p>Current Plan: <span class="font-bold capitalize ${status === 'active' ? 'text-green-400' : 'text-purple-400'}">${status}</span></p>`; if (status !== 'active') { actionsContainer.innerHTML = `<button id="upgrade-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } else { actionsContainer.innerHTML = `<p class="text-gray-400">You are on the Pro plan!</p>`; } }); }
-        async function handleUpgrade() { const btn = document.getElementById('upgrade-btn'); setButtonLoadingState(btn, true); const result = await apiCall('/billing/create-checkout-session', { method: 'POST' }); if (result.success) { const stripe = Stripe(result.public_key); stripe.redirectToCheckout({ sessionId: result.session_id }); } setButtonLoadingState(btn, false); }
-        async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const btn = form.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/auth/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser.profile = result.profile; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } setButtonLoadingState(btn, false); }
-        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', () => { container.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminTab(e.currentTarget.dataset.tab))); switchAdminTab('users'); }); }
-        function switchAdminTab(tab) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('admin-view-content'); if (tab === 'users') setupAdminUsersTab(contentContainer); else if (tab === 'settings') setupAdminSettingsTab(contentContainer); }
-        function setupAdminUsersTab(container) { renderSubTemplate(container, 'template-admin-users-view', async () => { const result = await apiCall('/admin/users'); if (result.success) { document.getElementById('users-table-body').innerHTML = result.users.map(user => ` <tr class="border-b border-gray-700/50"> <td class="p-3">${escapeHtml(user.username)}</td> <td class="p-3">${escapeHtml(user.email)}</td> <td class="p-3">${escapeHtml(user.role)}</td> </tr>`).join(''); } }); }
-        function setupAdminSettingsTab(container) { renderSubTemplate(container, 'template-admin-settings-view', () => { const themeSelect = document.getElementById('site-wide-theme-select'); themeSelect.innerHTML = '<option value="default">Default (User Choice)</option>' + Object.keys(themes).map(name => `<option value="${name}">${name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>`).join(''); themeSelect.value = appState.siteSettings.site_wide_theme || 'default'; document.getElementById('background-image-url').value = appState.siteSettings.background_image_url || ''; document.getElementById('music-url').value = appState.siteSettings.music_url || ''; document.getElementById('admin-settings-form').addEventListener('submit', async e => { e.preventDefault(); const btn = e.target.querySelector('button[type="submit"]'); setButtonLoadingState(btn, true); const body = Object.fromEntries(new FormData(e.target)); const result = await apiCall('/admin/settings', { method: 'POST', body }); if (result.success) { showToast('Site settings updated!', 'success'); appState.siteSettings = result.settings; applyTheme(appState.currentUser.profile.theme_preference); applyCustomizations(appState.siteSettings); } setButtonLoadingState(btn, false); }); }); }
+        // --- Core Helper Functions ---
+        function applyTheme(themeName) { const theme = themes[themeName]; if (theme) { for (const [key, value] of Object.entries(theme)) { document.documentElement.style.setProperty(key, value); } } }
+        function showToast(message, type = 'info') { const colors = { info: 'bg-blue-600', success: 'bg-green-600', error: 'bg-red-600' }; const toast = document.createElement('div'); toast.className = `text-white text-sm py-2 px-4 rounded-lg shadow-lg fade-in ${colors[type]}`; toast.textContent = message; DOMElements.toastContainer.appendChild(toast); setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 3500); }
+        function escapeHtml(text) { if (typeof text !== 'string') return ''; const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'}; return text.replace(/[&<>"']/g, m => map[m]); }
         
-        // --- NEW FEATURE TABS ---
-        function setupDeepSearchTab(container) { renderSubTemplate(container, 'template-deep-search-view'); }
-        function setupCreateImagesTab(container) { renderSubTemplate(container, 'template-create-images-view'); }
-        function setupLatestNewsTab(container) { renderSubTemplate(container, 'template-latest-news-view'); }
-        function setupPersonasTab(container) { renderSubTemplate(container, 'template-personas-view'); }
+        function toggleButtonLoading(button, isLoading, originalContent = null) { if (!button) return; if (isLoading) { button.dataset.originalContent = button.innerHTML; button.innerHTML = '<div class="btn-loader mx-auto"></div>'; button.disabled = true; } else { button.innerHTML = originalContent || button.dataset.originalContent || 'Submit'; button.disabled = false; } }
 
-        function setupResetPasswordPage(token) {
-            renderPage('template-reset-password-form', () => {
-                const form = document.getElementById('reset-password-form');
-                form.addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    const btn = form.querySelector('button[type="submit"]');
-                    setButtonLoadingState(btn, true);
-                    const password = document.getElementById('new-password').value;
-                    const result = await apiCall('/auth/reset_password', { method: 'POST', body: { token, password } });
-                    if (result.success) {
-                        showToast('Password reset! Logging you in.', 'success');
-                        const statusResult = await apiCall('/status');
-                        if (statusResult.success && statusResult.user) {
-                            handleLoginSuccess(statusResult.user, statusResult.settings);
-                        }
-                    } else {
-                         document.getElementById('reset-error').textContent = result.error;
-                    }
-                    setButtonLoadingState(btn, false);
+        async function apiCall(endpoint, options = {}) { try { if (options.body && typeof options.body === 'object') { options.headers = { 'Content-Type': 'application/json', ...options.headers }; options.body = JSON.stringify(options.body); } const response = await fetch(`${BASE_URL}/api${endpoint}`, { credentials: 'include', ...options }); const contentType = response.headers.get("content-type"); if (contentType && contentType.includes("application/json")) { const data = await response.json(); if (!response.ok) { if (response.status === 401 && endpoint !== '/status') handleLogout(false); throw new Error(data.error || `Request failed with status ${response.status}`); } return { success: true, ...data }; } else { const text = await response.text(); throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`); } } catch (error) { showToast(error.message, 'error'); console.error("API Call Error:", error); return { success: false, error: error.message }; } }
+        
+        function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(content); if (setupFunction) setupFunction(); injectLogo(); }
+        function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); container.innerHTML = ''; container.appendChild(content); if (setupFunction) setupFunction(); }
+        function showModal(content, setupFunction, maxWidth = 'max-w-2xl') { const template = document.getElementById('template-modal').content.cloneNode(true); const modalBody = template.querySelector('.modal-body'); if(typeof content === 'string') { modalBody.innerHTML = content; } else { modalBody.innerHTML = ''; modalBody.appendChild(content); } template.querySelector('.modal-content').classList.replace('max-w-2xl', maxWidth); template.querySelector('button').addEventListener('click', hideModal); DOMElements.modalContainer.innerHTML = ''; DOMElements.modalContainer.appendChild(template); if(setupFunction) setupFunction(DOMElements.modalContainer); }
+        function hideModal() { DOMElements.modalContainer.innerHTML = ''; }
+        
+        function showConfirmationModal(message, onConfirm) { const content = document.createElement('div'); content.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Are you sure?</h3><p class="text-gray-300 mb-6">${escapeHtml(message)}</p><div class="flex justify-end gap-4"><button id="confirm-cancel" class="bg-gray-600/50 hover:bg-gray-600 shiny-button text-white font-bold py-2 px-4 rounded-lg">Cancel</button><button id="confirm-ok" class="bg-red-600/80 hover:bg-red-600 shiny-button text-white font-bold py-2 px-4 rounded-lg">Confirm</button></div>`; showModal(content, (modal) => { modal.querySelector('#confirm-cancel').addEventListener('click', hideModal); modal.querySelector('#confirm-ok').addEventListener('click', () => { onConfirm(); hideModal(); }); }, 'max-w-md'); }
+
+        function showFullScreenLoader(message = 'Loading...') { const loaderTemplate = document.getElementById('template-full-screen-loader'); const loaderContent = loaderTemplate.content.cloneNode(true); loaderContent.querySelector('.waiting-text').textContent = message; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(loaderContent); }
+        function connectSocket() { if (appState.socket) appState.socket.disconnect(); appState.socket = io(BASE_URL); appState.socket.on('connect', () => { console.log('Socket connected!'); appState.socket.emit('join', { room: `user_${appState.currentUser.id}` }); }); appState.socket.on('new_message', (data) => { if (appState.selectedClass && data.class_id === appState.selectedClass.id) appendChatMessage(data); }); appState.socket.on('new_notification', (data) => { showToast(`Notification: ${data.content}`, 'info'); updateNotificationBell(true); }); }
+        
+        // --- Page Setup Functions ---
+        function setupLandingPage() { renderPage('template-landing-page', () => { document.getElementById('go-to-login-btn').addEventListener('click', () => { appState.isLoginView = true; setupRoleChoicePage(); }); document.getElementById('go-to-signup-btn').addEventListener('click', () => { appState.isLoginView = false; setupRoleChoicePage(); }); }); }
+        
+        function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => { btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); }); }); document.getElementById('back-to-landing').addEventListener('click', main); }); }
+        function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
+        function updateAuthView() { const title = document.getElementById('auth-title'); const subtitle = document.getElementById('auth-subtitle'); const submitBtn = document.getElementById('auth-submit-btn'); const toggleBtn = document.getElementById('auth-toggle-btn'); const emailField = document.getElementById('email-field'); const teacherKeyField = document.getElementById('teacher-key-field'); const adminKeyField = document.getElementById('admin-key-field'); const usernameInput = document.getElementById('username'); document.getElementById('account_type').value = appState.selectedRole; title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`; adminKeyField.classList.add('hidden'); teacherKeyField.classList.add('hidden'); usernameInput.disabled = false; if (appState.selectedRole === 'admin') { toggleBtn.classList.add('hidden'); if(appState.isLoginView) { adminKeyField.classList.remove('hidden'); document.getElementById('admin-secret-key').required = true; } } else { toggleBtn.classList.remove('hidden'); } if (appState.isLoginView) { subtitle.textContent = 'Sign in to continue'; submitBtn.textContent = 'Login'; toggleBtn.innerHTML = "Don't have an account? <span class='font-semibold'>Sign Up</span>"; emailField.classList.add('hidden'); document.getElementById('email').required = false; } else { subtitle.textContent = 'Create your Account'; submitBtn.textContent = 'Sign Up'; toggleBtn.innerHTML = "Already have an account? <span class='font-semibold'>Login</span>"; emailField.classList.remove('hidden'); document.getElementById('email').required = true; if (appState.selectedRole === 'teacher') { teacherKeyField.classList.remove('hidden'); document.getElementById('teacher-secret-key').required = true; } } }
+        
+        async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const button = form.querySelector('button[type="submit"]'); toggleButtonLoading(button, true); const endpoint = appState.isLoginView ? '/login' : '/signup'; const body = Object.fromEntries(new FormData(form)); const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; toggleButtonLoading(button, false, appState.isLoginView ? 'Login' : 'Sign Up'); } }
+
+        function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.aiPersonas = settings.ai_personas || {}; if (user.theme_preference) { applyTheme(user.theme_preference); } showFullScreenLoader('Logging you in...'); setupDashboard(user, settings); }
+
+        function setupDashboard(user, settings) { if (!user) return setupAuthPage(); connectSocket(); renderPage('template-main-dashboard', () => { const navLinks = document.getElementById('nav-links'); const dashboardTitle = document.getElementById('dashboard-title'); let tabs = []; if (user.role === 'student' || user.role === 'teacher') { dashboardTitle.textContent = user.role === 'student' ? "Student Hub" : "Teacher Hub"; appState.currentTab = 'my-classes'; tabs = [ { id: 'my-classes', label: 'My Classes' }, { id: 'team-mode', label: 'Team Mode' }, { id: 'ai-settings', label: 'AI Settings' }, { id: 'billing', label: 'Billing' }, { id: 'profile', label: 'Profile' } ]; } else if (user.role === 'admin') { dashboardTitle.textContent = "Admin Panel"; appState.currentTab = 'admin-dashboard'; tabs = [ { id: 'admin-dashboard', label: 'Dashboard' }, { id: 'profile', label: 'My Profile' } ]; } navLinks.innerHTML = tabs.map(tab => `<button data-tab="${tab.id}" class="dashboard-tab text-left text-gray-300 hover:bg-gray-700/50 p-3 rounded-md transition-colors">${tab.label}</button>`).join(''); document.querySelectorAll('.dashboard-tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab))); document.getElementById('logout-btn').addEventListener('click', () => handleLogout(true)); setupNotificationBell(); setupMobileNav(); switchTab(appState.currentTab); fetchBackgroundMusic(); }); }
+        
+        function switchTab(tab) { appState.currentTab = tab; appState.selectedClass = null; document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === tab)); const contentContainer = document.getElementById('dashboard-content'); const setups = { 'my-classes': setupMyClassesTab, 'team-mode': setupTeamModeTab, 'profile': setupProfileTab, 'billing': setupBillingTab, 'admin-dashboard': setupAdminDashboardTab, 'ai-settings': setupAiSettingsTab }; if (setups[tab]) { contentContainer.classList.add('opacity-0'); setTimeout(() => { setups[tab](contentContainer); contentContainer.classList.remove('opacity-0'); }, 150); } }
+        
+        // --- Tab Content Functions ---
+        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'); const listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); listContainer.addEventListener('click', (e) => { const classCard = e.target.closest('div[data-id]'); if (classCard) { selectClass(classCard.dataset.id); } }); const result = await apiCall('/my_classes'); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(createClassCardHTML).join(''); } }); }
+        
+        function createClassCardHTML(cls) { return `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors fade-in" data-id="${cls.id}" data-name="${cls.name}"><div class="font-bold text-white text-lg">${escapeHtml(cls.name)}</div><div class="text-gray-400 text-sm">Teacher: ${escapeHtml(cls.teacher_name)}</div>${appState.currentUser.role === 'teacher' ? `<div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(cls.code)}</span></div>` : ''}</div>`; }
+        
+        async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const button = document.getElementById('join-class-btn'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); toggleButtonLoading(button, true); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); toggleButtonLoading(button, false, 'Join'); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; const listContainer = document.getElementById('classes-list'); const newCardHTML = createClassCardHTML(result.class); listContainer.insertAdjacentHTML('beforeend', newCardHTML); } }
+
+        async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const button = document.getElementById('create-class-btn'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); toggleButtonLoading(button, true); const result = await apiCall('/classes', { method: 'POST', body: { name } }); toggleButtonLoading(button, false, 'Create'); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; const listContainer = document.getElementById('classes-list'); const newCardHTML = createClassCardHTML(result.class); listContainer.insertAdjacentHTML('beforeend', newCardHTML); } }
+        
+        function setupAiSettingsTab(container) {
+            renderSubTemplate(container, 'template-ai-settings', () => {
+                const select = document.getElementById('ai-persona-select');
+                const description = document.getElementById('ai-persona-description');
+                
+                select.innerHTML = Object.entries(appState.aiPersonas).map(([key, value]) => {
+                    const name = key.charAt(0).toUpperCase() + key.slice(1).replace('-', ' ');
+                    return `<option value="${key}">${name}</option>`;
+                }).join('');
+
+                select.value = appState.currentUser.ai_persona || 'default';
+                description.textContent = appState.aiPersonas[select.value] || '';
+
+                select.addEventListener('change', () => {
+                    description.textContent = appState.aiPersonas[select.value] || '';
                 });
+
+                document.getElementById('ai-settings-form').addEventListener('submit', handleUpdateAiSettings);
             });
         }
-        
-        // --- MAIN APP INITIALIZATION ---
-        async function main() {
-            const path = window.location.pathname;
-            if (path.startsWith('/reset-password/')) {
-                const token = path.split('/')[2];
-                setupResetPasswordPage(token);
-                return;
-            }
 
-            showFullScreenLoader('Initializing Portal...');
-            const result = await apiCall('/status');
+        async function handleUpdateAiSettings(e) {
+            e.preventDefault();
+            const form = e.target;
+            const button = form.querySelector('button[type="submit"]');
+            const body = Object.fromEntries(new FormData(form));
+            
+            toggleButtonLoading(button, true);
+            const result = await apiCall('/update_profile', { method: 'POST', body });
+            toggleButtonLoading(button, false, 'Save AI Settings');
+
             if (result.success) {
-                appState.siteSettings = result.settings;
-                if (result.user) {
-                    handleLoginSuccess(result.user, result.settings);
-                } else {
-                    applyCustomizations(result.settings);
-                    renderPage('template-welcome-screen', () => {
-                        document.getElementById('enter-portal-btn').addEventListener('click', setupRoleChoicePage);
-                    });
-                }
-            } else {
-                // Failsafe if status check fails
-                setupRoleChoicePage();
+                appState.currentUser = result.user; // STABILITY FIX
+                showToast('AI Persona updated!', 'success');
             }
+        }
+
+        async function setupTeamModeTab(container) { renderSubTemplate(container, 'template-team-mode', async () => { renderSubTemplate(document.getElementById('team-action-container'), 'template-team-actions', () => { document.getElementById('join-team-btn').addEventListener('click', handleJoinTeam); document.getElementById('create-team-btn').addEventListener('click', handleCreateTeam); }); const listContainer = document.getElementById('teams-list'); const result = await apiCall('/teams'); if (result.success && result.teams) { if (result.teams.length === 0) { listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You are not part of any teams yet.</p>`; } else { listContainer.innerHTML = result.teams.map(team => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${team.id}"><div class="font-bold text-white text-lg">${escapeHtml(team.name)}</div><div class="text-gray-400 text-sm">Owner: ${escapeHtml(team.owner_name)}</div><div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></div><div class="text-sm text-gray-400">${escapeHtml(String(team.member_count))} members</div></div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => selectTeam(e.currentTarget.dataset.id))); } } }); }
+        async function selectTeam(teamId) { const result = await apiCall(`/teams/${teamId}`); if (!result.success) return; const team = result.team; let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${escapeHtml(team.name)}</h3><p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></p><h4 class="text-lg font-semibold text-white mb-2">Members</h4><ul class="space-y-2">${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(m.username)} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}</ul>`; showModal(modalContent); }
+        async function handleJoinTeam() { const code = document.getElementById('team-code').value.trim().toUpperCase(); if (!code) return showToast('Please enter a team code.', 'error'); const result = await apiCall('/join_team', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
+        async function handleCreateTeam() { const name = document.getElementById('new-team-name').value.trim(); if (!name) return showToast('Please enter a team name.', 'error'); const result = await apiCall('/teams', { method: 'POST', body: { name } }); if (result.success) { showToast(`Team "${escapeHtml(result.team.name)}" created!`, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
+        function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; const themeSelect = document.createElement('select'); themeSelect.id = 'theme-select'; themeSelect.name = 'theme_preference'; themeSelect.className = 'w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600'; themeSelect.innerHTML = Object.keys(themes).map(themeName => `<option value="${themeName}">${themeName.charAt(0).toUpperCase() + themeName.slice(1)}</option>`).join(''); themeSelect.value = appState.currentUser.theme_preference || 'dark'; const themeControl = document.createElement('div'); themeControl.className = 'mb-4'; themeControl.innerHTML = '<label for="theme-select" class="block text-sm font-medium text-gray-300 mb-1">Theme</label>'; themeControl.appendChild(themeSelect); document.getElementById('profile-form').prepend(themeControl); document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
+        async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser = result.user; applyTheme(body.theme_preference); showToast('Profile updated!', 'success'); } }
+        function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
+        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
+        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; const personaSelect = document.getElementById('ai-persona-input'); personaSelect.innerHTML = Object.keys(appState.aiPersonas).map(key => `<option value="${key}">${key.charAt(0).toUpperCase() + key.slice(1)}</option>`).join(''); personaSelect.value = result.settings.ai_persona || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } else if (view === 'music') { renderSubTemplate(container, 'template-admin-music-view', async () => { const musicListContainer = document.getElementById('music-list'); const musicResult = await apiCall('/admin/music'); if (musicResult.success && musicResult.music) { musicListContainer.innerHTML = musicResult.music.map(m => `<li class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg"><span>${escapeHtml(m.name)}</span><div class="space-x-2"><button class="text-green-400 hover:text-green-300 play-music-btn" data-url="${escapeHtml(m.url)}">Play</button><button class="text-red-500 hover:text-red-400 delete-music-btn" data-id="${m.id}">Delete</button></div></li>`).join(''); document.getElementById('add-music-btn').addEventListener('click', handleAddMusic); musicListContainer.querySelectorAll('.play-music-btn').forEach(btn => btn.addEventListener('click', (e) => playBackgroundMusic(e.currentTarget.dataset.url))); musicListContainer.querySelectorAll('.delete-music-btn').forEach(btn => btn.addEventListener('click', (e) => handleDeleteMusic(e.currentTarget.dataset.id))); } }); } }
+        async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\\S+@\\S+\\.\\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
+        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
+        async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
+        function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(String(a.submission_count))} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(String(q.time_limit))} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); }); } }
+        async function handleSendChat(e) { e.preventDefault(); const input = document.getElementById('chat-input'); const button = document.getElementById('send-chat-btn'); const message = input.value.trim(); if (!message) return; toggleButtonLoading(button, true); input.disabled = true; const result = await apiCall('/chat/send', { method: 'POST', body: { prompt: message, class_id: appState.selectedClass.id } }); if (result.success) { input.value = ''; } else { const errorMsg = { id: 'error-' + Date.now(), class_id: appState.selectedClass.id, sender_id: null, sender_name: "System Error", content: result.error || "Could not send message.", timestamp: new Date().toISOString() }; appendChatMessage(errorMsg); } toggleButtonLoading(button, false, 'Send'); input.disabled = false; input.focus(); }
+        function appendChatMessage(message) { const messagesDiv = document.getElementById('chat-messages'); if (!messagesDiv) return; const isCurrentUser = message.sender_id === appState.currentUser.id; const isAI = message.sender_id === null; const msgWrapper = document.createElement('div'); msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'}`; const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? aiAvatarSvg : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`; const bubble = `<div class="flex flex-col"><span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span><div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">${escapeHtml(message.content)}</div><span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span></div>`; msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble; messagesDiv.appendChild(msgWrapper); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
+        async function fetchBackgroundMusic() { const result = await apiCall('/admin/music'); if (result.success && result.music.length > 0) { const randomTrack = result.music[Math.floor(Math.random() * result.music.length)]; DOMElements.backgroundMusic.src = randomTrack.url; DOMElements.backgroundMusic.play().catch(e => console.error("Music playback failed:", e)); } }
+        async function main() { const status = await apiCall('/status'); if (status.success && status.user) { appState.currentUser = status.user; appState.aiPersonas = status.settings.ai_personas || {}; applyTheme(status.user.theme_preference || 'dark'); setupDashboard(status.user, status.settings); } else { setupLandingPage(); } }
+        function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`; document.getElementById('notification-bell').addEventListener('click', handleNotifications); updateNotificationBell(); }
+        async function updateNotificationBell(hasUnread = false) { const dot = document.getElementById('notification-dot'); if(!dot) return; if (hasUnread) { dot.classList.remove('hidden'); } else { const result = await apiCall('/notifications/unread_count'); if (result.success && result.count > 0) dot.classList.remove('hidden'); else dot.classList.add('hidden'); } }
+        async function handleNotifications() { const result = await apiCall('/notifications'); if (!result.success) return; const modalContent = document.createElement('div'); modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`; showModal(modalContent); await apiCall('/notifications/mark_read', { method: 'POST' }); updateNotificationBell(); }
+        async function handleUpgrade() { if (!window.Stripe) { showToast('Stripe.js has not loaded.', 'error'); return; } const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY); const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } }); if (result.success && result.session_id) { stripe.redirectToCheckout({ sessionId: result.session_id }); } }
+        async function handleManageBilling() { const result = await apiCall('/create-portal-session', { method: 'POST' }); if (result.success && result.url) { window.location.href = result.url; } }
+        
+        function handleAdminUserAction(action, userId) { if (action === 'delete') { showConfirmationModal('This will permanently delete the user and all their data.', async () => { const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' }); if (result.success) { showToast('User deleted.', 'success'); switchAdminView('users'); } }); } else if (action === 'edit') { showToast('Edit user is not yet implemented.', 'info'); } }
+        function handleAdminDeleteClass(classId) { showConfirmationModal('This will permanently delete the class and all its data.', async () => { const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' }); if (result.success) { showToast('Class deleted.', 'success'); switchAdminView('classes'); } }); }
+        async function handleAdminUpdateSettings(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/admin/update_settings', { method: 'POST', body }); if (result.success) { showToast('Settings updated.', 'success'); } }
+        async function handleToggleMaintenance() { const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' }); if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success'); }
+        async function handleAddMusic() { const name = document.getElementById('music-name').value; const url = document.getElementById('music-url').value; if (!name || !url) return showToast('Please provide a name and URL.', 'error'); const result = await apiCall('/admin/music', { method: 'POST', body: { name, url } }); if (result.success) { showToast('Music added.', 'success'); switchAdminView('music'); } }
+        function handleDeleteMusic(musicId) { showConfirmationModal('Are you sure you want to delete this music track?', async () => { const result = await apiCall(`/admin/music/${musicId}`, { method: 'DELETE' }); if (result.success) { showToast('Music deleted.', 'success'); switchAdminView('music'); } }); }
+        
+        async function handleCreateAssignment() { showToast('Create assignment is not yet implemented.', 'info'); }
+        async function viewAssignmentDetails(assignmentId) { showToast('View assignment details is not yet implemented.', 'info'); }
+        async function handleCreateQuiz() { showToast('Create quiz is not yet implemented.', 'info'); }
+        async function viewQuizDetails(quizId) { showToast('View quiz details is not yet implemented.', 'info'); }
+
+        // --- RESPONSIVENESS: Mobile Nav Logic ---
+        function setupMobileNav() {
+            const toggleBtn = document.getElementById('mobile-nav-toggle');
+            const nav = document.getElementById('main-nav');
+            const overlay = document.getElementById('content-overlay');
+            const navLinks = nav.querySelector('#nav-links');
+
+            const closeNav = () => {
+                nav.classList.remove('open');
+                overlay.classList.remove('active');
+            };
+
+            toggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                nav.classList.toggle('open');
+                overlay.classList.toggle('active');
+            });
+
+            overlay.addEventListener('click', closeNav);
+            navLinks.addEventListener('click', (e) => {
+                if (e.target.matches('.dashboard-tab')) {
+                    closeNav();
+                }
+            });
         }
 
         main();
-    } catch (error) {
-        console.error("A critical error occurred:", error);
-        document.body.innerHTML = `<div style="background-color: #110D19; color: #EADFFF; font-family: sans-serif; padding: 2rem; height: 100vh; text-align: center;"><h1>Application Error</h1><p>A critical error occurred. Please check the console.</p><pre style="background-color:#211A2E; padding: 1rem; border-radius: 8px; text-align: left; margin-top: 1rem;">${error.stack}</pre></div>`;
-    }
-});
+    });
+    </script>
+</body>
+</html>
+"""
 
-# --- static/css/style.css ---
-:root {
-    --brand-hue: 260; 
-    --bg-dark: #110D19; 
-    --bg-med: #211A2E; 
-    --bg-light: #3B2D4F;
-    --glow-color: hsl(var(--brand-hue), 90%, 60%); 
-    --text-color: #EADFFF; 
-    --text-secondary-color: #A17DFF;
-}
-body {
-    background-color: var(--bg-dark); 
-    font-family: 'Inter', sans-serif; 
-    color: var(--text-color);
-    background-size: cover; 
-    background-position: center; 
-    background-attachment: fixed; 
-    transition: background-image 0.5s ease-in-out;
-}
-.font-title { font-family: 'Cinzel Decorative', cursive; }
-.glassmorphism { 
-    background: rgba(33, 26, 46, 0.5); 
-    backdrop-filter: blur(12px); 
-    -webkit-backdrop-filter: blur(12px); 
-    border: 1px solid rgba(161, 125, 255, 0.1); 
-}
-.brand-gradient-text { 
-    background-image: linear-gradient(120deg, hsl(var(--brand-hue), 90%, 60%), hsl(var(--brand-hue), 80%, 50%)); 
-    -webkit-background-clip: text; 
-    -webkit-text-fill-color: transparent; 
-    text-shadow: 0 0 10px hsla(var(--brand-hue), 80%, 50%, 0.3); 
-}
-.brand-gradient-bg { 
-    background-image: linear-gradient(120deg, hsl(var(--brand-hue), 85%, 55%), hsl(var(--brand-hue), 90%, 50%)); 
-}
-.shiny-button { 
-    transition: all 0.2s ease-in-out; 
-    box-shadow: 0 0 5px rgba(0,0,0,0.5), 0 0 10px var(--glow-color, #fff) inset; 
-}
-.shiny-button:hover:not(:disabled) { 
-    transform: translateY(-2px); 
-    box-shadow: 0 4px 15px hsla(var(--brand-hue), 70%, 40%, 0.4), 0 0 5px var(--glow-color, #fff) inset; 
-}
-.shiny-button:disabled { 
-    cursor: not-allowed; 
-    filter: grayscale(50%); 
-    opacity: 0.7; 
-}
-.fade-in { 
-    animation: fadeIn 0.5s ease-out forwards; 
-}
-@keyframes fadeIn { 
-    from { opacity: 0; transform: translateY(-10px); } 
-    to { opacity: 1; transform: translateY(0); } 
-}
-.active-tab { 
-    background-color: var(--bg-light) !important; 
-    color: white !important; 
-    position:relative; 
-}
-.active-tab::after { 
-    content: ''; 
-    position: absolute; 
-    bottom: 0; 
-    left: 10%; 
-    width: 80%; 
-    height: 2px; 
-    background: var(--glow-color); 
-    border-radius: 2px; 
-}
-.dynamic-bg { 
-    background: linear-gradient(-45deg, var(--bg-dark), var(--bg-light), var(--bg-med), var(--bg-dark)); 
-    background-size: 400% 400%; 
-    animation: gradientBG 20s ease infinite; 
-}
-@keyframes gradientBG { 
-    0% { background-position: 0% 50%; } 
-    50% { background-position: 100% 50%; } 
-    100% { background-position: 0% 50%; } 
-}
-.full-screen-loader { 
-    position: fixed; 
-    top: 0; left: 0; right: 0; bottom: 0; 
-    background: rgba(17, 13, 25, 0.9); 
-    backdrop-filter: blur(8px); 
-    display: flex; 
-    align-items: center; 
-    justify-content: center; 
-    flex-direction: column; 
-    z-index: 1001; 
-    transition: opacity 0.3s ease; 
-}
-.waiting-text { 
-    margin-top: 1rem; 
-    font-size: 1.25rem; 
-    color: var(--text-secondary-color); 
-    animation: pulse 2s infinite; 
-}
-@keyframes pulse { 
-    0%, 100% { opacity: 1; } 
-    50% { opacity: 0.7; } 
-}
-.gradient-overlay { 
-    position: absolute; 
-    inset: 0; 
-    background: radial-gradient(circle at center, hsla(var(--brand-hue), 90%, 60%, 0.15) 0%, transparent 70%); 
-}
-.particles { 
-    position: absolute; 
-    inset: 0; 
-    background: transparent; 
-    animation: particles 20s linear infinite; 
-}
-.particles::before {
-    content: ''; 
-    position: absolute; 
-    width: 2px; 
-    height: 2px; 
-    background: hsla(var(--brand-hue), 90%, 60%, 0.3);
-    box-shadow: 10vw 20vh 2px hsla(var(--brand-hue), 90%, 60%, 0.2), 30vw 40vh 2px hsla(var(--brand-hue), 90%, 60%, 0.3), 50vw 10vh 2px hsla(var(--brand-hue), 90%, 60%, 0.25), 70vw 70vh 2px hsla(var(--brand-hue), 90%, 60%, 0.2), 90vw 30vh 2px hsla(var(--brand-hue), 90%, 60%, 0.3);
-    animation: float 15s ease-in-out infinite;
-}
-@keyframes float { 
-    0%, 100% { transform: translateY(0); opacity: 0.5; } 
-    50% { transform: translateY(-20px); opacity: 0.8; } 
-}
-@keyframes particles { 
-    0% { transform: translateY(0); } 
-    100% { transform: translateY(-1000px); } 
-}
-.animate-pulse-slow { 
-    animation: pulse-slow 3s ease-in-out infinite; 
-}
-@keyframes pulse-slow { 
-    0%, 100% { transform: scale(1); opacity: 1; } 
-    50% { transform: scale(1.02); opacity: 0.95; } 
-}
-.animate-fade-in-up { 
-    animation: fade-in-up 0.8s ease-out forwards; 
-}
-@keyframes fade-in-up { 
-    from { opacity: 0; transform: translateY(20px); } 
-    to { opacity: 1; transform: translateY(0); } 
-}
+@app.route('/')
+def index():
+    return HTML_CONTENT
+
+@app.route('/reset/<token>')
+def reset_password_page(token):
+    try:
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)
+    except (SignatureExpired, BadTimeSignature):
+        return render_template_string("<h1>Password reset link is expired or invalid.</h1><p>Please request a new one.</p>")
+    return render_template_string(f"""
+        <h1>Reset Your Password</h1>
+        <form id="reset-form">
+            <input type="hidden" name="token" value="{token}">
+            <input type="password" name="password" placeholder="New Password" required>
+            <input type="password" name="confirm_password" placeholder="Confirm Password" required>
+            <button type="submit">Reset Password</button>
+        </form>
+        <div id="message"></div>
+        <script>
+            document.getElementById('reset-form').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const password = form.password.value;
+                const confirm_password = form.confirm_password.value;
+                const token = form.token.value;
+                if (password !== confirm_password) {{
+                    document.getElementById('message').textContent = 'Passwords do not match.';
+                    return;
+                }}
+                const response = await fetch('/api/reset-password', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ token, password }})
+                }});
+                const result = await response.json();
+                document.getElementById('message').textContent = result.message || result.error;
+            }});
+        </script>
+    """)
+
+# ==============================================================================
+# --- 5. API ROUTES - AUTHENTICATION ---
+# ==============================================================================
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Generic error handler to catch unhandled exceptions."""
+    logging.error(f"Unhandled exception: {str(e)}", exc_info=True)
+    return jsonify(error='An internal server error occurred.'), 500
+
+@app.route('/api/signup', methods=['POST'])
+def signup():
+    """Register a new user."""
+    data = request.json
+    required_fields = ['username', 'password', 'email', 'account_type']
+    if not all(field in data for field in required_fields):
+        return jsonify(error='Missing required fields.'), 400
+    
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify(error='Username is already taken.'), 409
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify(error='Email is already registered.'), 409
+    
+    if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
+        return jsonify(error='Invalid secret key for teacher account.'), 403
+    if data['account_type'] == 'admin':
+        return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
+        
+    try:
+        hashed_pw = generate_password_hash(data['password'])
+        
+        default_persona_setting = SiteSettings.query.get('ai_persona')
+        default_persona = default_persona_setting.value if default_persona_setting else 'default'
+
+        new_user = User(
+            username=data['username'],
+            email=data['email'],
+            password_hash=hashed_pw,
+            role=data['account_type'],
+            ai_persona=default_persona
+        )
+        db.session.add(new_user)
+        db.session.commit()
+
+        login_user(new_user)
+        return jsonify(success=True, user=new_user.to_dict(), settings={'ai_personas': AI_PERSONAS})
+        
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify(error='A database integrity error occurred. The username or email might already exist.'), 409
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error during signup: {str(e)}", exc_info=True)
+        return jsonify(error='An unexpected error occurred during account creation.'), 500
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Authenticate and log in a user."""
+    data = request.json
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify(error='Missing username or password.'), 400
+        
+    user = User.query.filter_by(username=data['username']).first()
+    if not user or not check_password_hash(user.password_hash, data['password']):
+        return jsonify(error='Invalid username or password.'), 401
+        
+    if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
+        return jsonify(error='Invalid admin secret key.'), 403
+        
+    if not user.profile:
+        try:
+            user.profile = Profile()
+            db.session.commit()
+            logging.info(f"Profile created on-demand for legacy user: {user.id}")
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Error creating profile for user {user.id} on login: {str(e)}")
+            
+    login_user(user)
+    return jsonify(success=True, user=user.to_dict(), settings={'ai_personas': AI_PERSONAS})
+
+@app.route('/api/logout')
+@login_required
+def logout():
+    """Log out the current user."""
+    logout_user()
+    return jsonify(success=True, message="You have been logged out.")
+
+@app.route('/api/status')
+def status():
+    """Check the current user's authentication status."""
+    if current_user.is_authenticated:
+        return jsonify(success=True, user=current_user.to_dict(), settings={'ai_personas': AI_PERSONAS})
+    return jsonify(success=False, user=None)
+
+@app.route('/api/request-password-reset', methods=['POST'])
+def request_password_reset():
+    """Send a password reset email to a user."""
+    data = request.json
+    user = User.query.filter_by(email=data.get('email')).first()
+    if user:
+        try:
+            token = password_reset_serializer.dumps(user.email, salt=app.config['SECURITY_PASSWORD_SALT'])
+            reset_url = url_for('reset_password_page', token=token, _external=True)
+            msg = Message('Password Reset Request for Myth AI', recipients=[user.email])
+            msg.body = f'To reset your password, please click the following link: {reset_url}\\n\\nIf you did not request this, please ignore this email.'
+            mail.send(msg)
+        except Exception as e:
+            logging.error(f"Failed to send password reset email: {str(e)}")
+    return jsonify(success=True, message='If an account with that email exists, a password reset link has been sent.')
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    """Reset a user's password using a valid token."""
+    data = request.json
+    token = data.get('token')
+    new_password = data.get('password')
+
+    if not token or not new_password:
+        return jsonify(error='Missing token or new password.'), 400
+
+    try:
+        email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)
+        user = User.query.filter_by(email=email).first_or_404()
+        user.password_hash = generate_password_hash(new_password)
+        db.session.commit()
+        return jsonify(success=True, message='Your password has been reset successfully.')
+    except (SignatureExpired, BadTimeSignature):
+        return jsonify(error='The password reset link is invalid or has expired.'), 400
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error resetting password: {str(e)}")
+        return jsonify(error='An unexpected error occurred while resetting the password.'), 500
+
+# ==============================================================================
+# --- 6. API ROUTES - CLASSES & CHAT ---
+# ==============================================================================
+
+def user_has_class_access(class_id, user):
+    """Helper function to check if a user has access to a class."""
+    if not class_id or not user:
+        return False
+    cls = Class.query.get(class_id)
+    if not cls:
+        return False
+    is_teacher = user.id == cls.teacher_id
+    is_student = cls.students.filter_by(id=user.id).first() is not None
+    is_admin = user.role == 'admin'
+    return is_teacher or is_student or is_admin
+
+@app.route('/api/my_classes')
+@login_required
+def my_classes():
+    """Get all classes for the current user."""
+    if current_user.role == 'teacher':
+        classes = current_user.taught_classes
+    else:
+        classes = current_user.enrolled_classes.all()
+    
+    class_list = [{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code} for c in classes]
+    return jsonify(success=True, classes=class_list)
+
+@app.route('/api/classes', methods=['POST'])
+@teacher_required
+def create_class():
+    """Create a new class."""
+    data = request.json
+    if not data or 'name' not in data:
+        return jsonify(error='Class name is required.'), 400
+    
+    try:
+        code = secrets.token_hex(4).upper()
+        while Class.query.filter_by(code=code).first():
+            code = secrets.token_hex(4).upper()
+            
+        new_class = Class(name=data['name'], code=code, teacher_id=current_user.id)
+        db.session.add(new_class)
+        db.session.commit()
+        
+        class_data = {'id': new_class.id, 'name': new_class.name, 'teacher_name': current_user.username, 'code': new_class.code}
+        return jsonify(success=True, class_=class_data), 201
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error creating class: {str(e)}")
+        return jsonify(error='Failed to create the class.'), 500
+
+@app.route('/api/join_class', methods=['POST'])
+@login_required
+def join_class():
+    """Allow a student to join a class using a code."""
+    data = request.json
+    code = data.get('code', '').upper()
+    if not code:
+        return jsonify(error='Class code is required.'), 400
+        
+    cls = Class.query.filter_by(code=code).first()
+    if not cls:
+        return jsonify(error='Invalid class code.'), 404
+        
+    if cls.students.filter_by(id=current_user.id).first():
+        return jsonify(error='You are already enrolled in this class.'), 400
+        
+    try:
+        cls.students.append(current_user)
+        db.session.commit()
+        
+        class_data = {'id': cls.id, 'name': cls.name, 'teacher_name': cls.teacher.username, 'code': cls.code}
+        return jsonify(success=True, message=f'Successfully joined class: {cls.name}', class_=class_data)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error joining class: {str(e)}")
+        return jsonify(error='An unexpected error occurred while joining the class.'), 500
+
+@app.route('/api/classes/<class_id>')
+@login_required
+def get_class_details(class_id):
+    """Get detailed information about a specific class."""
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="You do not have permission to access this class."), 403
+        
+    cls = Class.query.options(db.joinedload(Class.students).subqueryload(User.profile)).get_or_404(class_id)
+    
+    class_data = {'id': cls.id, 'name': cls.name, 'students': [{'id': s.id, 'username': s.username, 'profile': {'bio': s.profile.bio or '', 'avatar': s.profile.avatar or ''} if s.profile else {'bio': '', 'avatar': ''}} for s in cls.students]}
+    return jsonify(success=True, class_=class_data)
+
+@app.route('/api/class_messages/<class_id>')
+@login_required
+def get_class_messages(class_id):
+    """Get all chat messages for a specific class."""
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="You do not have permission to view these messages."), 403
+        
+    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp.asc()).all()
+    
+    message_list = [{'id': m.id, 'sender_id': m.sender_id, 'sender_name': m.sender.username if m.sender else 'AI Assistant', 'sender_avatar': m.sender.profile.avatar if m.sender and m.sender.profile else None, 'content': m.content, 'timestamp': m.timestamp.isoformat()} for m in messages]
+    return jsonify(success=True, messages=message_list)
+
+def get_gemini_response(prompt, persona_description):
+    """Gets a response from the Google Gemini API."""
+    api_key = SITE_CONFIG.get("GEMINI_API_KEY")
+    if not api_key:
+        logging.warning("GEMINI_API_KEY is not set. Returning a placeholder response.")
+        return f"As {persona_description}, I would normally process your request, but the API key is missing."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    
+    full_prompt = f"System instruction: You are {persona_description}. Your name is Myth AI. You were created by Hossein. Respond to the following user prompt.\n\nUser: {prompt}\n\nAI:"
+    
+    payload = { "contents": [{ "parts": [{"text": full_prompt}] }] }
+    
+    try:
+        response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'})
+        response.raise_for_status()
+        data = response.json()
+        
+        candidates = data.get('candidates', [])
+        if candidates and 'content' in candidates[0] and 'parts' in candidates[0]['content']:
+            parts = candidates[0]['content']['parts']
+            if parts and 'text' in parts[0]:
+                return parts[0]['text']
+        
+        logging.error(f"Unexpected Gemini API response format: {data}")
+        return "I received an unexpected response from the AI. Please try again."
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error calling Gemini API: {e}")
+        return "I'm having trouble connecting to the AI service right now. Please try again later."
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during Gemini API call: {e}")
+        return "An unexpected error occurred. Please try again."
+
+@app.route('/api/chat/send', methods=['POST'])
+@login_required
+def send_chat_and_get_ai_response():
+    data = request.json
+    class_id = data.get('class_id')
+    prompt = data.get('prompt')
+
+    if not class_id or not prompt:
+        return jsonify(error='Missing class_id or prompt.'), 400
+    if not user_has_class_access(class_id, current_user):
+        return jsonify(error="Permission denied."), 403
+
+    try:
+        user_msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=prompt)
+        db.session.add(user_msg)
+        db.session.commit()
+
+        socketio.emit('new_message', { 'id': user_msg.id, 'class_id': user_msg.class_id, 'sender_id': user_msg.sender_id, 'sender_name': current_user.username, 'sender_avatar': current_user.profile.avatar if current_user.profile else None, 'content': user_msg.content, 'timestamp': user_msg.timestamp.isoformat() }, room=f'class_{class_id}')
+
+        site_persona_setting = SiteSettings.query.get('ai_persona')
+        user_persona_key = current_user.ai_persona or (site_persona_setting.value if site_persona_setting else 'default')
+        persona_description = AI_PERSONAS.get(user_persona_key, AI_PERSONAS['default'])
+
+        ai_response_text = get_gemini_response(prompt, persona_description)
+
+        ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
+        db.session.add(ai_msg)
+        db.session.commit()
+
+        socketio.emit('new_message', { 'id': ai_msg.id, 'class_id': ai_msg.class_id, 'sender_id': None, 'sender_name': 'AI Assistant', 'sender_avatar': None, 'content': ai_msg.content, 'timestamp': ai_msg.timestamp.isoformat() }, room=f'class_{class_id}')
+        
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error in chat/AI response flow: {str(e)}", exc_info=True)
+        return jsonify(error='An internal error occurred while processing your message.'), 500
+
+# ==============================================================================
+# --- 7. API ROUTES - TEAMS ---
+# ==============================================================================
+@app.route('/api/teams')
+@login_required
+def get_my_teams():
+    teams = current_user.teams.all()
+    team_list = [{'id': t.id, 'name': t.name, 'code': t.code, 'owner_name': t.owner.username, 'member_count': t.members.count()} for t in teams]
+    return jsonify(success=True, teams=team_list)
+
+@app.route('/api/teams', methods=['POST'])
+@login_required
+def create_team():
+    data = request.json
+    if not data or not data.get('name'):
+        return jsonify(error='Team name is required.'), 400
+    try:
+        code = secrets.token_hex(4).upper()
+        while Team.query.filter_by(code=code).first():
+            code = secrets.token_hex(4).upper()
+        new_team = Team(name=data['name'], code=code, owner_id=current_user.id)
+        new_team.members.append(current_user)
+        db.session.add(new_team)
+        db.session.commit()
+        return jsonify(success=True, team={'id': new_team.id, 'name': new_team.name, 'code': new_team.code}), 201
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error creating team: {str(e)}")
+        return jsonify(error='Failed to create the team.'), 500
+
+@app.route('/api/join_team', methods=['POST'])
+@login_required
+def join_team():
+    data = request.json
+    code = data.get('code', '').upper()
+    if not code:
+        return jsonify(error='Team code is required.'), 400
+    team = Team.query.filter_by(code=code).first()
+    if not team:
+        return jsonify(error='Invalid team code.'), 404
+    if current_user in team.members:
+        return jsonify(error='You are already a member of this team.'), 400
+    try:
+        team.members.append(current_user)
+        db.session.commit()
+        return jsonify(success=True, message=f'Successfully joined team: {team.name}')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error joining team: {str(e)}")
+        return jsonify(error='An unexpected error occurred while joining the team.'), 500
+
+@app.route('/api/teams/<team_id>')
+@login_required
+def get_team_details(team_id):
+    team = Team.query.options(db.joinedload(Team.members).subqueryload(User.profile)).get_or_404(team_id)
+    if current_user not in team.members and current_user.role != 'admin':
+        return jsonify(error="You do not have permission to access this team."), 403
+    team_data = { 'id': team.id, 'name': team.name, 'code': team.code, 'owner_id': team.owner_id, 'members': [{'id': m.id, 'username': m.username, 'profile': {'bio': m.profile.bio or '', 'avatar': m.profile.avatar or ''} if m.profile else {}} for m in team.members] }
+    return jsonify(success=True, team=team_data)
+
+# ==============================================================================
+# --- 8. API ROUTES - USER PROFILE & BILLING ---
+# ==============================================================================
+@app.route('/api/update_profile', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.json
+    try:
+        profile = current_user.profile
+        if not profile:
+            profile = Profile(user_id=current_user.id)
+            db.session.add(profile)
+        
+        if 'bio' in data: profile.bio = data.get('bio')
+        if 'avatar' in data: profile.avatar = data.get('avatar')
+        if 'theme_preference' in data: current_user.theme_preference = data.get('theme_preference')
+        if 'ai_persona' in data and data.get('ai_persona') in AI_PERSONAS:
+            current_user.ai_persona = data.get('ai_persona')
+
+        db.session.commit()
+        return jsonify(success=True, user=current_user.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error updating profile for user {current_user.id}: {str(e)}")
+        return jsonify(error='Could not update profile.'), 500
+
+@app.route('/api/create-checkout-session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    data = request.json
+    price_id = data.get('price_id')
+    if not price_id:
+        return jsonify(error='Price ID is required.'), 400
+    try:
+        checkout_session = stripe.checkout.Session.create( payment_method_types=['card'], line_items=[{'price': price_id, 'quantity': 1}], mode='subscription', success_url=f'{SITE_CONFIG["YOUR_DOMAIN"]}/?session_id={{CHECKOUT_SESSION_ID}}', cancel_url=SITE_CONFIG['YOUR_DOMAIN'], customer_email=current_user.email, client_reference_id=current_user.id )
+        return jsonify(success=True, session_id=checkout_session.id)
+    except Exception as e:
+        logging.error(f"Stripe Checkout Session Error: {str(e)}")
+        return jsonify(error=str(e)), 500
+
+@app.route('/api/create-portal-session', methods=['POST'])
+@login_required
+def create_portal_session():
+    if not current_user.stripe_customer_id:
+        return jsonify(error='User does not have a Stripe customer ID.'), 400
+    try:
+        portal_session = stripe.billing_portal.Session.create( customer=current_user.stripe_customer_id, return_url=SITE_CONFIG['YOUR_DOMAIN'] )
+        return jsonify(success=True, url=portal_session.url)
+    except Exception as e:
+        logging.error(f"Stripe Portal Session Error: {str(e)}")
+        return jsonify(error=str(e)), 500
+
+@app.route('/stripe_webhooks', methods=['POST'])
+def stripe_webhooks():
+    return jsonify(status='success'), 200
+
+# ==============================================================================
+# --- 9. API ROUTES - NOTIFICATIONS ---
+# ==============================================================================
+@app.route('/api/notifications')
+@login_required
+def get_notifications():
+    notifs = current_user.notifications.order_by(Notification.timestamp.desc()).all()
+    return jsonify(success=True, notifications=[{'id': n.id, 'content': n.content, 'is_read': n.is_read, 'timestamp': n.timestamp.isoformat()} for n in notifs])
+
+@app.route('/api/notifications/unread_count')
+@login_required
+def unread_notifications_count():
+    count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
+    return jsonify(success=True, count=count)
+
+@app.route('/api/notifications/mark_read', methods=['POST'])
+@login_required
+def mark_notifications_read():
+    try:
+        Notification.query.filter_by(user_id=current_user.id, is_read=False).update({'is_read': True})
+        db.session.commit()
+        return jsonify(success=True)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error marking notifications as read for user {current_user.id}: {str(e)}")
+        return jsonify(error='Could not update notifications.'), 500
+
+# ==============================================================================
+# --- 10. API ROUTES - ADMIN PANEL ---
+# ==============================================================================
+@app.route('/api/admin/dashboard_data')
+@admin_required
+def admin_dashboard_data():
+    stats = { 'total_users': User.query.count(), 'total_classes': Class.query.count(), 'total_teams': Team.query.count(), 'active_subscriptions': User.query.filter_by(has_subscription=True).count() }
+    users = [u.to_dict() for u in User.query.all()]
+    classes = [{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code, 'student_count': c.students.count()} for c in Class.query.all()]
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
+
+@app.route('/api/admin/users/<user_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_user(user_id):
+    try:
+        user = User.query.get_or_404(user_id)
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify(success=True, message=f'User {user.username} deleted.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Admin error deleting user {user_id}: {str(e)}")
+        return jsonify(error='Could not delete user.'), 500
+
+@app.route('/api/admin/classes/<class_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_class(class_id):
+    try:
+        cls = Class.query.get_or_404(class_id)
+        db.session.delete(cls)
+        db.session.commit()
+        return jsonify(success=True, message=f'Class {cls.name} deleted.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Admin error deleting class {class_id}: {str(e)}")
+        return jsonify(error='Could not delete class.'), 500
+
+@app.route('/api/admin/update_settings', methods=['POST'])
+@admin_required
+def admin_update_settings():
+    data = request.json
+    try:
+        for key, value in data.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            if key == 'ai_persona' and value not in AI_PERSONAS:
+                continue
+            setting = SiteSettings.query.get(key)
+            if setting:
+                setting.value = value
+            else:
+                setting = SiteSettings(key=key, value=value)
+                db.session.add(setting)
+        db.session.commit()
+        return jsonify(success=True, message='Settings updated.')
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Admin error updating settings: {str(e)}")
+        return jsonify(error='Could not update settings.'), 500
+
+@app.route('/api/admin/toggle_maintenance', methods=['POST'])
+@admin_required
+def admin_toggle_maintenance():
+    try:
+        setting = SiteSettings.query.get('maintenance_mode')
+        if setting and setting.value == 'true':
+            setting.value = 'false'
+            enabled = False
+        else:
+            if not setting:
+                setting = SiteSettings(key='maintenance_mode', value='true')
+                db.session.add(setting)
+            else:
+                setting.value = 'true'
+            enabled = True
+        db.session.commit()
+        return jsonify(success=True, enabled=enabled)
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Admin error toggling maintenance mode: {str(e)}")
+        return jsonify(error='Could not toggle maintenance mode.'), 500
+
+@app.route('/api/admin/music', methods=['GET', 'POST'])
+@admin_required
+def admin_manage_music():
+    if request.method == 'POST':
+        data = request.json
+        if not data or 'name' not in data or 'url' not in data:
+            return jsonify(error='Missing name or URL for music track.'), 400
+        try:
+            music = BackgroundMusic(name=data['name'], url=data['url'], uploaded_by=current_user.id)
+            db.session.add(music)
+            db.session.commit()
+            return jsonify(success=True, message='Music track added.'), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify(error='Failed to add music track.'), 500
+    music_tracks = BackgroundMusic.query.all()
+    return jsonify(success=True, music=[{'id': m.id, 'name': m.name, 'url': m.url} for m in music_tracks])
+
+@app.route('/api/admin/music/<int:music_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_music(music_id):
+    try:
+        music = BackgroundMusic.query.get_or_404(music_id)
+        db.session.delete(music)
+        db.session.commit()
+        return jsonify(success=True, message='Music track deleted.')
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(error='Failed to delete music track.'), 500
+
+# ==============================================================================
+# --- 11. SOCKET.IO EVENTS ---
+# ==============================================================================
+@socketio.on('join')
+def on_join(data):
+    if current_user.is_authenticated:
+        room = data.get('room')
+        if room:
+            join_room(room)
+
+@socketio.on('leave')
+def on_leave(data):
+    if current_user.is_authenticated:
+        room = data.get('room')
+        if room:
+            leave_room(room)
+
+# ==============================================================================
+# --- 12. APP INITIALIZATION & DATABASE SETUP ---
+# ==============================================================================
+
+@event.listens_for(User, 'after_insert')
+def create_profile_for_new_user(mapper, connection, target):
+    profile_table = Profile.__table__
+    connection.execute(profile_table.insert().values(user_id=target.id))
+
+with app.app_context():
+    db.create_all()
+    logging.info("Database tables checked and created if they didn't exist.")
+
+    # STABILITY: Use a standard admin username and configurable password
+    if not User.query.filter_by(username='admin').first():
+        try:
+            admin_user = User(
+                username='admin',
+                email='admin@example.com',
+                password_hash=generate_password_hash(SITE_CONFIG['ADMIN_DEFAULT_PASSWORD']),
+                role='admin'
+            )
+            db.session.add(admin_user)
+            db.session.commit()
+            logging.info("Default admin user created.")
+        except IntegrityError:
+            db.session.rollback()
+            logging.warning("Default admin user already exists or could not be created.")
+
+    if not SiteSettings.query.get('ai_persona'):
+        try:
+            ai_persona_setting = SiteSettings(key='ai_persona', value='default')
+            db.session.add(ai_persona_setting)
+            db.session.commit()
+            logging.info("Default AI persona setting created.")
+        except IntegrityError:
+            db.session.rollback()
+            logging.warning("Default AI persona setting already exists.")
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True, port=5000)
+
 

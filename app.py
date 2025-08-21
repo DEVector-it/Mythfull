@@ -6,7 +6,8 @@ import time
 import uuid
 import secrets
 import requests
-from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string
+import re
+from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string, g
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from datetime import datetime, date, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -22,6 +23,9 @@ from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from flask_wtf.csrf import CSRFProtect, generate_csrf
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 # ==============================================================================
 # --- 1. INITIAL CONFIGURATION & SETUP ---
@@ -37,10 +41,32 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:/
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-very-secret-key-for-dev')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECURITY_PASSWORD_SALT', 'a-fallback-salt-for-dev')
+app.config['WTF_CSRF_SECRET_KEY'] = os.environ.get('WTF_CSRF_SECRET_KEY', 'a-super-secret-csrf-key')
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# --- Security & CORS ---
+
+# --- Security, CORS, CSRF & Rate Limiting ---
 CORS(app, supports_credentials=True, origins="*")
-Talisman(app, content_security_policy=None)
+csrf = CSRFProtect(app)
+csp = {
+    'default-src': [
+        '\'self\'',
+        'https://cdn.tailwindcss.com',
+        'https://cdnjs.cloudflare.com',
+        'https://js.stripe.com',
+        'https://fonts.googleapis.com',
+        'https://fonts.gstatic.com'
+    ]
+}
+Talisman(app, content_security_policy=csp)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # --- Site-wide Configuration Dictionary ---
 SITE_CONFIG = {
@@ -82,6 +108,10 @@ app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_SENDER')
 
+@app.after_request
+def set_csrf_cookie(response):
+    response.set_cookie('csrf_token', generate_csrf())
+    return response
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):

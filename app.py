@@ -1188,6 +1188,45 @@ def admin_dashboard_data():
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
 
+@app.route('/api/admin/create_user', methods=['POST'])
+@admin_required
+def admin_create_user():
+    """Create a new user from the admin panel."""
+    data = request.json
+    required_fields = ['username', 'password', 'email', 'role']
+    if not all(field in data for field in required_fields):
+        return jsonify(error='Missing required fields.'), 400
+    
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify(error='Username is already taken.'), 409
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify(error='Email is already registered.'), 409
+    
+    try:
+        hashed_pw = generate_password_hash(data['password'])
+        
+        default_persona_setting = SiteSettings.query.get('ai_persona')
+        default_persona = default_persona_setting.value if default_persona_setting else 'default'
+
+        new_user = User(
+            username=data['username'],
+            email=data['email'],
+            password_hash=hashed_pw,
+            role=data['role'],
+            ai_persona=default_persona
+        )
+        db.session.add(new_user)
+        db.session.commit()
+        return jsonify(success=True, message=f"User '{new_user.username}' created successfully.")
+        
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify(error='A database integrity error occurred.'), 409
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error during admin user creation: {str(e)}", exc_info=True)
+        return jsonify(error='An unexpected error occurred during account creation.'), 500
+
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_user(user_id):
@@ -1347,3 +1386,4 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+

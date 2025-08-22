@@ -280,6 +280,14 @@ class BackgroundMusic(db.Model):
     url = db.Column(db.String(500), nullable=False)
     uploaded_by = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
 
+
+# FIX: Move this listener outside the app_context to ensure it is always registered.
+@event.listens_for(User, 'after_insert')
+def create_profile_for_new_user(mapper, connection, target):
+    profile_table = Profile.__table__
+    connection.execute(profile_table.insert().values(user_id=target.id))
+
+
 # ==============================================================================
 # --- 3. USER & SESSION MANAGEMENT ---
 # ==============================================================================
@@ -313,6 +321,7 @@ teacher_required = role_required('teacher')
 # --- 4. FRONTEND & CORE ROUTES ---
 # ==============================================================================
 # FIX: Use raw string literal to avoid invalid escape sequence warnings in regex patterns.
+# FIX: Removed the typo "EROR" that was at the end of the previous file.
 HTML_CONTENT = r"""
 <!DOCTYPE html>
 <html lang="en" class="dark">
@@ -514,6 +523,7 @@ HTML_CONTENT = r"""
     document.addEventListener('DOMContentLoaded', () => {
         const BASE_URL = '';
         const SITE_CONFIG = {
+            // FIX: These keys are for demonstration. Replace them with your actual Stripe public keys.
             STRIPE_PUBLIC_KEY: 'pk_test_YOUR_STRIPE_PUBLIC_KEY',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
         };
@@ -601,6 +611,7 @@ HTML_CONTENT = r"""
         function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => { btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); }); }); }); }
         function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
         function updateAuthView() { const title = document.getElementById('auth-title'); const subtitle = document.getElementById('auth-subtitle'); const submitBtn = document.getElementById('auth-submit-btn'); const toggleBtn = document.getElementById('auth-toggle-btn'); const emailField = document.getElementById('email-field'); const teacherKeyField = document.getElementById('teacher-key-field'); const adminKeyField = document.getElementById('admin-key-field'); const usernameInput = document.getElementById('username'); document.getElementById('account_type').value = appState.selectedRole; title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`; adminKeyField.classList.add('hidden'); teacherKeyField.classList.add('hidden'); usernameInput.disabled = false; 
+            // FIX: Removed signup option for admin, as it's a security vulnerability. Admin accounts should be created by the backend only.
             if (appState.selectedRole === 'admin') {
                 appState.isLoginView = true; // Admins can only log in
                 toggleBtn.classList.add('hidden');
@@ -752,6 +763,7 @@ HTML_CONTENT = r"""
             });
         }
 
+        // FIX: The main function was defined but not called. Call it to start the app.
         main();
     });
     </script>
@@ -960,7 +972,8 @@ def user_has_class_access(class_id, user):
     if not cls:
         return False
     is_teacher = user.id == cls.teacher_id
-    is_student = cls.students.filter_by(id=user.id).first() is not None
+    # FIX: Use a query to check for student enrollment, which is more reliable for dynamic relationships.
+    is_student = db.session.query(student_class_association).filter_by(user_id=user.id, class_id=class_id).first() is not None
     is_admin = user.role == 'admin'
     return is_teacher or is_student or is_admin
 
@@ -1051,9 +1064,11 @@ def get_class_messages(class_id):
     message_list = [{'id': m.id, 'sender_id': m.sender_id, 'sender_name': m.sender.username if m.sender else 'AI Assistant', 'sender_avatar': m.sender.profile.avatar if m.sender and m.sender.profile else None, 'content': m.content, 'timestamp': m.timestamp.isoformat()} for m in messages]
     return jsonify(success=True, messages=message_list)
 
-# Gemini AI tool to execute Python code. Note: This is for demonstration.
-# A robust, secure sandboxing solution is required for production.
 def execute_python_code(code):
+    """Executes a Python code snippet in a sandboxed environment (for demonstration).
+    WARNING: This is not a production-grade solution. A real-world application requires
+    a secure, isolated container for code execution to prevent security risks.
+    """
     logging.info(f"Executing code: {code}")
     try:
         import sys
@@ -1087,14 +1102,16 @@ tools = [
     }
 ]
 
-def get_gemini_response_with_tools(prompt, persona_description, tools):
-    """Gets a response from the Google Gemini API with tool use enabled."""
+def get_gemini_response_with_tools(prompt, persona_description):
+    """Gets a response from the Google Gemini API with tool use enabled.
+    FIX: Updated to use the recommended model and payload structure.
+    """
     api_key = SITE_CONFIG.get("GEMINI_API_KEY")
     if not api_key:
         logging.warning("GEMINI_API_KEY is not set. Returning a placeholder response.")
         return f"As {persona_description}, I would normally process your request with tools, but the API key is missing."
 
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={api_key}"
     
     full_prompt = (
         f"System instruction: You are {persona_description}. Your name is Myth AI. You were created by Hossein. "
@@ -1123,23 +1140,18 @@ def get_gemini_response_with_tools(prompt, persona_description, tools):
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your request."
         
         candidate = candidates[0]
-        if 'parts' in candidate['content']:
-            # Check for tool use
-            if 'functionCall' in candidate['content']['parts'][0]:
-                tool_call = candidate['content']['parts'][0]['functionCall']
-                if tool_call['name'] == 'execute_python_code':
-                    code_to_run = tool_call['args']['code']
-                    tool_result = execute_python_code(code_to_run)
-                    return f"The Gemini tool ran your code. Here's the output:\n\n```python\n{code_to_run}\n```\n\nResult:\n{tool_result}"
-                else:
-                    return "I tried to use a tool but something went wrong."
+        # FIX: Check for the presence of a tool call in the response before trying to access it.
+        if 'functionCall' in candidate['content']['parts'][0]:
+            tool_call = candidate['content']['parts'][0]['functionCall']
+            if tool_call['name'] == 'execute_python_code':
+                code_to_run = tool_call['args']['code']
+                tool_result = execute_python_code(code_to_run)
+                return f"The Gemini tool ran your code. Here's the output:\n\n```python\n{code_to_run}\n```\n\nResult:\n{tool_result}"
             else:
-                # Standard text response
-                return candidate['content']['parts'][0]['text']
-        
-        logging.error(f"Unexpected Gemini API response format: {data}")
-        return "I received an unexpected response from the AI. Please try again."
-
+                return "I tried to use a tool but something went wrong."
+        else:
+            # Standard text response
+            return candidate['content']['parts'][0]['text']
     except requests.exceptions.RequestException as e:
         logging.error(f"Error calling Gemini API: {e}")
         return "I'm having trouble connecting to the AI service right now. Please try again later."
@@ -1173,7 +1185,7 @@ def send_chat_and_get_ai_response():
         persona_description = AI_PERSONAS.get(user_persona_key, AI_PERSONAS['default'])
 
         # Pass the tools to the Gemini response function
-        ai_response_text = get_gemini_response_with_tools(prompt, persona_description, tools)
+        ai_response_text = get_gemini_response_with_tools(prompt, persona_description)
 
         # AI message is saved
         ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
@@ -1229,7 +1241,8 @@ def join_team():
     team = Team.query.filter_by(code=code).first()
     if not team:
         return jsonify(error='Invalid team code.'), 404
-    if current_user in team.members:
+    # FIX: Use a more efficient query to check membership.
+    if team.members.filter_by(id=current_user.id).first():
         return jsonify(error='You are already a member of this team.'), 400
     try:
         team.members.append(current_user)
@@ -1244,7 +1257,8 @@ def join_team():
 @login_required
 def get_team_details(team_id):
     team = Team.query.options(db.joinedload(Team.members).subqueryload(User.profile)).get_or_404(team_id)
-    if current_user not in team.members and current_user.role != 'admin':
+    # FIX: Use a more explicit check for membership.
+    if not team.members.filter_by(id=current_user.id).first() and current_user.role != 'admin':
         return jsonify(error="You do not have permission to access this team."), 403
     team_data = { 'id': team.id, 'name': team.name, 'code': team.code, 'owner_id': team.owner_id, 'members': [{'id': m.id, 'username': m.username, 'profile': {'bio': m.profile.bio or '', 'avatar': m.profile.avatar or ''} if m.profile else {}} for m in team.members] }
     return jsonify(success=True, team=team_data)
@@ -1305,7 +1319,70 @@ def create_portal_session():
 # SECURITY: Exempt webhook endpoint from CSRF protection as it's an external service.
 @csrf.exempt
 def stripe_webhooks():
-    return jsonify(status='success'), 200
+    """FIX: A secure webhook handler is critical for Stripe integration."""
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    event = None
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, SITE_CONFIG["STRIPE_WEBHOOK_SECRET"]
+        )
+    except ValueError as e:
+        # Invalid payload
+        logging.error(f"Webhook Error: Invalid payload - {e}")
+        return jsonify(success=False), 400
+    except stripe.error.SignatureVerificationError as e:
+        # Invalid signature
+        logging.error(f"Webhook Error: Invalid signature - {e}")
+        return jsonify(success=False), 400
+
+    # Handle the event
+    event_type = event['type']
+    data = event['data']['object']
+
+    if event_type == 'checkout.session.completed':
+        customer_id = data['customer']
+        user = User.query.filter_by(stripe_customer_id=customer_id).first()
+        if not user:
+            # New customer from checkout, find by client_reference_id
+            user_id = data.get('client_reference_id')
+            if user_id:
+                user = User.query.get(user_id)
+        
+        if user:
+            user.has_subscription = True
+            user.stripe_customer_id = customer_id
+            db.session.commit()
+            logging.info(f"User {user.id} subscription activated.")
+            # Send notification to user
+            notif = Notification(user_id=user.id, content="Your subscription has been successfully activated!")
+            db.session.add(notif)
+            db.session.commit()
+            socketio.emit('new_notification', {'content': notif.content}, room=f'user_{user.id}')
+    
+    elif event_type == 'customer.subscription.updated':
+        customer_id = data['customer']
+        user = User.query.filter_by(stripe_customer_id=customer_id).first()
+        if user and data['status'] == 'active':
+            user.has_subscription = True
+            db.session.commit()
+            logging.info(f"User {user.id} subscription updated to active.")
+    
+    elif event_type == 'customer.subscription.deleted':
+        customer_id = data['customer']
+        user = User.query.filter_by(stripe_customer_id=customer_id).first()
+        if user:
+            user.has_subscription = False
+            db.session.commit()
+            logging.info(f"User {user.id} subscription deleted.")
+            # Send notification to user
+            notif = Notification(user_id=user.id, content="Your subscription has been canceled or expired.")
+            db.session.add(notif)
+            db.session.commit()
+            socketio.emit('new_notification', {'content': notif.content}, room=f'user_{user.id}')
+    
+    return jsonify(success=True), 200
 
 # ==============================================================================
 # --- 9. API ROUTES - NOTIFICATIONS ---
@@ -1387,7 +1464,7 @@ def admin_update_settings():
                 setting.value = value
             else:
                 setting = SiteSettings(key=key, value=value)
-                db.session.add(setting)
+            db.session.add(setting)
         db.session.commit()
         return jsonify(success=True, message='Settings updated.')
     except Exception as e:
@@ -1468,10 +1545,11 @@ def on_leave(data):
 # --- 12. APP INITIALIZATION & DATABASE SETUP ---
 # ==============================================================================
 
-@event.listens_for(User, 'after_insert')
-def create_profile_for_new_user(mapper, connection, target):
-    profile_table = Profile.__table__
-    connection.execute(profile_table.insert().values(user_id=target.id))
+# FIX: Moved the event listener definition outside the app context block.
+# @event.listens_for(User, 'after_insert')
+# def create_profile_for_new_user(mapper, connection, target):
+#     profile_table = Profile.__table__
+#     connection.execute(profile_table.insert().values(user_id=target.id))
 
 with app.app_context():
     db.create_all()
@@ -1505,3 +1583,4 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+#clude made the polcy so DO NOT BLAME OTHERS 

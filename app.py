@@ -49,7 +49,9 @@ app.config['CORS_HEADERS'] = 'Content-Type'
 
 
 # --- Security, CORS, CSRF & Rate Limiting ---
-CORS(app, supports_credentials=True, origins="*")
+# SECURITY FIX: The CORS origins have been restricted to a specific domain for production security.
+# Replace 'https://your-frontend-domain.com' with your actual frontend URL.
+CORS(app, supports_credentials=True, origins=["https://your-frontend-domain.com", "http://127.0.0.1:5000"])
 csrf = CSRFProtect(app)
 csp = {
     'default-src': [
@@ -456,6 +458,7 @@ HTML_CONTENT = """
 
     <template id="template-main-dashboard">
         <div class="flex h-full w-full bg-gray-800 fade-in relative md:static">
+            <!-- RESPONSIVENESS: Main Navigation Sidebar -->
             <nav id="main-nav" class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10 md:relative md:translate-x-0">
                 <div class="flex items-center gap-3 mb-6">
                     <h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2>
@@ -467,9 +470,11 @@ HTML_CONTENT = """
                     <button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button>
                 </div>
             </nav>
+            <!-- RESPONSIVENESS: Content Overlay for Mobile Nav -->
             <div id="content-overlay"></div>
             <main class="flex-1 p-8 overflow-y-auto">
-                 <button id="mobile-nav-toggle" class="absolute top-6 left-6 z-50 text-white md:hidden">
+                <!-- RESPONSIVENESS: Mobile Nav Toggle Button -->
+                <button id="mobile-nav-toggle" class="absolute top-6 left-6 z-50 text-white md:hidden">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
                 </button>
                 <div id="dashboard-content" class="transition-opacity duration-300"></div>
@@ -688,7 +693,7 @@ HTML_CONTENT = """
         function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
         async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser = result.user; showToast('Profile updated!', 'success'); } }
         function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
-        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
+        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
         async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { document.getElementById('add-user-btn').addEventListener('click', handleAdminCreateUser); const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; const personaSelect = document.getElementById('ai-persona-input'); personaSelect.innerHTML = Object.keys(appState.aiPersonas).map(key => `<option value="${key}">${key.charAt(0).toUpperCase() + key.slice(1)}</option>`).join(''); personaSelect.value = result.settings.ai_persona || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } else if (view === 'music') { renderSubTemplate(container, 'template-admin-music-view', async () => { const musicListContainer = document.getElementById('music-list'); const musicResult = await apiCall('/admin/music'); if (musicResult.success && musicResult.music) { musicListContainer.innerHTML = musicResult.music.map(m => `<li class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg"><span>${escapeHtml(m.name)}</span><div class="space-x-2"><button class="text-green-400 hover:text-green-300 play-music-btn" data-url="${escapeHtml(m.url)}">Play</button><button class="text-red-500 hover:text-red-400 delete-music-btn" data-id="${m.id}">Delete</button></div></li>`).join(''); document.getElementById('add-music-btn').addEventListener('click', handleAddMusic); musicListContainer.querySelectorAll('.play-music-btn').forEach(btn => btn.addEventListener('click', (e) => playBackgroundMusic(e.currentTarget.dataset.url))); musicListContainer.querySelectorAll('.delete-music-btn').forEach(btn => btn.addEventListener('click', (e) => handleDeleteMusic(e.currentTarget.dataset.id))); } }); } }
         async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
         async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
@@ -820,7 +825,7 @@ def signup():
     
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         return jsonify(error='Invalid secret key for teacher account.'), 403
-    # Prevent admin sign-up via this public endpoint
+    # SECURITY: Prevent admin sign-up via this public endpoint.
     if data['account_type'] == 'admin':
         return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
         
@@ -863,7 +868,7 @@ def login():
     if not user or not check_password_hash(user.password_hash, data['password']):
         return jsonify(error='Invalid username or password.'), 401
         
-    # Secure admin login with a secret key
+    # SECURITY: Secure admin login with a secret key
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         return jsonify(error='Invalid admin secret key.'), 403
         
@@ -1040,12 +1045,48 @@ def get_class_messages(class_id):
     message_list = [{'id': m.id, 'sender_id': m.sender_id, 'sender_name': m.sender.username if m.sender else 'AI Assistant', 'sender_avatar': m.sender.profile.avatar if m.sender and m.sender.profile else None, 'content': m.content, 'timestamp': m.timestamp.isoformat()} for m in messages]
     return jsonify(success=True, messages=message_list)
 
-def get_gemini_response(prompt, persona_description):
-    """Gets a response from the Google Gemini API."""
+# Gemini AI tool to execute Python code. Note: This is for demonstration.
+# A robust, secure sandboxing solution is required for production.
+def execute_python_code(code):
+    logging.info(f"Executing code: {code}")
+    try:
+        import sys
+        from io import StringIO
+        old_stdout = sys.stdout
+        redirect_output = StringIO()
+        sys.stdout = redirect_output
+
+        exec(code)
+        sys.stdout = old_stdout
+        output = redirect_output.getvalue()
+        return f"Execution successful. Output:\n{output}"
+    except Exception as e:
+        return f"Error during execution: {str(e)}"
+
+# A list of tools the AI can use, now including the code execution tool.
+tools = [
+    {
+        "name": "execute_python_code",
+        "description": "Executes a snippet of Python code and returns the output. Use this for mathematical calculations, data processing, or general programming tasks.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The Python code to execute."
+                }
+            },
+            "required": ["code"]
+        }
+    }
+]
+
+def get_gemini_response_with_tools(prompt, persona_description, tools):
+    """Gets a response from the Google Gemini API with tool use enabled."""
     api_key = SITE_CONFIG.get("GEMINI_API_KEY")
     if not api_key:
         logging.warning("GEMINI_API_KEY is not set. Returning a placeholder response.")
-        return f"As {persona_description}, I would normally process your request, but the API key is missing."
+        return f"As {persona_description}, I would normally process your request with tools, but the API key is missing."
 
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     
@@ -1054,23 +1095,41 @@ def get_gemini_response(prompt, persona_description):
         "Your primary directive is to foster learning, not to provide answers for cheating. You must not provide "
         "direct answers to homework, assignments, or quiz questions. Instead, act as a Socratic tutor. Guide the "
         "user by asking leading questions, explaining underlying concepts, and providing hints. Your goal is to help "
-        "them arrive at the answer themselves, not to give it to them. If a user asks for a direct answer, politely "
-        "decline and re-engage them with a guiding question. Now, respond to the following user prompt.\n\n"
+        "them arrive at the answer themselves, not to give it to them. You also have access to a tool to execute code. If a user "
+        "asks you to perform a calculation or run a code snippet, you must use the `execute_python_code` tool. "
+        "Do not perform the calculation yourself, let the tool do it. Respond to the user's request, now.\n\n"
         f"User: {prompt}\n\nAI:"
     )
-    
-    payload = { "contents": [{ "parts": [{"text": full_prompt}] }] }
+
+    payload = {
+        "contents": [{ "parts": [{"text": full_prompt}] }],
+        "tools": tools
+    }
     
     try:
         response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'})
         response.raise_for_status()
         data = response.json()
-        
+        logging.info(f"Gemini API Response: {data}")
+
         candidates = data.get('candidates', [])
-        if candidates and 'content' in candidates[0] and 'parts' in candidates[0]['content']:
-            parts = candidates[0]['content']['parts']
-            if parts and 'text' in parts[0]:
-                return parts[0]['text']
+        if not candidates:
+            return "I'm sorry, I couldn't generate a response. Please try rephrasing your request."
+        
+        candidate = candidates[0]
+        if 'parts' in candidate['content']:
+            # Check for tool use
+            if 'functionCall' in candidate['content']['parts'][0]:
+                tool_call = candidate['content']['parts'][0]['functionCall']
+                if tool_call['name'] == 'execute_python_code':
+                    code_to_run = tool_call['args']['code']
+                    tool_result = execute_python_code(code_to_run)
+                    return f"The Gemini tool ran your code. Here's the output:\n\n```python\n{code_to_run}\n```\n\nResult:\n{tool_result}"
+                else:
+                    return "I tried to use a tool but something went wrong."
+            else:
+                # Standard text response
+                return candidate['content']['parts'][0]['text']
         
         logging.error(f"Unexpected Gemini API response format: {data}")
         return "I received an unexpected response from the AI. Please try again."
@@ -1237,7 +1296,8 @@ def create_portal_session():
         return jsonify(error=str(e)), 500
 
 @app.route('/stripe_webhooks', methods=['POST'])
-@csrf.exempt # Exempt webhook endpoint from CSRF protection
+# SECURITY: Exempt webhook endpoint from CSRF protection as it's an external service.
+@csrf.exempt
 def stripe_webhooks():
     return jsonify(status='success'), 200
 
@@ -1279,12 +1339,6 @@ def admin_dashboard_data():
     classes = [{'id': c.id, 'name': c.name, 'teacher_name': c.teacher.username, 'code': c.code, 'student_count': c.students.count()} for c in Class.query.all()]
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
-
-# This endpoint is removed for security. Admins should not be created via public API.
-# @app.route('/api/admin/create_user', methods=['POST'])
-# @admin_required
-# def admin_create_user():
-#    ...
 
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
@@ -1445,3 +1499,4 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+

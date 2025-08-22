@@ -1,4 +1,4 @@
-# --- Imports ---
+-# --- Imports ---
 import os
 import json
 import logging
@@ -7,7 +7,7 @@ import uuid
 import secrets
 import requests
 import re
-from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string, g
+from flask import Flask, Response, request, session, jsonify, redirect, url_for, render_template_string
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from datetime import datetime, date, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -532,7 +532,34 @@ HTML_CONTENT = """
         
         function toggleButtonLoading(button, isLoading, originalContent = null) { if (!button) return; if (isLoading) { button.dataset.originalContent = button.innerHTML; button.innerHTML = '<div class="btn-loader mx-auto"></div>'; button.disabled = true; } else { button.innerHTML = originalContent || button.dataset.originalContent || 'Submit'; button.disabled = false; } }
 
-        async function apiCall(endpoint, options = {}) { try { if (options.body && typeof options.body === 'object') { options.headers = { 'Content-Type': 'application/json', ...options.headers }; options.body = JSON.stringify(options.body); } const response = await fetch(`${BASE_URL}/api${endpoint}`, { credentials: 'include', ...options }); const contentType = response.headers.get("content-type"); if (contentType && contentType.includes("application/json")) { const data = await response.json(); if (!response.ok) { if (response.status === 401 && endpoint !== '/status') handleLogout(false); throw new Error(data.error || `Request failed with status ${response.status}`); } return { success: true, ...data }; } else { const text = await response.text(); throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`); } } catch (error) { showToast(error.message, 'error'); console.error("API Call Error:", error); return { success: false, error: error.message }; } }
+        async function apiCall(endpoint, options = {}) { 
+            showFullScreenLoader('Processing...');
+            try { 
+                if (options.body && typeof options.body === 'object') { 
+                    options.headers = { 'Content-Type': 'application/json', ...options.headers }; 
+                    options.body = JSON.stringify(options.body); 
+                } 
+                const response = await fetch(`${BASE_URL}/api${endpoint}`, { credentials: 'include', ...options }); 
+                const contentType = response.headers.get("content-type"); 
+                if (contentType && contentType.includes("application/json")) { 
+                    const data = await response.json(); 
+                    if (!response.ok) { 
+                        if (response.status === 401 && endpoint !== '/status') handleLogout(false); 
+                        throw new Error(data.error || `Request failed with status ${response.status}`); 
+                    } 
+                    return { success: true, ...data }; 
+                } else { 
+                    const text = await response.text(); 
+                    throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`); 
+                } 
+            } catch (error) { 
+                showToast(error.message, 'error'); 
+                console.error("API Call Error:", error); 
+                return { success: false, error: error.message }; 
+            } finally {
+                DOMElements.appContainer.querySelector('.full-screen-loader')?.remove();
+            }
+        }
         
         function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(content); if (setupFunction) setupFunction(); }
         function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); container.innerHTML = ''; container.appendChild(content); if (setupFunction) setupFunction(); }
@@ -541,7 +568,7 @@ HTML_CONTENT = """
         
         function showConfirmationModal(message, onConfirm) { const content = document.createElement('div'); content.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Are you sure?</h3><p class="text-gray-300 mb-6">${escapeHtml(message)}</p><div class="flex justify-end gap-4"><button id="confirm-cancel" class="bg-gray-600/50 hover:bg-gray-600 shiny-button text-white font-bold py-2 px-4 rounded-lg">Cancel</button><button id="confirm-ok" class="bg-red-600/80 hover:bg-red-600 shiny-button text-white font-bold py-2 px-4 rounded-lg">Confirm</button></div>`; showModal(content, (modal) => { modal.querySelector('#confirm-cancel').addEventListener('click', hideModal); modal.querySelector('#confirm-ok').addEventListener('click', () => { onConfirm(); hideModal(); }); }, 'max-w-md'); }
 
-        function showFullScreenLoader(message = 'Loading...') { const loaderTemplate = document.getElementById('template-full-screen-loader'); const loaderContent = loaderTemplate.content.cloneNode(true); loaderContent.querySelector('.waiting-text').textContent = message; DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(loaderContent); }
+        function showFullScreenLoader(message = 'Loading...') { const loaderTemplate = document.getElementById('template-full-screen-loader'); const loaderContent = loaderTemplate.content.cloneNode(true); loaderContent.querySelector('.waiting-text').textContent = message; DOMElements.appContainer.appendChild(loaderContent); }
         function connectSocket() { if (appState.socket) appState.socket.disconnect(); appState.socket = io(BASE_URL); appState.socket.on('connect', () => { console.log('Socket connected!'); appState.socket.emit('join', { room: `user_${appState.currentUser.id}` }); }); appState.socket.on('new_message', (data) => { if (appState.selectedClass && data.class_id === appState.selectedClass.id) appendChatMessage(data); }); appState.socket.on('new_notification', (data) => { showToast(`Notification: ${data.content}`, 'info'); updateNotificationBell(true); }); }
         
         // --- Page Setup Functions ---
@@ -758,6 +785,7 @@ def handle_exception(e):
     return jsonify(error='An internal server error occurred.'), 500
 
 @app.route('/api/signup', methods=['POST'])
+@limiter.limit("10 per hour")
 def signup():
     """Register a new user."""
     data = request.json
@@ -765,6 +793,10 @@ def signup():
     if not all(field in data for field in required_fields):
         return jsonify(error='Missing required fields.'), 400
     
+    password = data.get('password', '')
+    if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$', password):
+        return jsonify(error='Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.'), 400
+
     if User.query.filter_by(username=data['username']).first():
         return jsonify(error='Username is already taken.'), 409
     if User.query.filter_by(email=data['email']).first():
@@ -776,7 +808,7 @@ def signup():
         return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
         
     try:
-        hashed_pw = generate_password_hash(data['password'])
+        hashed_pw = generate_password_hash(password)
         
         default_persona_setting = SiteSettings.query.get('ai_persona')
         default_persona = default_persona_setting.value if default_persona_setting else 'default'
@@ -803,6 +835,7 @@ def signup():
         return jsonify(error='An unexpected error occurred during account creation.'), 500
 
 @app.route('/api/login', methods=['POST'])
+@limiter.limit("10 per minute")
 def login():
     """Authenticate and log in a user."""
     data = request.json
@@ -843,6 +876,7 @@ def status():
     return jsonify(success=False, user=None)
 
 @app.route('/api/request-password-reset', methods=['POST'])
+@limiter.limit("5 per hour")
 def request_password_reset():
     """Send a password reset email to a user."""
     data = request.json
@@ -859,6 +893,7 @@ def request_password_reset():
     return jsonify(success=True, message='If an account with that email exists, a password reset link has been sent.')
 
 @app.route('/api/reset-password', methods=['POST'])
+@limiter.limit("5 per hour")
 def reset_password():
     """Reset a user's password using a valid token."""
     data = request.json
@@ -867,6 +902,9 @@ def reset_password():
 
     if not token or not new_password:
         return jsonify(error='Missing token or new password.'), 400
+        
+    if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$', new_password):
+        return jsonify(error='Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.'), 400
 
     try:
         email = password_reset_serializer.loads(token, salt=app.config['SECURITY_PASSWORD_SALT'], max_age=3600)

@@ -456,7 +456,6 @@ HTML_CONTENT = """
 
     <template id="template-main-dashboard">
         <div class="flex h-full w-full bg-gray-800 fade-in relative md:static">
-            <!-- RESPONSIVENESS: Main Navigation Sidebar -->
             <nav id="main-nav" class="w-64 bg-gray-900/70 backdrop-blur-sm p-6 flex flex-col gap-4 flex-shrink-0 border-r border-white/10 md:relative md:translate-x-0">
                 <div class="flex items-center gap-3 mb-6">
                     <h2 class="text-2xl font-bold brand-gradient-text" id="dashboard-title">Portal</h2>
@@ -468,11 +467,9 @@ HTML_CONTENT = """
                     <button id="logout-btn" class="bg-red-600/50 hover:bg-red-600 border border-red-500 text-white font-bold py-2 px-4 rounded-lg transition-colors">Logout</button>
                 </div>
             </nav>
-            <!-- RESPONSIVENESS: Content Overlay for Mobile Nav -->
             <div id="content-overlay"></div>
             <main class="flex-1 p-8 overflow-y-auto">
-                 <!-- RESPONSIVENESS: Mobile Nav Toggle Button -->
-                <button id="mobile-nav-toggle" class="absolute top-6 left-6 z-50 text-white md:hidden">
+                 <button id="mobile-nav-toggle" class="absolute top-6 left-6 z-50 text-white md:hidden">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
                 </button>
                 <div id="dashboard-content" class="transition-opacity duration-300"></div>
@@ -583,8 +580,7 @@ HTML_CONTENT = """
             const existingLoader = DOMElements.appContainer.querySelector('.full-screen-loader');
             if (existingLoader) existingLoader.remove();
             const loaderTemplate = document.getElementById('template-full-screen-loader');
-            const loaderContent = loaderTemplate.content.cloneNode(true);
-            const loaderElement = loaderContent.querySelector('.full-screen-loader');
+            const loaderElement = loaderTemplate.content.firstElementChild.cloneNode(true);
             loaderElement.querySelector('.waiting-text').textContent = message;
             DOMElements.appContainer.appendChild(loaderElement);
             return loaderElement;
@@ -695,7 +691,7 @@ HTML_CONTENT = """
         async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
         async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { document.getElementById('add-user-btn').addEventListener('click', handleAdminCreateUser); const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; const personaSelect = document.getElementById('ai-persona-input'); personaSelect.innerHTML = Object.keys(appState.aiPersonas).map(key => `<option value="${key}">${key.charAt(0).toUpperCase() + key.slice(1)}</option>`).join(''); personaSelect.value = result.settings.ai_persona || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } else if (view === 'music') { renderSubTemplate(container, 'template-admin-music-view', async () => { const musicListContainer = document.getElementById('music-list'); const musicResult = await apiCall('/admin/music'); if (musicResult.success && musicResult.music) { musicListContainer.innerHTML = musicResult.music.map(m => `<li class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg"><span>${escapeHtml(m.name)}</span><div class="space-x-2"><button class="text-green-400 hover:text-green-300 play-music-btn" data-url="${escapeHtml(m.url)}">Play</button><button class="text-red-500 hover:text-red-400 delete-music-btn" data-id="${m.id}">Delete</button></div></li>`).join(''); document.getElementById('add-music-btn').addEventListener('click', handleAddMusic); musicListContainer.querySelectorAll('.play-music-btn').forEach(btn => btn.addEventListener('click', (e) => playBackgroundMusic(e.currentTarget.dataset.url))); musicListContainer.querySelectorAll('.delete-music-btn').forEach(btn => btn.addEventListener('click', (e) => handleDeleteMusic(e.currentTarget.dataset.id))); } }); } }
         async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
-        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout'); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
+        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
         async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
         function switchClassView(view) { document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('class-view-content'); if (view === 'chat') { renderSubTemplate(container, 'template-class-chat-view', async () => { document.getElementById('chat-form').addEventListener('submit', handleSendChat); const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); if (result.success) { const messagesDiv = document.getElementById('chat-messages'); messagesDiv.innerHTML = ''; result.messages.forEach(m => appendChatMessage(m)); } }); } else if (view === 'assignments') { renderSubTemplate(container, 'template-class-assignments-view', async () => { const list = document.getElementById('assignments-list'); const actionContainer = document.getElementById('assignment-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); } const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); if(result.success) { if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(String(a.submission_count))} Submissions</span>`}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'quizzes') { renderSubTemplate(container, 'template-class-quizzes-view', async () => { const list = document.getElementById('quizzes-list'); const actionContainer = document.getElementById('quiz-action-container'); if(appState.currentUser.role === 'teacher') { actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); } const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); if(result.success) { if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(String(q.time_limit))} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); } }); } else if (view === 'students') { renderSubTemplate(container, 'template-class-students-view', () => { document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); }); } }
         async function handleSendChat(e) { e.preventDefault(); const input = document.getElementById('chat-input'); const button = document.getElementById('send-chat-btn'); const message = input.value.trim(); if (!message) return; toggleButtonLoading(button, true, 'Send'); input.disabled = true; const result = await apiCall('/chat/send', { method: 'POST', body: { prompt: message, class_id: appState.selectedClass.id } }); if (result.success) { input.value = ''; } else { const errorMsg = { id: 'error-' + Date.now(), class_id: appState.selectedClass.id, sender_id: null, sender_name: "System Error", content: result.error || "Could not send message.", timestamp: new Date().toISOString() }; appendChatMessage(errorMsg); } toggleButtonLoading(button, false, 'Send'); input.disabled = false; input.focus(); }
@@ -824,6 +820,7 @@ def signup():
     
     if data['account_type'] == 'teacher' and data.get('secret_key') != SITE_CONFIG['SECRET_TEACHER_KEY']:
         return jsonify(error='Invalid secret key for teacher account.'), 403
+    # Prevent admin sign-up via this public endpoint
     if data['account_type'] == 'admin':
         return jsonify(error='Admin accounts cannot be created through this endpoint.'), 403
         
@@ -866,6 +863,7 @@ def login():
     if not user or not check_password_hash(user.password_hash, data['password']):
         return jsonify(error='Invalid username or password.'), 401
         
+    # Secure admin login with a secret key
     if user.role == 'admin' and data.get('admin_secret_key') != SITE_CONFIG['ADMIN_SECRET_KEY']:
         return jsonify(error='Invalid admin secret key.'), 403
         
@@ -881,7 +879,7 @@ def login():
     login_user(user)
     return jsonify(success=True, user=user.to_dict(), settings={'ai_personas': AI_PERSONAS})
 
-@app.route('/api/logout')
+@app.route('/api/logout', methods=['POST'])
 @login_required
 def logout():
     """Log out the current user."""
@@ -1097,22 +1095,27 @@ def send_chat_and_get_ai_response():
         return jsonify(error="Permission denied."), 403
 
     try:
+        # User message is saved first
         user_msg = ChatMessage(class_id=class_id, sender_id=current_user.id, content=prompt)
         db.session.add(user_msg)
         db.session.commit()
 
+        # Emit user message to all clients in the room
         socketio.emit('new_message', { 'id': user_msg.id, 'class_id': user_msg.class_id, 'sender_id': user_msg.sender_id, 'sender_name': current_user.username, 'sender_avatar': current_user.profile.avatar if current_user.profile else None, 'content': user_msg.content, 'timestamp': user_msg.timestamp.isoformat() }, room=f'class_{class_id}')
 
         site_persona_setting = SiteSettings.query.get('ai_persona')
         user_persona_key = current_user.ai_persona or (site_persona_setting.value if site_persona_setting else 'default')
         persona_description = AI_PERSONAS.get(user_persona_key, AI_PERSONAS['default'])
 
-        ai_response_text = get_gemini_response(prompt, persona_description)
+        # Pass the tools to the Gemini response function
+        ai_response_text = get_gemini_response_with_tools(prompt, persona_description, tools)
 
+        # AI message is saved
         ai_msg = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_text)
         db.session.add(ai_msg)
         db.session.commit()
 
+        # Emit AI message to all clients in the room
         socketio.emit('new_message', { 'id': ai_msg.id, 'class_id': ai_msg.class_id, 'sender_id': None, 'sender_name': 'AI Assistant', 'sender_avatar': None, 'content': ai_msg.content, 'timestamp': ai_msg.timestamp.isoformat() }, room=f'class_{class_id}')
         
         return jsonify(success=True)
@@ -1234,6 +1237,7 @@ def create_portal_session():
         return jsonify(error=str(e)), 500
 
 @app.route('/stripe_webhooks', methods=['POST'])
+@csrf.exempt # Exempt webhook endpoint from CSRF protection
 def stripe_webhooks():
     return jsonify(status='success'), 200
 
@@ -1276,44 +1280,11 @@ def admin_dashboard_data():
     settings = {s.key: s.value for s in SiteSettings.query.all()}
     return jsonify(success=True, stats=stats, users=users, classes=classes, settings=settings)
 
-@app.route('/api/admin/create_user', methods=['POST'])
-@admin_required
-def admin_create_user():
-    """Create a new user from the admin panel."""
-    data = request.json
-    required_fields = ['username', 'password', 'email', 'role']
-    if not all(field in data for field in required_fields):
-        return jsonify(error='Missing required fields.'), 400
-    
-    if User.query.filter_by(username=data['username']).first():
-        return jsonify(error='Username is already taken.'), 409
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify(error='Email is already registered.'), 409
-    
-    try:
-        hashed_pw = generate_password_hash(data['password'])
-        
-        default_persona_setting = SiteSettings.query.get('ai_persona')
-        default_persona = default_persona_setting.value if default_persona_setting else 'default'
-
-        new_user = User(
-            username=data['username'],
-            email=data['email'],
-            password_hash=hashed_pw,
-            role=data['role'],
-            ai_persona=default_persona
-        )
-        db.session.add(new_user)
-        db.session.commit()
-        return jsonify(success=True, message=f"User '{new_user.username}' created successfully.")
-        
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify(error='A database integrity error occurred.'), 409
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error during admin user creation: {str(e)}", exc_info=True)
-        return jsonify(error='An unexpected error occurred during account creation.'), 500
+# This endpoint is removed for security. Admins should not be created via public API.
+# @app.route('/api/admin/create_user', methods=['POST'])
+# @admin_required
+# def admin_create_user():
+#    ...
 
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required

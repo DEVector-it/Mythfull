@@ -48,7 +48,6 @@ app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['CORS_HEADERS'] = 'Content-Type'
-# FIX: Flask-Limiter configuration
 app.config['LIMITER_STORAGE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['LIMITER_HEADERS_ENABLED'] = True
 
@@ -63,7 +62,8 @@ csp = {
         'https://cdnjs.cloudflare.com',
         'https://js.stripe.com',
         'https://fonts.googleapis.com',
-        'https://fonts.gstatic.com'
+        'https://fonts.gstatic.com',
+        'https://*.onrender.com' 
     ]
 }
 Talisman(app, content_security_policy=csp)
@@ -80,9 +80,9 @@ SITE_CONFIG = {
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythcttcs.onrender.com'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythsg.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY', 'SUPER-SECRET-TEACHER-KEY'),
-    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
+    "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'NoobAdmin'),
     "ADMIN_DEFAULT_PASSWORD": os.environ.get('ADMIN_DEFAULT_PASSWORD', 'adminpassword'),
     "STRIPE_WEBHOOK_SECRET": os.environ.get('STRIPE_WEBHOOK_SECRET'),
     "GEMINI_API_KEYS": os.environ.get('GEMINI_API_KEYS', 'YOUR_SINGLE_API_KEY').split(','),
@@ -193,7 +193,7 @@ class Team(db.Model):
     code = db.Column(db.String(8), unique=True, nullable=False, index=True)
     owner_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False, index=True)
     owner = db.relationship('User', foreign_keys=[owner_id])
-    members = db.relationship('User', secondary=team_member_association, back_populates='members', lazy='dynamic')
+    members = db.relationship('User', secondary=team_member_association, back_populates='teams', lazy='dynamic')
 
 class Class(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -617,7 +617,7 @@ HTML_CONTENT = r"""
     
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const BASE_URL = 'https://mythcttcs.onrender.com';
+        const BASE_URL = 'https://mythsg.onrender.com';
         const SITE_CONFIG = {
             STRIPE_PUBLIC_KEY: '',
             STRIPE_STUDENT_PRO_PRICE_ID: 'price_YOUR_PRO_PRICE_ID'
@@ -661,8 +661,11 @@ HTML_CONTENT = r"""
         
         function toggleButtonLoading(button, isLoading, originalContent = null) { if (!button) return; if (isLoading) { button.dataset.originalContent = button.innerHTML; button.innerHTML = '<div class="btn-loader mx-auto"></div>'; button.disabled = true; } else { button.innerHTML = originalContent || button.dataset.originalContent || 'Submit'; button.disabled = false; } }
 
-        async function apiCall(endpoint, options = {}) {
-            const loader = showFullScreenLoader('Processing...');
+        async function apiCall(endpoint, options = {}, showLoader = true) {
+            let loader;
+            if (showLoader) {
+                loader = showFullScreenLoader('Processing...');
+            }
             let response;
             try {
                 const csrfToken = document.cookie.split('; ').find(row => row.startsWith('csrf_token='))?.split('=')[1];
@@ -694,7 +697,9 @@ HTML_CONTENT = r"""
                 console.error("API Call Error:", error);
                 return { success: false, error: error.message };
             } finally {
-                loader.remove();
+                if (loader) {
+                    loader.remove();
+                }
             }
         }
         
@@ -716,7 +721,7 @@ HTML_CONTENT = r"""
         }
         function connectSocket() { if (appState.socket) appState.socket.disconnect(); appState.socket = io(BASE_URL); appState.socket.on('connect', () => { console.log('Socket connected!'); appState.socket.emit('join', { room: `user_${appState.currentUser.id}` }); }); appState.socket.on('new_message', (data) => { if (appState.selectedClass && data.class_id === appState.selectedClass.id) appendChatMessage(data); }); appState.socket.on('new_notification', (data) => { showToast(`Notification: ${data.content}`, 'info'); updateNotificationBell(true); }); }
         
-        # --- Page Setup Functions ---
+        // --- Page Setup Functions ---
         function setupRoleChoicePage() { renderPage('template-role-choice', () => { document.querySelectorAll('.role-btn').forEach(btn => { btn.addEventListener('click', (e) => { appState.selectedRole = e.currentTarget.dataset.role; setupAuthPage(); }); }); }); }
         function setupAuthPage() { renderPage('template-auth-form', () => { updateAuthView(); document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit); document.getElementById('auth-toggle-btn').addEventListener('click', () => { appState.isLoginView = !appState.isLoginView; updateAuthView(); }); document.getElementById('forgot-password-link').addEventListener('click', handleForgotPassword); document.getElementById('back-to-roles').addEventListener('click', setupRoleChoicePage); }); }
         function updateAuthView() { const title = document.getElementById('auth-title'); const subtitle = document.getElementById('auth-subtitle'); const submitBtn = document.getElementById('auth-submit-btn'); const toggleBtn = document.getElementById('auth-toggle-btn'); const emailField = document.getElementById('email-field'); const teacherKeyField = document.getElementById('teacher-key-field'); const adminKeyField = document.getElementById('admin-key-field'); const usernameInput = document.getElementById('username'); document.getElementById('account_type').value = appState.selectedRole; title.textContent = `${appState.selectedRole.charAt(0).toUpperCase() + appState.selectedRole.slice(1)} Portal`; adminKeyField.classList.add('hidden'); teacherKeyField.classList.add('hidden'); usernameInput.disabled = false; 
@@ -732,13 +737,30 @@ HTML_CONTENT = r"""
         
         async function handleAuthSubmit(e) { e.preventDefault(); const form = e.target; const button = form.querySelector('button[type="submit"]'); toggleButtonLoading(button, true); const endpoint = appState.isLoginView ? '/login' : '/signup'; const body = Object.fromEntries(new FormData(form)); const result = await apiCall(endpoint, { method: 'POST', body }); if (result.success) { handleLoginSuccess(result.user, result.settings); } else { document.getElementById('auth-error').textContent = result.error; toggleButtonLoading(button, false, appState.isLoginView ? 'Login' : 'Sign Up'); } }
 
-        function handleLoginSuccess(user, settings) { appState.currentUser = user; appState.aiPersonas = settings.ai_personas || {}; if (user.theme_preference) { applyTheme(user.theme_preference); } showFullScreenLoader('Logging you in...'); setupDashboard(user, settings); }
+        function handleLoginSuccess(user, settings) {
+            appState.currentUser = user;
+            appState.aiPersonas = settings.ai_personas || {};
+            
+            // SAVVY CHANGE: Apply global theme first, then user theme if no global is set
+            if (settings.global_theme) {
+                applyTheme(settings.global_theme);
+            } else if (user.theme_preference) {
+                applyTheme(user.theme_preference);
+            }
+
+            // SAVVY CHANGE: Apply global music if it exists
+            if (settings.global_music_url) {
+                playBackgroundMusic(settings.global_music_url);
+            }
+
+            showFullScreenLoader('Logging you in...');
+            setupDashboard(user, settings);
+        }
 
         async function setupDashboard(user, settings) { 
             if (!user) return setupRoleChoicePage();
             
-            // FIX: Fetch Stripe config and initialize Stripe.js
-            const stripeConfig = await apiCall('/stripe_config');
+            const stripeConfig = await apiCall('/stripe_config', {}, false);
             if (stripeConfig.success && stripeConfig.public_key) {
                 SITE_CONFIG.STRIPE_PUBLIC_KEY = stripeConfig.public_key;
                 if (!appState.stripe) {
@@ -778,7 +800,9 @@ HTML_CONTENT = r"""
                 setupNotificationBell(); 
                 setupMobileNav(); 
                 switchTab(appState.currentTab); 
-                fetchBackgroundMusic(); 
+                if (!settings.global_music_url) { // Only fetch random if no global is set
+                    fetchBackgroundMusic(); 
+                }
             }); 
         }
         
@@ -805,14 +829,14 @@ HTML_CONTENT = r"""
             } 
         }
         
-        # --- Tab Content Functions ---
-        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'); const listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); listContainer.addEventListener('click', (e) => { const classCard = e.target.closest('div[data-id]'); if (classCard) { selectClass(classCard.dataset.id); } }); const result = await apiCall('/my_classes'); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(createClassCardHTML).join(''); } }); }
+        // --- Tab Content Functions ---
+        async function setupMyClassesTab(container) { renderSubTemplate(container, 'template-my-classes', async () => { const actionContainer = document.getElementById('class-action-container'); const listContainer = document.getElementById('classes-list'); const actionTemplateId = `template-${appState.currentUser.role}-class-action`; renderSubTemplate(actionContainer, actionTemplateId, () => { if (appState.currentUser.role === 'student') document.getElementById('join-class-btn').addEventListener('click', handleJoinClass); else document.getElementById('create-class-btn').addEventListener('click', handleCreateClass); }); listContainer.addEventListener('click', (e) => { const classCard = e.target.closest('div[data-id]'); if (classCard) { selectClass(classCard.dataset.id); } }); const result = await apiCall('/my_classes', {}, false); if (result.success && result.classes) { if (result.classes.length === 0) listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You haven't joined or created any classes yet.</p>`; else listContainer.innerHTML = result.classes.map(createClassCardHTML).join(''); } }); }
         
         function createClassCardHTML(cls) { return `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors fade-in" data-id="${cls.id}" data-name="${cls.name}"><div class="font-bold text-white text-lg">${escapeHtml(cls.name)}</div><div class="text-gray-400 text-sm">Teacher: ${escapeHtml(cls.teacher_name)}</div>${appState.currentUser.role === 'teacher' ? `<div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(cls.code)}</span></div>` : ''}</div>`; }
         
-        async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const button = document.getElementById('join-class-btn'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); toggleButtonLoading(button, true, 'Join'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }); toggleButtonLoading(button, false, 'Join'); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
+        async function handleJoinClass() { const codeInput = document.getElementById('class-code'); const button = document.getElementById('join-class-btn'); const code = codeInput.value.trim().toUpperCase(); if (!code) return showToast('Please enter a class code.', 'error'); toggleButtonLoading(button, true, 'Join'); const result = await apiCall('/join_class', { method: 'POST', body: { code } }, false); toggleButtonLoading(button, false, 'Join'); if (result.success) { showToast(result.message || 'Joined class!', 'success'); codeInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
 
-        async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const button = document.getElementById('create-class-btn'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); toggleButtonLoading(button, true, 'Create'); const result = await apiCall('/classes', { method: 'POST', body: { name } }); toggleButtonLoading(button, false, 'Create'); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
+        async function handleCreateClass() { const nameInput = document.getElementById('new-class-name'); const button = document.getElementById('create-class-btn'); const name = nameInput.value.trim(); if (!name) return showToast('Please enter a class name.', 'error'); toggleButtonLoading(button, true, 'Create'); const result = await apiCall('/classes', { method: 'POST', body: { name } }, false); toggleButtonLoading(button, false, 'Create'); if (result.success) { showToast(`Class "${escapeHtml(result.class.name)}" created!`, 'success'); nameInput.value = ''; setupMyClassesTab(document.getElementById('dashboard-content')); } }
         
         function setupAiSettingsTab(container) {
             renderSubTemplate(container, 'template-ai-settings', () => {
@@ -842,7 +866,7 @@ HTML_CONTENT = r"""
             const body = Object.fromEntries(new FormData(form));
             
             toggleButtonLoading(button, true, 'Save AI Settings');
-            const result = await apiCall('/update_profile', { method: 'POST', body });
+            const result = await apiCall('/update_profile', { method: 'POST', body }, false);
             toggleButtonLoading(button, false, 'Save AI Settings');
 
             if (result.success) {
@@ -867,7 +891,7 @@ HTML_CONTENT = r"""
             const body = Object.fromEntries(new FormData(form));
             
             toggleButtonLoading(button, true, 'Save Theme');
-            const result = await apiCall('/update_profile', { method: 'POST', body });
+            const result = await apiCall('/update_profile', { method: 'POST', body }, false);
             toggleButtonLoading(button, false, 'Save Theme');
 
             if (result.success) {
@@ -877,265 +901,519 @@ HTML_CONTENT = r"""
             }
         }
 
-        async function setupTeamModeTab(container) { renderSubTemplate(container, 'template-team-mode', async () => { renderSubTemplate(document.getElementById('team-action-container'), 'template-team-actions', () => { document.getElementById('join-team-btn').addEventListener('click', handleJoinTeam); document.getElementById('create-team-btn').addEventListener('click', handleCreateTeam); }); const listContainer = document.getElementById('teams-list'); const result = await apiCall('/teams'); if (result.success && result.teams) { if (result.teams.length === 0) { listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You are not part of any teams yet.</p>`; } else { listContainer.innerHTML = result.teams.map(team => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${team.id}"><div class="font-bold text-white text-lg">${escapeHtml(team.name)}</div><div class="text-gray-400 text-sm">Owner: ${escapeHtml(team.owner_name)}</div><div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></div><div class="text-sm text-gray-400">${escapeHtml(String(team.member_count))} members</div></div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => selectTeam(e.currentTarget.dataset.id))); } } }); }
-        async function selectTeam(teamId) { const result = await apiCall(`/teams/${teamId}`); if (!result.success) return; const team = result.team; let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${escapeHtml(team.name)}</h3><p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></p><h4 class="text-lg font-semibold text-white mb-2">Members</h4><ul class="space-y-2">${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(m.username)} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}</ul>`; showModal(modalContent); }
-        async function handleJoinTeam() { const code = document.getElementById('team-code').value.trim().toUpperCase(); if (!code) return showToast('Please enter a team code.', 'error'); const result = await apiCall('/join_team', { method: 'POST', body: { code } }); if (result.success) { showToast(result.message, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
-        async function handleCreateTeam() { const name = document.getElementById('new-team-name').value.trim(); if (!name) return showToast('Please enter a team name.', 'error'); const result = await apiCall('/teams', { method: 'POST', body: { name } }); if (result.success) { showToast(`Team "${escapeHtml(result.team.name)}" created!`, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
+        async function setupTeamModeTab(container) { renderSubTemplate(container, 'template-team-mode', async () => { renderSubTemplate(document.getElementById('team-action-container'), 'template-team-actions', () => { document.getElementById('join-team-btn').addEventListener('click', handleJoinTeam); document.getElementById('create-team-btn').addEventListener('click', handleCreateTeam); }); const listContainer = document.getElementById('teams-list'); const result = await apiCall('/teams', {}, false); if (result.success && result.teams) { if (result.teams.length === 0) { listContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full">You are not part of any teams yet.</p>`; } else { listContainer.innerHTML = result.teams.map(team => `<div class="glassmorphism p-4 rounded-lg cursor-pointer hover:bg-gray-700/50 transition-colors" data-id="${team.id}"><div class="font-bold text-white text-lg">${escapeHtml(team.name)}</div><div class="text-gray-400 text-sm">Owner: ${escapeHtml(team.owner_name)}</div><div class="text-sm mt-2">Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></div><div class="text-sm text-gray-400">${escapeHtml(String(team.member_count))} members</div></div>`).join(''); listContainer.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => selectTeam(e.currentTarget.dataset.id))); } } }); }
+        async function selectTeam(teamId) { const result = await apiCall(`/teams/${teamId}`, {}, false); if (!result.success) return; const team = result.team; let modalContent = `<h3 class="text-2xl font-bold text-white mb-2">${escapeHtml(team.name)}</h3><p class="text-gray-400 mb-4">Team Code: <span class="font-mono text-cyan-400">${escapeHtml(team.code)}</span></p><h4 class="text-lg font-semibold text-white mb-2">Members</h4><ul class="space-y-2">${team.members.map(m => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(m.profile.avatar || `https://i.pravatar.cc/40?u=${m.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(m.username)} ${m.id === team.owner_id ? '(Owner)' : ''}</span></li>`).join('')}</ul>`; showModal(modalContent); }
+        async function handleJoinTeam() { const code = document.getElementById('team-code').value.trim().toUpperCase(); if (!code) return showToast('Please enter a team code.', 'error'); const result = await apiCall('/join_team', { method: 'POST', body: { code } }, false); if (result.success) { showToast(result.message, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
+        async function handleCreateTeam() { const name = document.getElementById('new-team-name').value.trim(); if (!name) return showToast('Please enter a team name.', 'error'); const result = await apiCall('/teams', { method: 'POST', body: { name } }, false); if (result.success) { showToast(`Team "${escapeHtml(result.team.name)}" created!`, 'success'); setupTeamModeTab(document.getElementById('dashboard-content')); } }
         function setupProfileTab(container) { renderSubTemplate(container, 'template-profile', () => { document.getElementById('bio').value = appState.currentUser.profile.bio || ''; document.getElementById('avatar').value = appState.currentUser.profile.avatar || ''; document.getElementById('profile-form').addEventListener('submit', handleUpdateProfile); }); }
-        async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }); if (result.success) { appState.currentUser = result.user; showToast('Profile updated!', 'success'); } }
+        async function handleUpdateProfile(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/update_profile', { method: 'POST', body }, false); if (result.success) { appState.currentUser = result.user; showToast('Profile updated!', 'success'); } }
         function setupBillingTab(container) { renderSubTemplate(container, 'template-billing', () => { const content = document.getElementById('billing-content'); if (appState.currentUser.has_subscription) { content.innerHTML = `<p class="mb-4">You have an active subscription.</p><button id="manage-billing-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Manage Billing</button>`; document.getElementById('manage-billing-btn').addEventListener('click', handleManageBilling); } else { content.innerHTML = `<p class="mb-4">Upgrade to a Pro plan for more features!</p><button id="upgrade-btn" data-price-id="${SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID}" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Upgrade to Pro</button>`; document.getElementById('upgrade-btn').addEventListener('click', handleUpgrade); } }); }
-        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data'); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
-        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); const result = await apiCall('/admin/dashboard_data'); if(!result.success) return; if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', () => { document.getElementById('add-user-btn').addEventListener('click', handleAdminCreateUser); const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', () => { document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', () => { document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; const personaSelect = document.getElementById('ai-persona-input'); personaSelect.innerHTML = Object.keys(appState.aiPersonas).map(key => `<option value="${key}">${key.charAt(0).toUpperCase() + key.slice(1)}</option>`).join(''); personaSelect.value = result.settings.ai_persona || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } else if (view === 'music') { renderSubTemplate(container, 'template-admin-music-view', async () => { const musicListContainer = document.getElementById('music-list'); const musicResult = await apiCall('/admin/music'); if (musicResult.success && musicResult.music) { musicListContainer.innerHTML = musicResult.music.map(m => `<li class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg"><span>${escapeHtml(m.name)}</span><div class="space-x-2"><button class="text-green-400 hover:text-green-300 play-music-btn" data-url="${escapeHtml(m.url)}">Play</button><button class="text-red-500 hover:text-red-400 delete-music-btn" data-id="${m.id}">Delete</button></div></li>`).join(''); document.getElementById('add-music-btn').addEventListener('click', handleAddMusic); musicListContainer.querySelectorAll('.play-music-btn').forEach(btn => btn.addEventListener('click', (e) => playBackgroundMusic(e.currentTarget.dataset.url))); musicListContainer.querySelectorAll('.delete-music-btn').forEach(btn => btn.addEventListener('click', (e) => handleDeleteMusic(e.currentTarget.dataset.id))); } }); } }
+        async function setupAdminDashboardTab(container) { renderSubTemplate(container, 'template-admin-dashboard', async () => { const result = await apiCall('/admin/dashboard_data', {}, false); if (result.success) { document.getElementById('admin-stats').innerHTML = Object.entries(result.stats).map(([key, value]) => `<div class="glassmorphism p-4 rounded-lg"><p class="text-sm text-gray-400">${escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))}</p><p class="text-2xl font-bold">${escapeHtml(String(value))}</p></div>`).join(''); } document.querySelectorAll('.admin-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchAdminView(e.currentTarget.dataset.tab))); switchAdminView('users'); }); }
+        async function switchAdminView(view) { document.querySelectorAll('.admin-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); const container = document.getElementById('admin-view-content'); if (view === 'users') { renderSubTemplate(container, 'template-admin-users-view', async () => { document.getElementById('add-user-btn').addEventListener('click', handleAdminCreateUser); const result = await apiCall('/admin/dashboard_data', {}, false); if(!result.success) return; const userList = document.getElementById('admin-user-list'); userList.innerHTML = result.users.map(u => `<tr><td class="p-3">${escapeHtml(u.username)}</td><td class="p-3">${escapeHtml(u.email)}</td><td class="p-3">${escapeHtml(u.role)}</td><td class="p-3">${new Date(u.created_at).toLocaleDateString()}</td><td class="p-3 space-x-2"><button class="text-blue-400 hover:text-blue-300" data-action="edit" data-id="${u.id}">Edit</button><button class="text-red-500 hover:text-red-400" data-action="delete" data-id="${u.id}">Delete</button></td></tr>`).join(''); userList.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminUserAction(e.currentTarget.dataset.action, e.currentTarget.dataset.id))); }); } else if (view === 'classes') { renderSubTemplate(container, 'template-admin-classes-view', async () => { const result = await apiCall('/admin/dashboard_data', {}, false); if(!result.success) return; document.getElementById('admin-class-list').innerHTML = result.classes.map(c => `<tr><td class="p-3">${escapeHtml(c.name)}</td><td class="p-3">${escapeHtml(c.teacher_name)}</td><td class="p-3">${escapeHtml(c.code)}</td><td class="p-3">${escapeHtml(String(c.student_count))}</td><td class="p-3"><button class="text-red-500 hover:text-red-400" data-id="${c.id}">Delete</button></td></tr>`).join(''); document.getElementById('admin-class-list').querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => handleAdminDeleteClass(e.currentTarget.dataset.id))); }); } else if (view === 'settings') { renderSubTemplate(container, 'template-admin-settings-view', async () => { const result = await apiCall('/admin/dashboard_data', {}, false); if(!result.success) return; document.getElementById('setting-announcement').value = result.settings.announcement || ''; document.getElementById('setting-daily-message').value = result.settings.daily_message || ''; const personaSelect = document.getElementById('ai-persona-input'); personaSelect.innerHTML = Object.keys(appState.aiPersonas).map(key => `<option value="${key}">${key.charAt(0).toUpperCase() + key.slice(1)}</option>`).join(''); personaSelect.value = result.settings.ai_persona || 'default'; document.getElementById('admin-settings-form').addEventListener('submit', handleAdminUpdateSettings); document.getElementById('maintenance-toggle-btn').addEventListener('click', handleToggleMaintenance); }); } else if (view === 'music') { renderSubTemplate(container, 'template-admin-music-view', async () => { const musicListContainer = document.getElementById('music-list'); const musicResult = await apiCall('/admin/music', {}, false); if (musicResult.success && musicResult.music) { musicListContainer.innerHTML = musicResult.music.map(m => `<li class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg"><span>${escapeHtml(m.name)}</span><div class="space-x-2"><button class="text-green-400 hover:text-green-300 play-music-btn" data-url="${escapeHtml(m.url)}">Play</button><button class="text-red-500 hover:text-red-400 delete-music-btn" data-id="${m.id}">Delete</button></div></li>`).join(''); document.getElementById('add-music-btn').addEventListener('click', handleAddMusic); musicListContainer.querySelectorAll('.play-music-btn').forEach(btn => btn.addEventListener('click', (e) => playBackgroundMusic(e.currentTarget.dataset.url))); musicListContainer.querySelectorAll('.delete-music-btn').forEach(btn => btn.addEventListener('click', (e) => handleDeleteMusic(e.currentTarget.dataset.id))); } }); } }
 
-        // FIX: Admin User Creation Functionality
-        function handleAdminCreateUser() {
-            showModal(document.getElementById('template-admin-create-user-modal').content.cloneNode(true), (modal) => {
-                document.getElementById('admin-create-user-form').addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    const form = e.target;
-                    const button = form.querySelector('button[type="submit"]');
-                    const body = Object.fromEntries(new FormData(form));
-                    toggleButtonLoading(button, true, 'Create User');
-                    const result = await apiCall('/admin/users', { method: 'POST', body });
-                    toggleButtonLoading(button, false, 'Create User');
-                    if (result.success) {
-                        showToast(`User "${escapeHtml(result.user.username)}" created!`, 'success');
-                        hideModal();
-                        switchAdminView('users'); // Refresh the user list
-                    } else {
-                        showToast(result.error, 'error');
-                    }
-                });
-            });
-        }
+        function handleAdminCreateUser() {
+            showModal(document.getElementById('template-admin-create-user-modal').content.cloneNode(true), (modal) => {
+                document.getElementById('admin-create-user-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const button = form.querySelector('button[type="submit"]');
+                    const body = Object.fromEntries(new FormData(form));
+                    toggleButtonLoading(button, true, 'Create User');
+                    const result = await apiCall('/admin/users', { method: 'POST', body });
+                    toggleButtonLoading(button, false, 'Create User');
+                    if (result.success) {
+                        showToast(`User "${escapeHtml(result.user.username)}" created!`, 'success');
+                        hideModal();
+                        switchAdminView('users');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                });
+            });
+        }
 
-        async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
-        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
-        async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
-        async function switchClassView(view) { 
-            document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); 
-            const container = document.getElementById('class-view-content'); 
-            if (view === 'chat') { 
-                renderSubTemplate(container, 'template-class-chat-view', async () => { 
-                    document.getElementById('chat-form').addEventListener('submit', handleSendChat); 
-                    const result = await apiCall(`/class_messages/${appState.selectedClass.id}`); 
-                    if (result.success) { 
-                        const messagesDiv = document.getElementById('chat-messages'); 
-                        messagesDiv.innerHTML = ''; 
-                        result.messages.forEach(m => appendChatMessage(m)); 
-                    } 
-                }); 
-            } else if (view === 'assignments') { 
-                renderSubTemplate(container, 'template-class-assignments-view', async () => { 
-                    const list = document.getElementById('assignments-list'); 
-                    const actionContainer = document.getElementById('assignment-action-container'); 
-                    if(appState.currentUser.role === 'teacher') { 
-                        actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; 
-                        document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); 
-                    } 
-                    const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`); 
-                    if(result.success) { 
-                        if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; 
-                        else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(String(a.submission_count))} Submissions</span>`}</div>`).join(''); 
-                        list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); 
-                    } 
-                }); 
-            } else if (view === 'quizzes') { 
-                renderSubTemplate(container, 'template-class-quizzes-view', async () => { 
-                    const list = document.getElementById('quizzes-list'); 
-                    const actionContainer = document.getElementById('quiz-action-container'); 
-                    if(appState.currentUser.role === 'teacher') { 
-                        actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; 
-                        document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); 
-                    } 
-                    const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`); 
-                    if(result.success) { 
-                        if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; 
-                        else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(String(q.time_limit))} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); 
-                        list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); 
-                    } 
-                }); 
-            } else if (view === 'students') { 
-                renderSubTemplate(container, 'template-class-students-view', () => { 
-                    document.getElementById('class-students-list').innerHTML = appState.selectedClass.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); 
-                }); 
-            } 
-        }
-        
-        // FIX: Updated chat send functionality to be non-blocking
-        async function handleSendChat(e) { 
-            e.preventDefault(); 
-            const input = document.getElementById('chat-input'); 
-            const button = document.getElementById('send-chat-btn'); 
-            const message = input.value.trim(); 
-            if (!message) return; 
+        async function handleForgotPassword() { const email = prompt('Please enter your account email:'); if (email && /^\S+@\S+\.\S+$/.test(email)) { const result = await apiCall('/request-password-reset', { method: 'POST', body: { email } }); if(result.success) showToast(result.message || 'Request sent.', 'info'); } else if (email) showToast('Please enter a valid email.', 'error'); }
+        async function handleLogout(doApiCall) { if (doApiCall) await apiCall('/logout', { method: 'POST' }); if (appState.socket) appState.socket.disconnect(); appState.currentUser = null; window.location.reload(); }
+        async function selectClass(classId) { if (appState.selectedClass && appState.socket) appState.socket.emit('leave', { room: `class_${appState.selectedClass.id}` }); const result = await apiCall(`/classes/${classId}`, {}, false); if(!result.success) return; appState.selectedClass = result.class; appState.socket.emit('join', { room: `class_${classId}` }); document.getElementById('classes-list').classList.add('hidden'); document.getElementById('class-action-container').classList.add('hidden'); const viewContainer = document.getElementById('selected-class-view'); viewContainer.classList.remove('hidden'); renderSubTemplate(viewContainer, 'template-selected-class-view', () => { document.getElementById('selected-class-name').textContent = escapeHtml(appState.selectedClass.name); document.getElementById('back-to-classes-btn').addEventListener('click', () => { viewContainer.classList.add('hidden'); document.getElementById('classes-list').classList.remove('hidden'); document.getElementById('class-action-container').classList.remove('hidden'); }); document.querySelectorAll('.class-view-tab').forEach(tab => tab.addEventListener('click', (e) => switchClassView(e.currentTarget.dataset.tab))); switchClassView('chat'); }); }
+        async function switchClassView(view) { 
+            document.querySelectorAll('.class-view-tab').forEach(t => t.classList.toggle('active-tab', t.dataset.tab === view)); 
+            const container = document.getElementById('class-view-content'); 
+            if (view === 'chat') { 
+                renderSubTemplate(container, 'template-class-chat-view', async () => { 
+                    document.getElementById('chat-form').addEventListener('submit', handleSendChat); 
+                    const result = await apiCall(`/class_messages/${appState.selectedClass.id}`, {}, false); 
+                    if (result.success) { 
+                        const messagesDiv = document.getElementById('chat-messages'); 
+                        messagesDiv.innerHTML = ''; 
+                        result.messages.forEach(m => appendChatMessage(m)); 
+                    } 
+                }); 
+            } else if (view === 'assignments') { 
+                renderSubTemplate(container, 'template-class-assignments-view', async () => { 
+                    const list = document.getElementById('assignments-list'); 
+                    const actionContainer = document.getElementById('assignment-action-container'); 
+                    if(appState.currentUser.role === 'teacher') { 
+                        actionContainer.innerHTML = `<button id="create-assignment-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Assignment</button>`; 
+                        document.getElementById('create-assignment-btn').addEventListener('click', handleCreateAssignment); 
+                    } 
+                    const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`, {}, false); 
+                    if(result.success) { 
+                        if(result.assignments.length === 0) list.innerHTML = `<p class="text-gray-400">No assignments posted yet.</p>`; 
+                        else list.innerHTML = result.assignments.map(a => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${a.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(a.title)}</h6><span class="text-sm text-gray-400">Due: ${new Date(a.due_date).toLocaleDateString()}</span></div>${appState.currentUser.role === 'student' ? (a.student_submission ? `<span class="text-xs text-green-400">Submitted</span>` : `<span class="text-xs text-yellow-400">Not Submitted</span>`) : `<span class="text-xs text-cyan-400">${escapeHtml(String(a.submission_count))} Submissions</span>`}</div>`).join(''); 
+                        list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewAssignmentDetails(e.currentTarget.dataset.id))); 
+                    } 
+                }); 
+            } else if (view === 'quizzes') { 
+                renderSubTemplate(container, 'template-class-quizzes-view', async () => { 
+                    const list = document.getElementById('quizzes-list'); 
+                    const actionContainer = document.getElementById('quiz-action-container'); 
+                    if(appState.currentUser.role === 'teacher') { 
+                        actionContainer.innerHTML = `<button id="create-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">New Quiz</button>`; 
+                        document.getElementById('create-quiz-btn').addEventListener('click', handleCreateQuiz); 
+                    } 
+                    const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`, {}, false); 
+                    if(result.success) { 
+                        if(result.quizzes.length === 0) list.innerHTML = `<p class="text-gray-400">No quizzes posted yet.</p>`; 
+                        else list.innerHTML = result.quizzes.map(q => `<div class="p-4 bg-gray-800/50 rounded-lg cursor-pointer" data-id="${q.id}"><div class="flex justify-between items-center"><h6 class="font-bold text-white">${escapeHtml(q.title)}</h6><span class="text-sm text-gray-400">${escapeHtml(String(q.time_limit))} mins</span></div>${appState.currentUser.role === 'student' ? (q.student_attempt ? `<span class="text-xs text-green-400">Attempted - Score: ${escapeHtml(q.student_attempt.score.toFixed(2))}%</span>` : `<span class="text-xs text-yellow-400">Not Attempted</span>`) : ``}</div>`).join(''); 
+                        list.querySelectorAll('div[data-id]').forEach(el => el.addEventListener('click', e => viewQuizDetails(e.currentTarget.dataset.id))); 
+                    } 
+                }); 
+            } else if (view === 'students') { 
+                renderSubTemplate(container, 'template-class-students-view', async () => { 
+                    const result = await apiCall(`/classes/${appState.selectedClass.id}`, {}, false);
+                    if (result.success) {
+                        document.getElementById('class-students-list').innerHTML = result.class.students.map(s => `<li class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-md"><img src="${escapeHtml(s.profile.avatar || `https://i.pravatar.cc/40?u=${s.id}`)}" class="w-8 h-8 rounded-full"><span>${escapeHtml(s.username)}</span></li>`).join(''); 
+                    }
+                }); 
+            } 
+        }
+        
+        async function handleSendChat(e) { 
+            e.preventDefault(); 
+            const input = document.getElementById('chat-input'); 
+            const button = document.getElementById('send-chat-btn'); 
+            const message = input.value.trim(); 
+            if (!message) return; 
 
-            const userMessage = { 
-                sender_id: appState.currentUser.id, 
-                sender_name: appState.currentUser.username, 
-                content: message, 
-                timestamp: new Date().toISOString() 
-            };
-            appendChatMessage(userMessage);
-            input.value = '';
-            
-            const messagesDiv = document.getElementById('chat-messages');
-            messagesDiv.insertAdjacentHTML('beforeend', thinkingIndicatorHtml);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            const userMessage = { 
+                sender_id: appState.currentUser.id, 
+                sender_name: appState.currentUser.username, 
+                content: message, 
+                timestamp: new Date().toISOString() 
+            };
+            appendChatMessage(userMessage);
+            input.value = '';
+            
+            const messagesDiv = document.getElementById('chat-messages');
+            messagesDiv.insertAdjacentHTML('beforeend', thinkingIndicatorHtml);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-            // Send the message to the backend for AI processing
-            const result = await apiCall('/chat/send', { method: 'POST', body: { prompt: message, class_id: appState.selectedClass.id } });
-            
-            // This part will be handled by the socketio 'new_message' event
-            if (!result.success) {
-                const errorMsg = { 
-                    id: 'error-' + Date.now(), 
-                    class_id: appState.selectedClass.id, 
-                    sender_id: null, 
-                    sender_name: "System Error", 
-                    content: result.error || "Could not send message.", 
-                    timestamp: new Date().toISOString() 
-                };
-                // Remove the typing indicator before showing the error
-                const indicator = document.getElementById('thinking-indicator');
-                if (indicator) indicator.remove();
-                appendChatMessage(errorMsg);
-            }
-        }
-        
-        function appendChatMessage(message) { 
-            const messagesDiv = document.getElementById('chat-messages'); 
-            if (!messagesDiv) return; 
+            const result = await apiCall('/chat/send', { method: 'POST', body: { prompt: message, class_id: appState.selectedClass.id } }, false);
+            
+            if (!result.success) {
+                const errorMsg = { 
+                    id: 'error-' + Date.now(), 
+                    class_id: appState.selectedClass.id, 
+                    sender_id: null, 
+                    sender_name: "System Error", 
+                    content: result.error || "Could not send message.", 
+                    timestamp: new Date().toISOString() 
+                };
+                const indicator = document.getElementById('thinking-indicator');
+                if (indicator) indicator.remove();
+                appendChatMessage(errorMsg);
+            }
+        }
+        
+        function appendChatMessage(message) { 
+            const messagesDiv = document.getElementById('chat-messages'); 
+            if (!messagesDiv) return; 
 
-            // If an AI message arrives, remove the typing indicator first
-            if (!message.sender_id) {
-                const indicator = messagesDiv.querySelector('#thinking-indicator');
-                if (indicator) indicator.remove();
-            }
-            
-            const isCurrentUser = message.sender_id === appState.currentUser.id; 
-            const isAI = message.sender_id === null; 
-            const msgWrapper = document.createElement('div'); 
-            msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'} fade-in`; 
-            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? aiAvatarSvg : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`; 
-            const bubble = `<div class="flex flex-col"><span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span><div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">${escapeHtml(message.content)}</div><span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span></div>`; 
-            msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble; 
-            messagesDiv.appendChild(msgWrapper); 
-            messagesDiv.scrollTop = messagesDiv.scrollHeight; 
-        }
-        async function fetchBackgroundMusic() { const result = await apiCall('/admin/music'); if (result.success && result.music.length > 0) { const randomTrack = result.music[Math.floor(Math.random() * result.music.length)]; DOMElements.backgroundMusic.src = randomTrack.url; DOMElements.backgroundMusic.play().catch(e => console.error("Music playback failed:", e)); } }
-        async function main() { const status = await apiCall('/status'); if (status.success && status.user) { appState.currentUser = status.user; appState.aiPersonas = status.settings.ai_personas || {}; applyTheme(status.user.theme_preference || 'dark'); setupDashboard(status.user, status.settings); } else { setupRoleChoicePage(); } }
-        function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`; document.getElementById('notification-bell').addEventListener('click', handleNotifications); updateNotificationBell(); }
-        async function updateNotificationBell(hasUnread = false) { const dot = document.getElementById('notification-dot'); if(!dot) return; if (hasUnread) { dot.classList.remove('hidden'); } else { const result = await apiCall('/notifications/unread_count'); if (result.success && result.count > 0) dot.classList.remove('hidden'); else dot.classList.add('hidden'); } }
-        async function handleNotifications() { const result = await apiCall('/notifications'); if (!result.success) return; const modalContent = document.createElement('div'); modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`; showModal(modalContent); await apiCall('/notifications/mark_read', { method: 'POST' }); updateNotificationBell(); }
-        async function handleUpgrade() { if (!appState.stripe) { showToast('Stripe.js not initialized. Please refresh.', 'error'); return; } const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } }); if (result.success && result.session_id) { appState.stripe.redirectToCheckout({ sessionId: result.session_id }); } }
-        async function handleManageBilling() { const result = await apiCall('/create-portal-session', { method: 'POST' }); if (result.success && result.url) { window.location.href = result.url; } }
-        
-        function handleAdminUserAction(action, userId) { if (action === 'delete') { showConfirmationModal('This will permanently delete the user and all their data.', async () => { const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' }); if (result.success) { showToast('User deleted.', 'success'); switchAdminView('users'); } }); } else if (action === 'edit') { showToast('Edit user is not yet implemented.', 'info'); } }
-        function handleAdminDeleteClass(classId) { showConfirmationModal('This will permanently delete the class and all its data.', async () => { const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' }); if (result.success) { showToast('Class deleted.', 'success'); switchAdminView('classes'); } }); }
-        async function handleAdminUpdateSettings(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/admin/update_settings', { method: 'POST', body }); if (result.success) { showToast('Settings updated.', 'success'); } }
-        async function handleToggleMaintenance() { const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' }); if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success'); }
-        async function handleAddMusic() { const name = document.getElementById('music-name').value; const url = document.getElementById('music-url').value; if (!name || !url) return showToast('Please provide a name and URL.', 'error'); const result = await apiCall('/admin/music', { method: 'POST', body: { name, url } }); if (result.success) { showToast('Music added.', 'success'); switchAdminView('music'); } }
-        function handleDeleteMusic(musicId) { showConfirmationModal('Are you sure you want to delete this music track?', async () => { const result = await apiCall(`/admin/music/${musicId}`, { method: 'DELETE' }); if (result.success) { showToast('Music deleted.', 'success'); switchAdminView('music'); } }); }
-        
-        // FIX: Implemented Create Assignment functionality
-        async function handleCreateAssignment() {
-            showModal(document.getElementById('template-create-assignment-modal').content.cloneNode(true), (modal) => {
-                document.getElementById('create-assignment-form').addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    const form = e.target;
-                    const button = form.querySelector('button[type="submit"]');
-                    const body = Object.fromEntries(new FormData(form));
-                    body.class_id = appState.selectedClass.id;
-                    toggleButtonLoading(button, true, 'Create Assignment');
-                    const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`, { method: 'POST', body });
-                    toggleButtonLoading(button, false, 'Create Assignment');
-                    if (result.success) {
-                        showToast(`Assignment "${escapeHtml(result.assignment.title)}" created.`, 'success');
-                        hideModal();
-                        switchClassView('assignments');
-                    } else {
-                        showToast(result.error, 'error');
-                    }
-                });
-            });
-        }
+            if (!message.sender_id) {
+                const indicator = messagesDiv.querySelector('#thinking-indicator');
+                if (indicator) indicator.remove();
+            }
+            
+            const isCurrentUser = message.sender_id === appState.currentUser.id; 
+            const isAI = message.sender_id === null; 
+            const msgWrapper = document.createElement('div'); 
+            msgWrapper.className = `flex items-start gap-3 ${isCurrentUser ? 'user-message justify-end' : 'ai-message justify-start'} fade-in`; 
+            const avatar = `<img src="${escapeHtml(message.sender_avatar || (isAI ? aiAvatarSvg : `https://i.pravatar.cc/40?u=${message.sender_id}`))}" class="w-8 h-8 rounded-full">`; 
+            const bubble = `<div class="flex flex-col"><span class="text-xs text-gray-400 ${isCurrentUser ? 'text-right' : 'text-left'}">${escapeHtml(message.sender_name || (isAI ? 'AI Assistant' : 'User'))}</span><div class="chat-bubble p-3 rounded-lg border mt-1 max-w-md text-white">${escapeHtml(message.content)}</div><span class="text-xs text-gray-500 mt-1 ${isCurrentUser ? 'text-right' : 'text-left'}">${new Date(message.timestamp).toLocaleTimeString()}</span></div>`; 
+            msgWrapper.innerHTML = isCurrentUser ? bubble + avatar : avatar + bubble; 
+            messagesDiv.appendChild(msgWrapper); 
+            messagesDiv.scrollTop = messagesDiv.scrollHeight; 
+        }
+        async function fetchBackgroundMusic() { const result = await apiCall('/admin/music', {}, false); if (result.success && result.music.length > 0) { const randomTrack = result.music[Math.floor(Math.random() * result.music.length)]; DOMElements.backgroundMusic.src = randomTrack.url; DOMElements.backgroundMusic.play().catch(e => console.error("Music playback failed:", e)); } }
+        async function main() { const status = await apiCall('/status'); if (status.success && status.user) { handleLoginSuccess(status.user, status.settings); } else { setupRoleChoicePage(); } }
+        function setupNotificationBell() { const container = document.getElementById('notification-bell-container'); container.innerHTML = `<button id="notification-bell" class="relative text-gray-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span id="notification-dot" class="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full hidden"></span></button>`; document.getElementById('notification-bell').addEventListener('click', handleNotifications); updateNotificationBell(); }
+        async function updateNotificationBell(hasUnread = false) { const dot = document.getElementById('notification-dot'); if(!dot) return; if (hasUnread) { dot.classList.remove('hidden'); } else { const result = await apiCall('/notifications/unread_count', {}, false); if (result.success && result.count > 0) dot.classList.remove('hidden'); else dot.classList.add('hidden'); } }
+        async function handleNotifications() { const result = await apiCall('/notifications', {}, false); if (!result.success) return; const modalContent = document.createElement('div'); modalContent.innerHTML = `<h3 class="text-xl font-bold text-white mb-4">Notifications</h3><ul class="space-y-2">${result.notifications.map(n => `<li class="p-3 bg-gray-800/50 rounded-lg ${n.is_read ? 'text-gray-400' : 'text-white'}">${escapeHtml(n.content)} <span class="text-xs text-gray-500">${new Date(n.timestamp).toLocaleString()}</span></li>`).join('') || '<p class="text-gray-400">No notifications.</p>'}</ul>`; showModal(modalContent); await apiCall('/notifications/mark_read', { method: 'POST' }, false); updateNotificationBell(); }
+        async function handleUpgrade() { if (!appState.stripe) { showToast('Stripe.js not initialized. Please refresh.', 'error'); return; } const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } }); if (result.success && result.session_id) { appState.stripe.redirectToCheckout({ sessionId: result.session_id }); } }
+        async function handleManageBilling() { const result = await apiCall('/create-portal-session', { method: 'POST' }); if (result.success && result.url) { window.location.href = result.url; } }
+        
+        function handleAdminUserAction(action, userId) { if (action === 'delete') { showConfirmationModal('This will permanently delete the user and all their data.', async () => { const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' }, false); if (result.success) { showToast('User deleted.', 'success'); switchAdminView('users'); } }); } else if (action === 'edit') { showToast('Edit user is not yet implemented.', 'info'); } }
+        function handleAdminDeleteClass(classId) { showConfirmationModal('This will permanently delete the class and all its data.', async () => { const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' }, false); if (result.success) { showToast('Class deleted.', 'success'); switchAdminView('classes'); } }); }
+        async function handleAdminUpdateSettings(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/admin/update_settings', { method: 'POST', body }, false); if (result.success) { showToast('Settings updated.', 'success'); } }
+        async function handleToggleMaintenance() { const result = await apiCall('/admin/toggle_maintenance', { method: 'POST' }, false); if (result.success) showToast(`Maintenance mode ${result.enabled ? 'enabled' : 'disabled'}.`, 'success'); }
+        async function handleAddMusic() { const name = document.getElementById('music-name').value; const url = document.getElementById('music-url').value; if (!name || !url) return showToast('Please provide a name and URL.', 'error'); const result = await apiCall('/admin/music', { method: 'POST', body: { name, url } }, false); if (result.success) { showToast('Music added.', 'success'); switchAdminView('music'); } }
+        function handleDeleteMusic(musicId) { showConfirmationModal('Are you sure you want to delete this music track?', async () => { const result = await apiCall(`/admin/music/${musicId}`, { method: 'DELETE' }, false); if (result.success) { showToast('Music deleted.', 'success'); switchAdminView('music'); } }); }
+        
+        async function handleCreateAssignment() {
+            showModal(document.getElementById('template-create-assignment-modal').content.cloneNode(true), (modal) => {
+                document.getElementById('create-assignment-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const button = form.querySelector('button[type="submit"]');
+                    const body = Object.fromEntries(new FormData(form));
+                    body.class_id = appState.selectedClass.id;
+                    toggleButtonLoading(button, true, 'Create Assignment');
+                    const result = await apiCall(`/classes/${appState.selectedClass.id}/assignments`, { method: 'POST', body });
+                    toggleButtonLoading(button, false, 'Create Assignment');
+                    if (result.success) {
+                        showToast(`Assignment "${escapeHtml(result.assignment.title)}" created.`, 'success');
+                        hideModal();
+                        switchClassView('assignments');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                });
+            });
+        }
 
-        // FIX: Implemented View Assignment Details functionality
-        async function viewAssignmentDetails(assignmentId) {
-            const result = await apiCall(`/assignments/${assignmentId}`);
-            if (!result.success) return;
-            const assignment = result.assignment;
-            
-            const modalContent = document.getElementById('template-view-assignment-modal').content.cloneNode(true);
-            const modalBody = modalContent.querySelector('.modal-body');
-            
-            modalContent.querySelector('#assignment-title-view').textContent = assignment.title;
-            modalContent.querySelector('#assignment-description-view').textContent = assignment.description;
-            modalContent.querySelector('#assignment-due-date-view').textContent = new Date(assignment.due_date).toLocaleDateString();
-            
-            let submissionsListHtml = '';
-            if (appState.currentUser.role === 'student') {
-                if (assignment.submission) {
-                    submissionsListHtml = `
-                        <h4 class="text-xl font-semibold text-white mb-4">Your Submission</h4>
-                        <div class="bg-gray-800/50 p-4 rounded-lg">
-                            <p class="text-gray-400">${escapeHtml(assignment.submission.content)}</p>
-                            <p class="mt-2 text-sm text-green-400">Submitted on: ${new Date(assignment.submission.submitted_at).toLocaleString()}</p>
-                            ${assignment.submission.grade !== null ? `<p class="mt-2 text-sm text-cyan-400">Grade: ${assignment.submission.grade}%</p>` : ''}
-                            ${assignment.submission.feedback ? `<p class="mt-2 text-sm text-gray-300">Feedback: ${escapeHtml(assignment.submission.feedback)}</p>` : ''}
-                        </div>
-                    `;
-                } else {
-                    submissionsListHtml = `
-                        <h4 class="text-xl font-semibold text-white mb-4">Your Submission</h4>
-                        <form id="submit-assignment-form">
-                            <textarea id="submission-content" name="content" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" rows="5" placeholder="Type your submission here..." required></textarea>
-                            <button type="submit" class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Submit Assignment</button>
-                        </form>
-                    `;
-                }
-            } else if (appState.currentUser.role === 'teacher' || appState.currentUser.role === 'admin') {
-                submissionsListHtml = `
-                    <h4 class="text-xl font-semibold text-white mb-4">Submissions (${assignment.submissions.length})</h4>
-                    <div id="submissions-list" class="space-y-4">
-                        ${assignment.submissions.length > 0 ? assignment.submissions.map(s => `
-                            <div class="bg-gray-800/50 p-4 rounded-lg">
-                                <p class="font-bold text-white">${escapeHtml(s.student_name)}</p>
-                                <p class="text-gray-400 text-sm mt-1">${escapeHtml(s.content)}</p>
-                                <form class="grade-submission-form mt-4" data-submission-id="${s.id}">
-                                    <input type="number" name="grade" placeholder="Grade (0-100)" class="w-28 p-2 bg-gray-700/50 rounded-lg border border-gray-600 inline-block" min="0" max="100" value="${s.grade || ''}">
-                                    <textarea name="feedback" placeholder="Feedback" class="flex-grow p-2 bg-gray-700/50 rounded-lg border border-gray-600 inline-block w-full mt-2">${s.feedback || ''}</textarea>
-                                    <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg mt-2">Save</button>
-                            </div>
-                        `).join('') : '<p class="text-gray-400">No submissions yet.</p>'}
-                    </div>
-                `;
-            }
-            
-            modalBody.innerHTML = submissionsListHtml;
+        async function viewAssignmentDetails(assignmentId) {
+            const result = await apiCall(`/assignments/${assignmentId}`, {}, false);
+            if (!result.success) return;
+            const assignment = result.assignment;
+            
+            const modalTemplate = document.getElementById('template-view-assignment-modal').content.cloneNode(true);
+            
+            modalTemplate.querySelector('#assignment-title-view').textContent = assignment.title;
+            modalTemplate.querySelector('#assignment-description-view').textContent = assignment.description;
+            modalTemplate.querySelector('#assignment-due-date-view').textContent = new Date(assignment.due_date).toLocaleDateString();
+            
+            const submissionsSection = modalTemplate.querySelector('#assignment-submissions-section');
+            let submissionsListHtml = '';
+            if (appState.currentUser.role === 'student') {
+                if (assignment.submission) {
+                    submissionsListHtml = `
+                        <h4 class="text-xl font-semibold text-white mb-4">Your Submission</h4>
+                        <div class="bg-gray-800/50 p-4 rounded-lg">
+                            <p class="text-gray-400">${escapeHtml(assignment.submission.content)}</p>
+                            <p class="mt-2 text-sm text-green-400">Submitted on: ${new Date(assignment.submission.submitted_at).toLocaleString()}</p>
+                            ${assignment.submission.grade !== null ? `<p class="mt-2 text-sm text-cyan-400">Grade: ${assignment.submission.grade}%</p>` : ''}
+                            ${assignment.submission.feedback ? `<p class="mt-2 text-sm text-gray-300">Feedback: ${escapeHtml(assignment.submission.feedback)}</p>` : ''}
+                        </div>
+                    `;
+                } else {
+                    submissionsListHtml = `
+                        <h4 class="text-xl font-semibold text-white mb-4">Your Submission</h4>
+                        <form id="submit-assignment-form">
+                            <textarea id="submission-content" name="content" class="w-full p-3 bg-gray-700/50 rounded-lg border border-gray-600" rows="5" placeholder="Type your submission here..." required></textarea>
+                            <button type="submit" class="mt-4 brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Submit Assignment</button>
+                        </form>
+                    `;
+                }
+            } else if (appState.currentUser.role === 'teacher' || appState.currentUser.role === 'admin') {
+                submissionsListHtml = `
+                    <h4 class="text-xl font-semibold text-white mb-4">Submissions (${assignment.submissions.length})</h4>
+                    <div id="submissions-list" class="space-y-4">
+                        ${assignment.submissions.length > 0 ? assignment.submissions.map(s => `
+                            <div class="bg-gray-800/50 p-4 rounded-lg">
+                                <p class="font-bold text-white">${escapeHtml(s.student_name)}</p>
+                                <p class="text-gray-400 text-sm mt-1">${escapeHtml(s.content)}</p>
+                                <form class="grade-submission-form mt-4" data-submission-id="${s.id}">
+                                    <input type="number" name="grade" placeholder="Grade (0-100)" class="w-28 p-2 bg-gray-700/50 rounded-lg border border-gray-600 inline-block" min="0" max="100" value="${s.grade || ''}">
+                                    <textarea name="feedback" placeholder="Feedback" class="flex-grow p-2 bg-gray-700/50 rounded-lg border border-gray-600 inline-block w-full mt-2">${s.feedback || ''}</textarea>
+                                    <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg mt-2">Save</button>
+                                </form>
+                            </div>
+                        `).join('') : '<p class="text-gray-400">No submissions yet.</p>'}
+                    </div>
+                `;
+            }
+            
+            submissionsSection.innerHTML = submissionsListHtml;
 
-            showModal(modalContent, (modal) => {
-                modal.querySelector('#close-modal-btn').addEventListener('click', hideModal);
-                const form = modal.querySelector('#submit-assignment-form');
-                if (form) {
-                    form.addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const subContent = form.querySelector('#submission-content').value;
-                        const submissionResult = await apiCall(`/assignments/${assignmentId}/submit`, { method: 'POST', body: { content: subContent } });
-                        if (submissionResult.success) {
-                            showToast('Assignment submitted successfully!', 'success');
-                            hideModal();
-                            switchClassView('assignments');
-                        } else {
-                            showToast(submissionResult.error, 'error');
-                        }
-                    });
-                }
-                modal.querySelectorAll('.grade-submission-form').forEach(form => {
-                    form.addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const submissionId = form.dataset.submissionId;
-              
+            showModal(modalTemplate, (modal) => {
+                modal.querySelector('#close-modal-btn').addEventListener('click', hideModal);
+                const form = modal.querySelector('#submit-assignment-form');
+                if (form) {
+                    form.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const subContent = form.querySelector('#submission-content').value;
+                        const submissionResult = await apiCall(`/assignments/${assignmentId}/submit`, { method: 'POST', body: { content: subContent } });
+                        if (submissionResult.success) {
+                            showToast('Assignment submitted successfully!', 'success');
+                            hideModal();
+                            switchClassView('assignments');
+                        } else {
+                            showToast(submissionResult.error, 'error');
+                        }
+                    });
+                }
+                modal.querySelectorAll('.grade-submission-form').forEach(form => {
+                    form.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const submissionId = form.dataset.submissionId;
+                        const grade = form.querySelector('input[name="grade"]').value;
+                        const feedback = form.querySelector('textarea[name="feedback"]').value;
+                        const saveBtn = form.querySelector('button');
+                        toggleButtonLoading(saveBtn, true, 'Save');
+                        const result = await apiCall(`/submissions/${submissionId}/grade`, { method: 'POST', body: { grade, feedback } }, false);
+                        toggleButtonLoading(saveBtn, false, 'Save');
+                        if (result.success) {
+                            showToast('Grade and feedback saved.', 'success');
+                        } else {
+                            showToast(result.error, 'error');
+                        }
+                    });
+                });
+            });
+        }
+        
+        async function handleCreateQuiz() {
+            showModal(document.getElementById('template-create-quiz-modal').content.cloneNode(true), (modal) => {
+                const questionContainer = document.getElementById('quiz-questions-container');
+                const addQuestionBtn = document.getElementById('add-question-btn');
 
+                const addQuestion = () => {
+                    const template = document.getElementById('template-quiz-question-field').content.cloneNode(true);
+                    const newQuestionDiv = template.querySelector('div');
+                    newQuestionDiv.querySelector('.remove-question-btn').addEventListener('click', () => newQuestionDiv.remove());
+                    questionContainer.appendChild(template);
+                };
+
+                addQuestionBtn.addEventListener('click', addQuestion);
+                document.getElementById('create-quiz-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const button = form.querySelector('button[type="submit"]');
+                    const formData = new FormData(form);
+                    const questions = [];
+                    const questionFields = questionContainer.querySelectorAll('.glassmorphism');
+
+                    questionFields.forEach(field => {
+                        const questionText = field.querySelector('input[name="question_text"]').value;
+                        const correctAnswer = field.querySelector('input[name="correct_answer"]').value;
+                        const incorrectAnswers = [
+                            field.querySelector('input[name="incorrect_answer_1"]').value,
+                            field.querySelector('input[name="incorrect_answer_2"]').value,
+                            field.querySelector('input[name="incorrect_answer_3"]').value
+                        ];
+                        questions.push({ text: questionText, choices: { correct: correctAnswer, incorrect: incorrectAnswers } });
+                    });
+
+                    const body = {
+                        title: formData.get('title'),
+                        description: formData.get('description'),
+                        time_limit: parseInt(formData.get('time_limit'), 10),
+                        questions: questions
+                    };
+
+                    toggleButtonLoading(button, true, 'Create Quiz');
+                    const result = await apiCall(`/classes/${appState.selectedClass.id}/quizzes`, { method: 'POST', body });
+                    toggleButtonLoading(button, false, 'Create Quiz');
+                    if (result.success) {
+                        showToast(`Quiz "${escapeHtml(result.quiz.title)}" created.`, 'success');
+                        hideModal();
+                        switchClassView('quizzes');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                });
+                addQuestion();
+            });
+        }
+
+        async function viewQuizDetails(quizId) {
+            const result = await apiCall(`/quizzes/${quizId}`, {}, false);
+            if (!result.success) return;
+            const quiz = result.quiz;
+            let modalContentHtml = `
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h3 class="text-2xl font-bold text-white mb-2">${escapeHtml(quiz.title)}</h3>
+                        <p class="text-gray-300 mb-2">${escapeHtml(quiz.description)}</p>
+                        <p class="text-sm text-gray-400">Time Limit: ${quiz.time_limit} minutes</p>
+                    </div>
+                    <button id="close-modal-btn" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                </div>
+            `;
+            if (appState.currentUser.role === 'student') {
+                if (quiz.attempt) {
+                    modalContentHtml += `
+                        <div class="mt-6">
+                            <h4 class="text-xl font-semibold text-white mb-2">Your Attempt</h4>
+                            <div class="bg-gray-800/50 p-4 rounded-lg">
+                                <p class="text-lg text-green-400">Score: ${quiz.attempt.score.toFixed(2)}%</p>
+                                <p class="text-sm text-gray-400">Completed on: ${new Date(quiz.attempt.end_time).toLocaleString()}</p>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    modalContentHtml += `
+                        <div class="mt-6 flex justify-center">
+                            <button id="start-quiz-btn" class="brand-gradient-bg shiny-button text-white font-bold py-3 px-6 rounded-lg">Start Quiz</button>
+                        </div>
+                    `;
+                }
+            } else if (appState.currentUser.role === 'teacher' || appState.currentUser.role === 'admin') {
+                modalContentHtml += `
+                    <h4 class="text-xl font-semibold text-white mb-4 mt-6">Attempts (${quiz.attempts.length})</h4>
+                    <ul class="space-y-2">
+                        ${quiz.attempts.length > 0 ? quiz.attempts.map(a => `
+                            <li class="p-3 bg-gray-800/50 rounded-lg flex justify-between items-center">
+                                <div>
+                                    <p class="font-bold">${escapeHtml(a.student_name)}</p>
+                                    <p class="text-sm text-gray-400">Score: ${a.score.toFixed(2)}%</p>
+                                </div>
+                                <span class="text-xs text-gray-500">${new Date(a.end_time).toLocaleString()}</span>
+                            </li>
+                        `).join('') : '<p class="text-gray-400">No attempts yet.</p>'}
+                    </ul>
+                `;
+            }
+
+            showModal(modalContentHtml, (modal) => {
+                modal.querySelector('#close-modal-btn').addEventListener('click', hideModal);
+                const startBtn = modal.querySelector('#start-quiz-btn');
+                if (startBtn) {
+                    startBtn.addEventListener('click', () => {
+                        showToast('Quiz starting! This feature is not yet fully implemented.', 'info');
+                    });
+                }
+            });
+        }
+        
+        function setupMobileNav() {
+            const toggleBtn = document.getElementById('mobile-nav-toggle');
+            const nav = document.getElementById('main-nav');
+            const overlay = document.getElementById('content-overlay');
+
+            if (toggleBtn && nav && overlay) {
+                toggleBtn.addEventListener('click', () => {
+                    nav.classList.toggle('open');
+                    overlay.classList.toggle('active');
+                });
+                overlay.addEventListener('click', () => {
+                    nav.classList.remove('open');
+                    overlay.classList.remove('active');
+                });
+            }
+        }
+        
+        function playBackgroundMusic(url) {
+            if (DOMElements.backgroundMusic) {
+                if (url) {
+                    DOMElements.backgroundMusic.src = url;
+                    DOMElements.backgroundMusic.play().catch(e => console.error("Music playback failed:", e));
+                } else {
+                    DOMElements.backgroundMusic.pause();
+                    DOMElements.backgroundMusic.src = "";
+                }
+            }
+        }
+
+        main();
+    });
+    </script>
+</body>
+</html>
+"""
+
+# ==============================================================================
+# --- 5. API ROUTES ---
+# ==============================================================================
+@app.route('/api/signup', methods=['POST'])
+def signup():
+    data = request.get_json()
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+    role = data.get('account_type', 'student')
+    secret_key = data.get('secret_key')
+
+    if not all([username, email, password]):
+        return jsonify({"error": "Missing required fields."}), 400
+
+    if User.query.filter(or_(User.username == username, User.email == email)).first():
+        return jsonify({"error": "Username or email already exists."}), 409
+    
+    if role == 'teacher' and secret_key != SITE_CONFIG['SECRET_TEACHER_KEY']:
+        return jsonify({"error": "Invalid secret teacher key."}), 403
+
+    new_user = User(
+        username=username,
+        email=email,
+        password_hash=generate_password_hash(password),
+        role=role
+    )
+    db.session.add(new_user)
+    db.session.commit()
+    login_user(new_user)
+    
+    settings = {setting.key: setting.value for setting in SiteSettings.query.all()}
+    settings['ai_personas'] = AI_PERSONAS
+
+    return jsonify({"success": True, "user": new_user.to_dict(), "settings": settings})
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    admin_secret_key = data.get('admin_secret_key')
+    
+    user = User.query.filter_by(username=username).first()
+
+    if user and check_password_hash(user.password_hash, password):
+        if user.role == 'admin' and admin_secret_key != SITE_CONFIG['ADMIN_SECRET_KEY']:
+             return jsonify({"error": "Invalid admin secret key."}), 403
+        
+        login_user(user)
+        settings = {setting.key: setting.value for setting in SiteSettings.query.all()}
+        settings['ai_personas'] = AI_PERSONAS
+        return jsonify({"success": True, "user": user.to_dict(), "settings": settings})
+
+    return jsonify({"error": "Invalid username or password."}), 401
+
+@app.route('/api/logout', methods=['POST'])
+@login_required
+def logout():
+    logout_user()
+    return jsonify({"success": True})
+
+@app.route('/api/status')
+def status():
+    if current_user.is_authenticated:
+        settings = {setting.key: setting.value for setting in SiteSettings.query.all()}
+        settings['ai_personas'] = AI_PERSONAS
+        return jsonify({"logged_in": True, "user": current_user.to_dict(), "settings": settings})
+    return jsonify({"logged_in": False})
+
+# ... (Add all other API routes here, such as classes, assignments, admin, etc.)
+
+# ==============================================================================
+# --- 6. MAIN EXECUTION ---
+# ==============================================================================
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    return render_template_string(HTML_CONTENT)
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+        if not User.query.filter_by(username='admin').first():
+            admin = User(
+                username='admin',
+                email='admin@example.com',
+                password_hash=generate_password_hash(SITE_CONFIG['ADMIN_DEFAULT_PASSWORD']),
+                role='admin'
+            )
+            db.session.add(admin)
+            db.session.commit()
+            logging.info("Admin user created.")
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001)
 

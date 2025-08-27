@@ -1392,7 +1392,166 @@ def status():
         return jsonify({"logged_in": True, "user": current_user.to_dict(), "settings": settings})
     return jsonify({"logged_in": False})
 
-# ... (Add all other API routes here, such as classes, assignments, admin, etc.)
+@app.route('/api/stripe_config')
+def stripe_config():
+    return jsonify({'public_key': SITE_CONFIG['STRIPE_PUBLIC_KEY']})
+
+@app.route('/api/my_classes', methods=['GET'])
+@login_required
+def my_classes():
+    if current_user.role == 'teacher':
+        classes = current_user.taught_classes
+    else:
+        classes = current_user.enrolled_classes.all()
+    
+    return jsonify({
+        "success": True,
+        "classes": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "code": c.code,
+                "teacher_name": c.teacher.username
+            } for c in classes
+        ]
+    })
+
+@app.route('/api/classes', methods=['POST'])
+@teacher_required
+def create_class():
+    data = request.get_json()
+    name = data.get('name')
+    if not name:
+        return jsonify({"error": "Class name is required."}), 400
+    
+    new_class = Class(
+        name=name,
+        teacher_id=current_user.id,
+        code=''.join(secrets.choice('ABCDEFGHIJKLMNPQRSTUVWXYZ123456789') for i in range(6))
+    )
+    db.session.add(new_class)
+    db.session.commit()
+    return jsonify({"success": True, "class": {"id": new_class.id, "name": new_class.name, "code": new_class.code, "teacher_name": current_user.username}})
+
+@app.route('/api/join_class', methods=['POST'])
+@login_required
+def join_class():
+    data = request.get_json()
+    code = data.get('code')
+    if not code:
+        return jsonify({"error": "Class code is required."}), 400
+    
+    target_class = Class.query.filter_by(code=code).first()
+    if not target_class:
+        return jsonify({"error": "Invalid class code."}), 404
+        
+    current_user.enrolled_classes.append(target_class)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Successfully joined {target_class.name}."})
+
+@app.route('/api/classes/<class_id>')
+@login_required
+def get_class(class_id):
+    target_class = Class.query.get(class_id)
+    if not target_class:
+        return jsonify({"error": "Class not found."}), 404
+    
+    # Add authorization check here if needed
+
+    return jsonify({
+        "success": True,
+        "class": {
+            "id": target_class.id,
+            "name": target_class.name,
+            "students": [s.to_dict() for s in target_class.students]
+        }
+    })
+
+@app.route('/api/class_messages/<class_id>')
+@login_required
+def get_class_messages(class_id):
+    messages = ChatMessage.query.filter_by(class_id=class_id).order_by(ChatMessage.timestamp.asc()).all()
+    return jsonify({
+        "success": True,
+        "messages": [
+            {
+                "id": m.id,
+                "sender_id": m.sender_id,
+                "sender_name": m.sender.username if m.sender else "AI Assistant",
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat()
+            } for m in messages
+        ]
+    })
+
+@app.route('/api/chat/send', methods=['POST'])
+@login_required
+def send_chat_message():
+    data = request.get_json()
+    prompt = data.get('prompt')
+    class_id = data.get('class_id')
+
+    # Save user message
+    user_message = ChatMessage(class_id=class_id, sender_id=current_user.id, content=prompt)
+    db.session.add(user_message)
+    db.session.commit()
+    socketio.emit('new_message', {
+        "class_id": class_id,
+        "sender_id": current_user.id,
+        "sender_name": current_user.username,
+        "content": prompt,
+        "timestamp": user_message.timestamp.isoformat()
+    }, room=f'class_{class_id}')
+
+    # Simple AI response for now
+    ai_response_content = f"I received your message: '{prompt}'. I am a simple AI."
+    ai_message = ChatMessage(class_id=class_id, sender_id=None, content=ai_response_content)
+    db.session.add(ai_message)
+    db.session.commit()
+    socketio.emit('new_message', {
+        "class_id": class_id,
+        "sender_id": None,
+        "sender_name": "AI Assistant",
+        "content": ai_response_content,
+        "timestamp": ai_message.timestamp.isoformat()
+    }, room=f'class_{class_id}')
+
+    return jsonify({"success": True})
+
+@app.route('/api/update_profile', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.get_json()
+    current_user.profile.bio = data.get('bio', current_user.profile.bio)
+    current_user.profile.avatar = data.get('avatar', current_user.profile.avatar)
+    current_user.ai_persona = data.get('ai_persona', current_user.ai_persona)
+    current_user.theme_preference = data.get('theme_preference', current_user.theme_preference)
+    db.session.commit()
+    return jsonify({"success": True, "user": current_user.to_dict()})
+
+@app.route('/api/admin/dashboard_data')
+@admin_required
+def admin_dashboard_data():
+    stats = {
+        "total_users": User.query.count(),
+        "total_classes": Class.query.count(),
+        "total_assignments": Assignment.query.count(),
+        "total_submissions": Submission.query.count()
+    }
+    users = User.query.all()
+    classes = Class.query.all()
+    settings = {s.key: s.value for s in SiteSettings.query.all()}
+    
+    return jsonify({
+        "success": True,
+        "stats": stats,
+        "users": [u.to_dict() for u in users],
+        "classes": [{
+            "id": c.id, "name": c.name, "teacher_name": c.teacher.username, 
+            "code": c.code, "student_count": c.students.count()
+        } for c in classes],
+        "settings": settings
+    })
 
 # ==============================================================================
 # --- 6. MAIN EXECUTION ---
@@ -1415,5 +1574,6 @@ if __name__ == '__main__':
             db.session.add(admin)
             db.session.commit()
             logging.info("Admin user created.")
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001)
+    socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
+
 

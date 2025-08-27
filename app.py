@@ -1,4 +1,4 @@
-# --- Imports ---
+
 import os
 import json
 import logging
@@ -1575,5 +1575,3 @@ if __name__ == '__main__':
             db.session.commit()
             logging.info("Admin user created.")
     socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
-
-

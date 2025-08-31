@@ -536,9 +536,11 @@ HTML_CONTENT = """
             showFullScreenLoader('Processing...');
             try { 
                 if (options.body && typeof options.body === 'object') { 
-                    options.headers = { 'Content-Type': 'application/json', ...options.headers }; 
+                    options.headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': getCookie('csrf_token'), ...options.headers }; 
                     options.body = JSON.stringify(options.body); 
-                } 
+                } else {
+                    options.headers = { 'X-CSRF-Token': getCookie('csrf_token'), ...options.headers };
+                }
                 const response = await fetch(`${BASE_URL}/api${endpoint}`, { credentials: 'include', ...options }); 
                 const contentType = response.headers.get("content-type"); 
                 if (contentType && contentType.includes("application/json")) { 
@@ -561,6 +563,7 @@ HTML_CONTENT = """
             }
         }
         
+        function getCookie(name) { const value = `; ${document.cookie}`; const parts = value.split(`; ${name}=`); if (parts.length === 2) return parts.pop().split(';').shift(); }
         function renderPage(templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(content); if (setupFunction) setupFunction(); }
         function renderSubTemplate(container, templateId, setupFunction) { const template = document.getElementById(templateId); if (!template) return; const content = template.content.cloneNode(true); container.innerHTML = ''; container.appendChild(content); if (setupFunction) setupFunction(); }
         function showModal(content, setupFunction, maxWidth = 'max-w-2xl') { const template = document.getElementById('template-modal').content.cloneNode(true); const modalBody = template.querySelector('.modal-body'); if(typeof content === 'string') { modalBody.innerHTML = content; } else { modalBody.innerHTML = ''; modalBody.appendChild(content); } template.querySelector('.modal-content').classList.replace('max-w-2xl', maxWidth); template.querySelector('button').addEventListener('click', hideModal); DOMElements.modalContainer.innerHTML = ''; DOMElements.modalContainer.appendChild(template); if(setupFunction) setupFunction(DOMElements.modalContainer); }
@@ -1454,3 +1457,4 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+

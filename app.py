@@ -58,6 +58,13 @@ csp = {
         'https://js.stripe.com',
         'https://fonts.googleapis.com',
         'https://fonts.gstatic.com'
+    ],
+    'script-src': [
+        '\'self\'',
+        'https://cdn.tailwindcss.com',
+        'https://cdnjs.cloudflare.com',
+        'https://js.stripe.com',
+        '\'unsafe-inline\''  # Required for inline scripts in templates
     ]
 }
 Talisman(app, content_security_policy=csp)
@@ -74,7 +81,7 @@ SITE_CONFIG = {
     "STRIPE_PUBLIC_KEY": os.environ.get('STRIPE_PUBLIC_KEY'),
     "STRIPE_STUDENT_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRICE_ID'),
     "STRIPE_STUDENT_PRO_PRICE_ID": os.environ.get('STRIPE_STUDENT_PRO_PRICE_ID'),
-    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://mythsg.onrender.com'),
+    "YOUR_DOMAIN": os.environ.get('YOUR_DOMAIN', 'https://myth-bs.onrender.com'),
     "SECRET_TEACHER_KEY": os.environ.get('SECRET_TEACHER_KEY', 'SUPER-SECRET-TEACHER-KEY'),
     "ADMIN_SECRET_KEY": os.environ.get('ADMIN_SECRET_KEY', 'SUPER-SECRET-ADMIN-KEY'),
     "ADMIN_DEFAULT_PASSWORD": os.environ.get('ADMIN_DEFAULT_PASSWORD', 'adminpassword'),
@@ -691,6 +698,49 @@ HTML_CONTENT = """
         async function handleUpgrade() { if (!window.Stripe) { showToast('Stripe.js has not loaded.', 'error'); return; } const stripe = Stripe(SITE_CONFIG.STRIPE_PUBLIC_KEY); const result = await apiCall('/create-checkout-session', { method: 'POST', body: { price_id: SITE_CONFIG.STRIPE_STUDENT_PRO_PRICE_ID } }); if (result.success && result.session_id) { stripe.redirectToCheckout({ sessionId: result.session_id }); } }
         async function handleManageBilling() { const result = await apiCall('/create-portal-session', { method: 'POST' }); if (result.success && result.url) { window.location.href = result.url; } }
         
+        async function handleAdminCreateUser() {
+            const modalContent = document.createElement('div');
+            modalContent.innerHTML = `
+                <h3 class="text-xl font-bold text-white mb-4">Create New User</h3>
+                <form id="admin-create-user-form">
+                    <div class="mb-4">
+                        <label for="new-username" class="block text-sm font-medium text-gray-300 mb-1">Username</label>
+                        <input type="text" id="new-username" name="username" class="w-full p-3 bg-gray-800/50 rounded-lg border border-gray-600" required>
+                    </div>
+                    <div class="mb-4">
+                        <label for="new-email" class="block text-sm font-medium text-gray-300 mb-1">Email</label>
+                        <input type="email" id="new-email" name="email" class="w-full p-3 bg-gray-800/50 rounded-lg border border-gray-600" required>
+                    </div>
+                    <div class="mb-4">
+                        <label for="new-password" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
+                        <input type="password" id="new-password" name="password" class="w-full p-3 bg-gray-800/50 rounded-lg border border-gray-600" required>
+                    </div>
+                    <div class="mb-4">
+                        <label for="new-role" class="block text-sm font-medium text-gray-300 mb-1">Role</label>
+                        <select id="new-role" name="role" class="w-full p-3 bg-gray-800/50 rounded-lg border border-gray-600">
+                            <option value="student">Student</option>
+                            <option value="teacher">Teacher</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="brand-gradient-bg shiny-button text-white font-bold py-2 px-4 rounded-lg">Create User</button>
+                </form>
+            `;
+            showModal(modalContent, (modal) => {
+                modal.querySelector('#admin-create-user-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const body = Object.fromEntries(new FormData(form));
+                    const result = await apiCall('/admin/create_user', { method: 'POST', body });
+                    if (result.success) {
+                        showToast(result.message, 'success');
+                        hideModal();
+                        switchAdminView('users');
+                    }
+                });
+            });
+        }
+        
         function handleAdminUserAction(action, userId) { if (action === 'delete') { showConfirmationModal('This will permanently delete the user and all their data.', async () => { const result = await apiCall(`/admin/users/${userId}`, { method: 'DELETE' }); if (result.success) { showToast('User deleted.', 'success'); switchAdminView('users'); } }); } else if (action === 'edit') { showToast('Edit user is not yet implemented.', 'info'); } }
         function handleAdminDeleteClass(classId) { showConfirmationModal('This will permanently delete the class and all its data.', async () => { const result = await apiCall(`/admin/classes/${classId}`, { method: 'DELETE' }); if (result.success) { showToast('Class deleted.', 'success'); switchAdminView('classes'); } }); }
         async function handleAdminUpdateSettings(e) { e.preventDefault(); const form = e.target; const body = Object.fromEntries(new FormData(form)); const result = await apiCall('/admin/update_settings', { method: 'POST', body }); if (result.success) { showToast('Settings updated.', 'success'); } }
@@ -1217,6 +1267,7 @@ def create_portal_session():
         return jsonify(error=str(e)), 500
 
 @app.route('/stripe_webhooks', methods=['POST'])
+@csrf.exempt
 def stripe_webhooks():
     return jsonify(status='success'), 200
 
@@ -1457,4 +1508,6 @@ with app.app_context():
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+
+
 

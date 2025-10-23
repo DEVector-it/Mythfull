@@ -9,7 +9,10 @@ Study Buddy AI is a Flask-powered student assistant that showcases the Myth Full
 - Publishing guidance API that lists cloud platforms suitable for deployment
 - Health check endpoint used by Render (`/api/status`)
 
-## Local development
+## Run Study Buddy AI locally
+
+> 💡 **Quick start:** `bash scripts/run_local.sh`
+
 1. Create and activate a virtual environment:
    ```bash
    python -m venv .venv
@@ -19,11 +22,32 @@ Study Buddy AI is a Flask-powered student assistant that showcases the Myth Full
    ```bash
    pip install -r requirements.txt
    ```
-3. Start the development server:
+3. Launch the development server with the helper script (sets the proper `FLASK_APP` and debug defaults):
    ```bash
-   flask --app app run --debug
+   bash scripts/run_local.sh
    ```
 4. Visit [http://localhost:5000](http://localhost:5000) to see the UI.
+
+### Verify the APIs are running
+
+Once the server is up, you can exercise the endpoints with the bundled beta key:
+
+```bash
+curl -H "X-StudyBuddy-Key: AIzaSyDe9DZANR3BiUFX-w1Ol7Rnkh_GHU8k-5w" \
+  http://localhost:5000/api/status
+
+curl -H "X-StudyBuddy-Key: AIzaSyDe9DZANR3BiUFX-w1Ol7Rnkh_GHU8k-5w" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How can I prepare for finals?", "plan": "goat-myth"}' \
+  http://localhost:5000/api/chat
+
+curl -H "X-StudyBuddy-Key: AIzaSyDe9DZANR3BiUFX-w1Ol7Rnkh_GHU8k-5w" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Create a biology revision poster", "plan": "myth-full-legend"}' \
+  http://localhost:5000/api/image
+```
+
+The responses confirm that the Study Buddy AI chat, status, and image services are live.
 
 ## Deployment
 This project includes a `render.yaml` spec so the app can be deployed directly from a GitHub repository to [Render](https://render.com/).

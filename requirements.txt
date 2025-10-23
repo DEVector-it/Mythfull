@@ -1,19 +1,27 @@
-Flask
-Flask-Login
-Flask-SQLAlchemy
-Flask-SocketIO
-python-dotenv
-Flask-Cors
-Flask-Talisman
-Flask-Limiter
-Flask-Bcrypt
-Flask-Mail
-itsdangerous
-bleach
-stripe
-google-generativeai
-password-strength
-click
-gunicorn
-eventlet
-Flask-WTF
+diff --git a/requirements.txt b/requirements.txt
+index 58ccac77ef030ce20788a36775deb26992fa62c5..f4d06297afafd2529d092b0455102b1d50978506 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,19 +1,21 @@
+ Flask
+ Flask-Login
+ Flask-SQLAlchemy
+ Flask-SocketIO
+ python-dotenv
+ Flask-Cors
+ Flask-Talisman
+ Flask-Limiter
+ Flask-Bcrypt
+ Flask-Mail
+ itsdangerous
+ bleach
+ stripe
+ google-generativeai
+ password-strength
+ click
+ gunicorn
+ eventlet
+ Flask-WTF
++Pillow
++pytest
+

@@ -1,8 +1,9 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/app.py b/app.py
-index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e3dd1a304 100644
+index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..90d09f912603e81b00647c034ee310b29d5255b8 100644
 --- a/app.py
 +++ b/app.py
-@@ -1,1072 +1,371 @@
+@@ -1,1072 +1,461 @@
 -import os
 -import json
 -import logging
@@ -34,43 +35,7 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -    'SECRET_TEACHER_KEY', 'STRIPE_WEBHOOK_SECRET',
 -    'STRIPE_PUBLIC_KEY', 'STRIPE_SECRET_KEY',
 -    'STRIPE_PREFECT_PRICE_ID', 'STRIPE_HEADMASTER_PRICE_ID'
-+import io
-+import logging
-+from dataclasses import dataclass, field
-+from datetime import datetime
-+from pathlib import Path
-+from typing import Dict, List, Optional
-+
-+from flask import Flask, jsonify, render_template, request
-+from flask_cors import CORS
-+from PIL import Image, ImageDraw, ImageFont
-+
-+
-+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-+
-+APP_NAME = "Study Buddy AI"
-+BETA_LABEL = "Study Buddy AI Beta"
-+COPYRIGHT_NOTICE = "Study Buddy AI © {}. All rights reserved.".format(datetime.utcnow().year)
-+PUBLISHING_SUGGESTIONS = [
-+    {
-+        "name": "Render",
-+        "headline": "Deploy directly from GitHub with autoscaling for Python web apps.",
-+        "url": "https://render.com/",
-+        "notes": "Supports background workers for queued tutoring sessions and cron jobs for nightly study summaries."
-+    },
-+    {
-+        "name": "Vercel",
-+        "headline": "Great for front-end heavy experiences with serverless APIs.",
-+        "url": "https://vercel.com/",
-+        "notes": "Pair with a managed database (Supabase/Planetscale) for transcript storage."
-+    },
-+    {
-+        "name": "Azure App Service",
-+        "headline": "Enterprise ready hosting with regional redundancy and compliance tooling.",
-+        "url": "https://azure.microsoft.com/en-us/products/app-service/",
-+        "notes": "Use managed identity for secure Gemini or OpenAI key rotation."
-+    }
- ]
+-]
 -for key in REQUIRED_KEYS:
 -    if not os.environ.get(key):
 -        logging.critical(f"CRITICAL ERROR: Environment variable '{key}' is not set. Application cannot start.")
@@ -80,7 +45,14 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -app = Flask(__name__)
 -app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 -app.config['SECURITY_PASSWORD_SALT'] = os.environ.get('SECRET_KEY')
--
++import html
++import io
++import logging
++from dataclasses import dataclass, field
++from datetime import datetime
++from pathlib import Path
++from typing import Dict, List, Optional
+ 
 -# --- Site & API Configuration ---
 -SITE_CONFIG = {
 -    "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY"),
@@ -99,10 +71,12 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -    "MAIL_PASSWORD": os.environ.get('MAIL_PASSWORD'),
 -    "MAIL_SENDER": os.environ.get('MAIL_SENDER'),
 -}
--
++from flask import Flask, jsonify, render_template, request
++from flask_cors import CORS
+ 
 -# --- API & Services Initialization ---
 -GEMINI_API_CONFIGURED = False
--try:
+ try:
 -    genai.configure(api_key=SITE_CONFIG["GEMINI_API_KEY"])
 -    GEMINI_API_CONFIGURED = True
 -except Exception as e:
@@ -240,7 +214,7 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -
 -load_database()
 -with app.app_context(): initialize_database_defaults()
- 
+-
 -# --- 4. Plan & Rate Limiting ---
 -PLAN_CONFIG = {
 -    "scholar": {"name": "The Scholar", "price_string": "Free Tier", "features": ["Delayed AI Tutoring", "Plagiarism Scans", "Enforced 'Focus Mode'", "Subject to Full Admin Whims"], "color": "text-gray-400", "message_limit": 50, "can_upload": False, "model": "gemini-1.5-flash-latest"},
@@ -357,7 +331,7 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -            </footer>
 -        </div>
 -    </template>
- 
+-
 -    <template id="template-privacy-page">
 -        <div class="w-full h-full p-4 sm:p-8 overflow-y-auto">
 -            <div class="max-w-4xl mx-auto">
@@ -483,6 +457,95 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -                showToast(error.message, 'error');
 -                return { success: false, error: error.message };
 -            }
+-        }
+-
+-        function showToast(message, type = 'info') {
+-            const colors = { info: 'bg-brand text-black', success: 'bg-green-500 text-white', error: 'bg-red-500 text-white' };
+-            const toast = document.createElement('div');
+-            toast.className = `font-semibold text-sm py-2 px-4 rounded-md shadow-lg animate-fade-in ${colors[type]}`;
+-            toast.textContent = message;
+-            DOMElements.toastContainer.appendChild(toast);
+-            setTimeout(() => {
+-                toast.style.transition = 'opacity 0.5s ease';
+-                toast.style.opacity = '0';
+-                toast.addEventListener('transitionend', () => toast.remove());
+-            }, 4000);
+-        }
+-
+-        function renderLogo(containerId) {
+-            const container = document.getElementById(containerId);
+-            if (container) container.innerHTML = document.getElementById('template-logo').innerHTML;
+-        }
+-
+-        const routeHandler = async () => {
+-            const path = window.location.pathname, urlParams = new URLSearchParams(window.location.search);
+-            if (path.startsWith('/reset-password/')) { renderPage('template-reset-password-page', () => setupResetPasswordPage(path.split('/')[2])); }
+-            else if (path === '/privacy-policy') { renderPage('template-privacy-page', setupPrivacyPage); }
+-            else {
+-                if (urlParams.get('payment') === 'success') { showToast('Upgrade successful. Your new privileges are active.', 'success'); window.history.replaceState({}, document.title, "/"); }
+-                else if (urlParams.get('payment') === 'cancel') { showToast('Payment was cancelled.', 'info'); window.history.replaceState({}, document.title, "/"); }
+-                await checkLoginStatus();
+-            }
+-        };
++    from PIL import Image, ImageDraw, ImageFont  # type: ignore
++
++    PIL_AVAILABLE = True
++    PIL_IMPORT_ERROR: Optional[Exception] = None
++except Exception as exc:  # pragma: no cover - executed when Pillow missing
++    Image = ImageDraw = ImageFont = None  # type: ignore
++    PIL_AVAILABLE = False
++    PIL_IMPORT_ERROR = exc
++
++
++logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
++
++if not PIL_AVAILABLE and PIL_IMPORT_ERROR:
++    logging.warning(
++        "Pillow is unavailable (%s). Falling back to SVG image rendering.",
++        PIL_IMPORT_ERROR,
++    )
++
++APP_NAME = "Study Buddy AI"
++BETA_LABEL = "Study Buddy AI Beta"
++COPYRIGHT_NOTICE = "Study Buddy AI © {}. All rights reserved.".format(datetime.utcnow().year)
++STUDY_BUDDY_API_KEY = "AIzaSyDe9DZANR3BiUFX-w1Ol7Rnkh_GHU8k-5w"
++API_KEY_HEADER = "X-StudyBuddy-Key"
++PUBLISHING_SUGGESTIONS = [
++    {
++        "name": "Render",
++        "headline": "Deploy directly from GitHub with autoscaling for Python web apps.",
++        "url": "https://render.com/",
++        "notes": "Supports background workers for queued tutoring sessions and cron jobs for nightly study summaries."
++    },
++    {
++        "name": "Vercel",
++        "headline": "Great for front-end heavy experiences with serverless APIs.",
++        "url": "https://vercel.com/",
++        "notes": "Pair with a managed database (Supabase/Planetscale) for transcript storage."
++    },
++    {
++        "name": "Azure App Service",
++        "headline": "Enterprise ready hosting with regional redundancy and compliance tooling.",
++        "url": "https://azure.microsoft.com/en-us/products/app-service/",
++        "notes": "Use managed identity for secure Gemini or OpenAI key rotation."
++    }
++]
+ 
+-        async function checkLoginStatus() {
+-            const result = await apiCall('/api/status');
+-            if (result.success && result.logged_in) { initializeApp(result.user, result.chats, result.settings, result.config); }
+-            else { appState.config = result.config || {}; renderPage('template-auth-page', setupAuthPage); }
+-        }
+ 
+-        async function initializeApp(user, chats, settings, config) {
+-            appState.currentUser = user; appState.chats = chats || {}; appState.config = config || {};
+-            if (settings?.announcement) { DOMElements.announcementBanner.textContent = settings.announcement; DOMElements.announcementBanner.classList.remove('hidden'); }
+-            else { DOMElements.announcementBanner.classList.add('hidden'); }
+-            if (appState.config.stripe_public_key) { stripe = Stripe(appState.config.stripe_public_key); }
+-            else { console.warn("Stripe public key not found. Payments will be disabled."); }
+-            if (user.role === 'admin') renderPage('template-admin-dashboard', setupAdminDashboard);
+-            else if (user.account_type === 'teacher') renderPage('template-teacher-dashboard', setupTeacherDashboard);
+-            else renderPage('template-app-wrapper', setupAppUI);
 +@dataclass
 +class Capability:
 +    """Describes an individual skill that a plan can unlock."""
@@ -520,52 +583,6 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +            "extra": self.extra,
          }
  
--        function showToast(message, type = 'info') {
--            const colors = { info: 'bg-brand text-black', success: 'bg-green-500 text-white', error: 'bg-red-500 text-white' };
--            const toast = document.createElement('div');
--            toast.className = `font-semibold text-sm py-2 px-4 rounded-md shadow-lg animate-fade-in ${colors[type]}`;
--            toast.textContent = message;
--            DOMElements.toastContainer.appendChild(toast);
--            setTimeout(() => {
--                toast.style.transition = 'opacity 0.5s ease';
--                toast.style.opacity = '0';
--                toast.addEventListener('transitionend', () => toast.remove());
--            }, 4000);
--        }
- 
--        function renderLogo(containerId) {
--            const container = document.getElementById(containerId);
--            if (container) container.innerHTML = document.getElementById('template-logo').innerHTML;
--        }
--
--        const routeHandler = async () => {
--            const path = window.location.pathname, urlParams = new URLSearchParams(window.location.search);
--            if (path.startsWith('/reset-password/')) { renderPage('template-reset-password-page', () => setupResetPasswordPage(path.split('/')[2])); }
--            else if (path === '/privacy-policy') { renderPage('template-privacy-page', setupPrivacyPage); }
--            else {
--                if (urlParams.get('payment') === 'success') { showToast('Upgrade successful. Your new privileges are active.', 'success'); window.history.replaceState({}, document.title, "/"); }
--                else if (urlParams.get('payment') === 'cancel') { showToast('Payment was cancelled.', 'info'); window.history.replaceState({}, document.title, "/"); }
--                await checkLoginStatus();
--            }
--        };
--
--        async function checkLoginStatus() {
--            const result = await apiCall('/api/status');
--            if (result.success && result.logged_in) { initializeApp(result.user, result.chats, result.settings, result.config); }
--            else { appState.config = result.config || {}; renderPage('template-auth-page', setupAuthPage); }
--        }
--
--        async function initializeApp(user, chats, settings, config) {
--            appState.currentUser = user; appState.chats = chats || {}; appState.config = config || {};
--            if (settings?.announcement) { DOMElements.announcementBanner.textContent = settings.announcement; DOMElements.announcementBanner.classList.remove('hidden'); }
--            else { DOMElements.announcementBanner.classList.add('hidden'); }
--            if (appState.config.stripe_public_key) { stripe = Stripe(appState.config.stripe_public_key); }
--            else { console.warn("Stripe public key not found. Payments will be disabled."); }
--            if (user.role === 'admin') renderPage('template-admin-dashboard', setupAdminDashboard);
--            else if (user.account_type === 'teacher') renderPage('template-teacher-dashboard', setupTeacherDashboard);
--            else renderPage('template-app-wrapper', setupAppUI);
--        }
--
 -        function renderPage(templateId, setupFunction) {
 -            const template = document.getElementById(templateId);
 -            if (template) { DOMElements.appContainer.innerHTML = ''; DOMElements.appContainer.appendChild(template.content.cloneNode(true)); if (setupFunction) setupFunction(); }
@@ -575,7 +592,7 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -        function setupPrivacyPage() {
 -            // Can add event listeners here if the privacy page becomes more interactive
 -        }
--
+ 
 -        function setupAuthPage(isTeacher = false, isAdmin = false) {
 -            renderLogo('auth-logo-container');
 -            const title = document.getElementById('auth-title'), subtitle = document.getElementById('auth-subtitle'), toggleBtn = document.getElementById('auth-toggle-btn');
@@ -976,29 +993,61 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 -            if (result.success && result.leaderboard.length > 0) { container.innerHTML = `<div class="mx-auto max-w-4xl p-4 border-b border-dark-300 bg-dark-200"><h3 class="text-sm font-semibold mb-2 text-brand">Class Leaderboard</h3><ul class="space-y-1">${result.leaderboard.map((s, i) => `<li class="flex justify-between items-center text-xs"><span class="truncate">${i + 1}. ${s.username}</span><span>${s.streak} days</span></li>`).join('')}</ul></div>`; }
 -            else { container.innerHTML = ''; }
 +def render_prompt_image(prompt: str, plan_title: str) -> str:
-+    """Create a simple PNG study card encoded as a data URI."""
-+    width, height = 512, 320
-+    background = (44, 62, 80)
-+    accent = (46, 204, 113)
++    """Create a study card encoded as a data URI."""
++    if PIL_AVAILABLE and Image and ImageDraw and ImageFont:
++        width, height = 512, 320
++        background = (44, 62, 80)
++        accent = (46, 204, 113)
 +
-+    image = Image.new("RGB", (width, height), color=background)
-+    draw = ImageDraw.Draw(image)
-+    font_title = ImageFont.load_default()
-+    font_body = ImageFont.load_default()
++        image = Image.new("RGB", (width, height), color=background)
++        draw = ImageDraw.Draw(image)
++        font_title = ImageFont.load_default()
++        font_body = ImageFont.load_default()
 +
-+    draw.rectangle([(0, 0), (width, 48)], fill=(26, 188, 156))
-+    draw.text((16, 12), f"{plan_title} Image Lab", fill=(255, 255, 255), font=font_title)
++        draw.rectangle([(0, 0), (width, 48)], fill=(26, 188, 156))
++        draw.text((16, 12), f"{plan_title} Image Lab", fill=(255, 255, 255), font=font_title)
 +
-+    wrapped = wrap_text(prompt, 60)
-+    draw.text((16, 72), wrapped, fill=accent, font=font_body)
++        wrapped = wrap_text(prompt, 60)
++        draw.text((16, 72), wrapped, fill=accent, font=font_body)
 +
-+    footer = "Powered by Myth Full creativity"
-+    draw.text((16, height - 28), footer, fill=(236, 240, 241), font=font_body)
++        footer = "Powered by Myth Full creativity"
++        draw.text((16, height - 28), footer, fill=(236, 240, 241), font=font_body)
 +
-+    buffer = io.BytesIO()
-+    image.save(buffer, format="PNG")
-+    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-+    return f"data:image/png;base64,{encoded}"
++        buffer = io.BytesIO()
++        image.save(buffer, format="PNG")
++        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
++        return f"data:image/png;base64,{encoded}"
++
++    logging.debug("Using SVG fallback for prompt image rendering.")
++    prompt_text = html.escape(prompt or "Study inspiration incoming!")
++    title_text = html.escape(plan_title)
++    svg = f"""
++    <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 320'>
++        <defs>
++            <linearGradient id='bg' x1='0%' y1='0%' x2='100%' y2='100%'>
++                <stop offset='0%' stop-color='#1f2937'/>
++                <stop offset='100%' stop-color='#0f172a'/>
++            </linearGradient>
++        </defs>
++        <rect width='512' height='320' fill='url(#bg)' rx='24'/>
++        <rect width='512' height='60' fill='#0ea5e9' rx='24'/>
++        <text x='24' y='38' font-size='24' font-family='Inter, Arial, sans-serif' fill='#f8fafc'>
++            {title_text} Image Lab
++        </text>
++        <foreignObject x='24' y='80' width='464' height='200'>
++            <body xmlns='http://www.w3.org/1999/xhtml'>
++                <div style='font-family:Inter,Arial,sans-serif;font-size:18px;color:#22d3ee;line-height:1.4;'>
++                    {prompt_text}
++                </div>
++            </body>
++        </foreignObject>
++        <text x='24' y='300' font-size='16' font-family='Inter, Arial, sans-serif' fill='#e2e8f0'>
++            Myth Full creativity placeholder
++        </text>
++    </svg>
++    """
++    encoded_svg = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
++    return f"data:image/svg+xml;base64,{encoded_svg}"
 +
 +
 +def wrap_text(text: str, line_length: int) -> str:
@@ -1029,12 +1078,25 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +    CORS(flask_app)
 +    engine = ExperienceEngine(PLANS)
 +
++    def validate_api_key(data: Optional[Dict[str, object]] = None) -> bool:
++        candidate = request.headers.get(API_KEY_HEADER)
++        if not candidate and data:
++            candidate = str(data.get("api_key", ""))
++        if not candidate:
++            candidate = request.args.get("api_key")
++        if candidate != STUDY_BUDDY_API_KEY:
++            logging.warning("Rejected request with invalid API key: %s", candidate)
++            return False
++        return True
++
 +    @flask_app.route("/")
 +    def home() -> str:
 +        payload = {
 +            "app_name": APP_NAME,
 +            "beta_label": BETA_LABEL,
 +            "copyright": COPYRIGHT_NOTICE,
++            "api_key": STUDY_BUDDY_API_KEY,
++            "api_key_header": API_KEY_HEADER,
 +            "plans": [plan.serialize() for plan in PLANS.values()],
 +            "capabilities": [cap.__dict__ for cap in CAPABILITIES.values()],
 +            "personas": [persona.__dict__ for persona in PERSONAS],
@@ -1394,6 +1456,11 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +    @flask_app.post("/api/chat")
 +    def chat():
 +        data = request.get_json(force=True)
++        if not validate_api_key(data):
++            return jsonify({
++                "error": "Invalid or missing API key.",
++                "status": "unauthorized",
++            }), 401
 +        message = data.get("message", "Let's build a better study habit.")
 +        plan = data.get("plan")
 +        result = engine.chat(plan, message)
@@ -1402,6 +1469,11 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +    @flask_app.post("/api/image")
 +    def create_image():
 +        data = request.get_json(force=True)
++        if not validate_api_key(data):
++            return jsonify({
++                "error": "Invalid or missing API key.",
++                "status": "unauthorized",
++            }), 401
 +        prompt = data.get("prompt", "Design a mythic study booster card.")
 +        plan = data.get("plan")
 +        result = engine.build_image(plan, prompt)
@@ -1419,6 +1491,23 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +            "notes": "These platforms pair well with Study Buddy AI's Render-ready configuration.",
 +        })
 +
++    @flask_app.get("/api/status")
++    def status():
++        """Render health check endpoint."""
++        return jsonify({
++            "app": APP_NAME,
++            "status": "ok",
++            "timestamp": datetime.utcnow().isoformat(),
++        })
++
++    @flask_app.get("/api/config")
++    def config():
++        return jsonify({
++            "app": APP_NAME,
++            "api_key": STUDY_BUDDY_API_KEY,
++            "api_key_header": API_KEY_HEADER,
++        })
++
 +    return flask_app
 +
 +
@@ -1427,3 +1516,6 @@ index 551aca2ea08fcadc8a14db33a10c96d6598d22e0..5d426e124f3fa0ceb5b2100e624a3e6e
 +
 +if __name__ == "__main__":
 +    app.run(host="0.0.0.0", port=5000, debug=True)
+ 
+EOF
+)

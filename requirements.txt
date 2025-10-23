@@ -17,3 +17,5 @@ click
 gunicorn
 eventlet
 Flask-WTF
+Pillow
+pytest
